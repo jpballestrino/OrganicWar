@@ -4,6 +4,13 @@ import { initAuthUI } from './js/authUI.js';
 import { initGuildUI } from './js/guildUI.js';
 import { initRankingsUI } from './js/rankingsUI.js';
 import { state } from './js/state.js';
+import initWasm, { SimulationState } from './wasm/simulation_core.js';
+import wasmUrl from './wasm/simulation_core_bg.wasm?url';
+import { WebGLRenderer } from './js/renderer.js';
+
+let wasmModule = null;
+let simulation = null;
+let renderer = null;
 
 // Global Error Handler
 window.addEventListener('error', function(e) {
@@ -342,3 +349,69 @@ initGuildUI();
 initRankingsUI();
 initLobbyUI();
 initDevSandboxUI();
+
+// ------------------------------------------------------------------
+// High-Density Simulation & Renderer Initialization
+// ------------------------------------------------------------------
+async function startSimulationEngine() {
+  try {
+    wasmModule = await initWasm(wasmUrl);
+    simulation = new SimulationState();
+    
+    // Initialize 5 players (Start with 10 cells, 100 troops, 500 gold, 50 pop/sec growth)
+    simulation.init_players(5, 10, 100, 500, 50, 5000);
+    
+    // Generate some random terrain and owners in Rust memory so we can visualize it
+    const terrainPtr = simulation.get_resource_yield_ptr();
+    const ownerPtr = simulation.get_owner_ptr();
+    
+    // 1920x1080 = 2073600 cells
+    const terrainArray = new Uint8Array(wasmModule.memory.buffer, terrainPtr, 2073600);
+    const ownerArray = new Uint32Array(wasmModule.memory.buffer, ownerPtr, 2073600);
+    
+    // Quick random generator for visualization
+    for (let i = 0; i < 2073600; i++) {
+        // Random terrain: 0 (Plain), 1 (Highland), 2 (Mountain), 3 (Water)
+        terrainArray[i] = Math.floor(Math.random() * 4);
+        
+        // Sprinkle some players randomly (5% chance to have an owner 1-5)
+        if (Math.random() < 0.05) {
+            ownerArray[i] = Math.floor(Math.random() * 5) + 1;
+        }
+    }
+
+    const canvas = document.getElementById('gameCanvas');
+    renderer = new WebGLRenderer(canvas, wasmModule.memory);
+    renderer.setMemoryPointers(ownerPtr, terrainPtr);
+    
+    console.log("WASM Simulation & WebGL Renderer Started!");
+
+    requestAnimationFrame(gameLoop);
+  } catch (err) {
+    console.error("Failed to init WASM Simulation:", err);
+    alert("WASM INIT ERROR: " + err.message);
+    const errDiv = document.createElement('div');
+    errDiv.style.position = 'fixed';
+    errDiv.style.top = '0';
+    errDiv.style.left = '0';
+    errDiv.style.background = 'red';
+    errDiv.style.color = 'white';
+    errDiv.style.padding = '20px';
+    errDiv.style.zIndex = '9999';
+    errDiv.innerHTML = `<h3>WASM Init Error:</h3><pre>${err.stack || err.message}</pre>`;
+    document.body.appendChild(errDiv);
+  }
+}
+
+function gameLoop(time) {
+  // Only render if game area is active
+  const gameArea = document.getElementById('gameArea');
+  if (gameArea && gameArea.style.display !== 'none' && renderer) {
+      renderer.render(time);
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+// Start the engine when the app loads. It will run silently in the background
+// until the #gameArea is shown via the Quick Play flow.
+startSimulationEngine();

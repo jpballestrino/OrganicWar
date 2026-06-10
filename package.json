@@ -4,9 +4,11 @@
   "description": "Blank lobby and menu starter template for multiplayer games",
   "type": "module",
   "scripts": {
+    "dev": "vite",
     "lint": "eslint . --fix",
     "start": "node server/server.js",
-    "build": "vite build",
+    "build:wasm": "cd simulation-core && wasm-pack build --target web --out-dir ../src/wasm",
+    "build": "npm run build:wasm && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -32,6 +34,8 @@
     "nodemon": "^3.1.0",
     "supertest": "^7.2.2",
     "vite": "^5.2.11",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0",
     "vitest": "^4.1.7"
   }
 }
