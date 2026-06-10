@@ -6,7 +6,7 @@ export function homeTemplate() {
             <!-- Stylized Logo -->
             <div class="home-logo">
                 <h1 class="home-title">
-                    <span class="home-title-main">CONQUEROR</span><span class="home-title-io">.io</span>
+                    <span class="home-title-main">ORGANICWAR</span><span class="home-title-io">.io</span>
                 </h1>
                 <div class="home-tagline">Find your destiny</div>
             </div>

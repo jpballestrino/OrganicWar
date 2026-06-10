@@ -128,7 +128,7 @@ export function modalsTemplate() {
         
         <div style="font-size: 14px; line-height: 1.6; color: #ccc;">
             <h3 style="color: #00e5ff; margin-top: 0;">🎮 Project Architecture</h3>
-            <p>Welcome to <strong>Conqueror2.io</strong>. This is a blank starter dashboard designed for multiplayer game prototypes. It provides all outer-game mechanics, leaving a clean workspace to build your game logic.</p>
+            <p>Welcome to <strong>OrganicWar.io</strong>. This is a blank starter dashboard designed for multiplayer game prototypes. It provides all outer-game mechanics, leaving a clean workspace to build your game logic.</p>
             
             <h3 style="color: #00e5ff;">✨ Included Features</h3>
             <ul style="padding-left: 20px; margin-bottom: 20px;">

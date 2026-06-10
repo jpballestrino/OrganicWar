@@ -41,6 +41,8 @@ export async function initAuthUI() {
     tabRegister.classList.remove('active');
     formLogin.classList.add('active');
     formRegister.classList.remove('active');
+    getE('forgotPasswordForm').style.display = 'none';
+    formLogin.style.display = '';
   });
 
   tabRegister.addEventListener('click', () => {
@@ -48,6 +50,8 @@ export async function initAuthUI() {
     tabLogin.classList.remove('active');
     formRegister.classList.add('active');
     formLogin.classList.remove('active');
+    getE('forgotPasswordForm').style.display = 'none';
+    formLogin.style.display = '';
   });
 
   // Play as Guest

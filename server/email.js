@@ -44,19 +44,19 @@ export async function sendPasswordResetEmail(toEmail, resetToken) {
   const resetUrl = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
 
   await t.sendMail({
-    from: process.env.SMTP_FROM || '"Conqueror2.io" <noreply@conqueror2.io>',
+    from: process.env.SMTP_FROM || '"OrganicWar.io" <noreply@organicwar.io>',
     to: toEmail,
-    subject: '🔑 Conqueror2.io — Password Reset Request',
+    subject: '🔑 OrganicWar.io — Password Reset Request',
     html: `
             <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; background: #1a1a2e; color: #fff; padding: 30px; border-radius: 10px; border: 1px solid rgba(255,193,7,0.3);">
-                <h1 style="color: #ffc107; text-align: center; font-family: 'Segoe UI', sans-serif; letter-spacing: 2px;">CONQUEROR2<span style="color:#fff;">.io</span></h1>
+                <h1 style="color: #ffc107; text-align: center; font-family: 'Segoe UI', sans-serif; letter-spacing: 2px;">ORGANICWAR<span style="color:#fff;">.io</span></h1>
                 <p style="text-align:center; color:#ccc;">You requested a password reset for your account.</p>
                 <div style="text-align: center; margin: 30px 0;">
-                    <a href="${resetUrl}" style="background: #ffc107; color: #000; padding: 14px 36px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 16px;">Reset Password</a>
+                     <a href="${resetUrl}" style="background: #ffc107; color: #000; padding: 14px 36px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 16px;">Reset Password</a>
                 </div>
                 <p style="font-size: 12px; color: #888; text-align: center;">This link expires in <strong>1 hour</strong>. If you didn't request this, you can safely ignore this email.</p>
                 <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 20px 0;">
-                <p style="font-size: 11px; color: #555; text-align: center;">Conqueror2.io — Blank Starter Template</p>
+                <p style="font-size: 11px; color: #555; text-align: center;">OrganicWar.io — Blank Starter Template</p>
             </div>
         `,
   });
