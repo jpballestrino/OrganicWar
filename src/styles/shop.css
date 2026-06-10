@@ -1,0 +1,49 @@
+/* ===== SHOP UI ===== */
+.shop-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: white;
+    padding: 12px;
+    font-size: 13px;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.shop-btn:hover { background: rgba(255, 255, 255, 0.1); transform: translateY(-3px) scale(1.02); box-shadow: 0 8px 20px rgba(0,0,0,0.4); border-color: rgba(255,255,255,0.25); }
+.shop-btn:active { transform: translateY(0) scale(0.98); box-shadow: none; }
+
+.shortcut-badge {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+    border: 1px solid rgba(255, 193, 7, 0.4);
+    border-radius: 12px;
+    padding: 0 6px;
+    font-size: 11px;
+    margin-right: 4px;
+    display: inline-block;
+}
+
+.cancel-shop-btn {
+    background: rgba(220, 53, 69, 0.2);
+    border: 1px solid rgba(220, 53, 69, 0.4);
+    color: #ff8080;
+    padding: 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    text-align: center;
+    font-weight: bold;
+    margin-top: 5px;
+    display: none;
+}
+
+.cancel-shop-btn:hover {
+    background: rgba(220, 53, 69, 0.35);
+}

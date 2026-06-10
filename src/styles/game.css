@@ -1,0 +1,232 @@
+/* ===== DEVELOPER SANDBOX HUD & LAYOUTS ===== */
+
+#gameArea {
+    width: 100vw;
+    height: 100vh;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at center, #111118 0%, #050508 100%);
+    overflow: hidden;
+}
+
+/* Glassmorphic Panel for Developer Tools */
+.dev-sandbox-container {
+    background: rgba(15, 20, 30, 0.75);
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+    border: 1px solid rgba(0, 229, 255, 0.3);
+    box-shadow: 
+        0 20px 50px rgba(0, 0, 0, 0.6),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 0 30px rgba(0, 229, 255, 0.15);
+    border-radius: 16px;
+    padding: 40px;
+    width: 500px;
+    max-width: 90%;
+    text-align: center;
+    color: #e2f1f5;
+    font-family: 'Inter', sans-serif;
+    animation: devPanelAppear 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes devPanelAppear {
+    from {
+        transform: scale(0.9) translateY(20px);
+        opacity: 0;
+    }
+    to {
+        transform: scale(1) translateY(0);
+        opacity: 1;
+    }
+}
+
+.dev-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.2rem;
+    font-weight: 900;
+    margin: 0 0 10px 0;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #00e5ff;
+    text-shadow: 0 0 20px rgba(0, 229, 255, 0.6);
+}
+
+.dev-subtitle {
+    font-size: 0.95rem;
+    color: #8a99ad;
+    margin-bottom: 30px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 15px;
+}
+
+.dev-info-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 30px;
+    text-align: left;
+}
+
+.dev-info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.9rem;
+}
+
+.dev-info-label {
+    color: #8a99ad;
+    font-weight: 600;
+}
+
+.dev-info-value {
+    font-family: 'Orbitron', monospace;
+    color: #fff;
+    font-weight: bold;
+}
+
+.dev-btn-group {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.dev-btn {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 14px 28px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    border: 1px solid transparent;
+}
+
+.dev-btn-success {
+    background: rgba(40, 167, 69, 0.15);
+    color: #4ade80;
+    border-color: rgba(40, 167, 69, 0.4);
+    box-shadow: 0 0 15px rgba(40, 167, 69, 0.1);
+}
+
+.dev-btn-success:hover {
+    background: rgba(40, 167, 69, 0.3);
+    border-color: #28a745;
+    box-shadow: 0 0 25px rgba(40, 167, 69, 0.4);
+    transform: translateY(-2px);
+}
+
+.dev-btn-danger {
+    background: rgba(220, 53, 69, 0.15);
+    color: #f87171;
+    border-color: rgba(220, 53, 69, 0.4);
+    box-shadow: 0 0 15px rgba(220, 53, 69, 0.1);
+}
+
+.dev-btn-danger:hover {
+    background: rgba(220, 53, 69, 0.3);
+    border-color: #dc3545;
+    box-shadow: 0 0 25px rgba(220, 53, 69, 0.4);
+    transform: translateY(-2px);
+}
+
+.dev-btn-secondary {
+    background: rgba(255, 255, 255, 0.05);
+    color: #ccc;
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dev-btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.25);
+    color: #fff;
+    transform: translateY(-2px);
+}
+
+.dev-btn:active {
+    transform: translateY(0);
+}
+
+/* ===== GENERAL GAME OVERLAYS COMPATIBILITY ===== */
+.game-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(10, 10, 15, 0.88);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 1000;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+
+.end-game-title { 
+    font-family: 'Orbitron', sans-serif;
+    font-size: 3.5rem; 
+    font-weight: 900; 
+    margin-bottom: 20px; 
+    text-transform: uppercase; 
+    letter-spacing: 2px;
+}
+
+.victory-title { 
+    color: #4ade80; 
+    text-shadow: 0 0 25px rgba(74, 222, 128, 0.5); 
+}
+
+.defeat-title { 
+    color: #f87171; 
+    text-shadow: 0 0 25px rgba(248, 113, 113, 0.5); 
+}
+
+.restart-btn {
+    font-family: 'Orbitron', sans-serif;
+    background: rgba(10, 16, 26, 0.6);
+    color: #e2f1f5;
+    border: 1px solid rgba(0, 229, 255, 0.4);
+    padding: 12px 30px;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 4px;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    box-shadow: 0 0 10px rgba(0, 229, 255, 0.1);
+}
+
+.restart-btn:hover {
+    background: rgba(0, 229, 255, 0.15);
+    color: #00e5ff;
+    border-color: #00e5ff;
+    transform: translateY(-2px);
+    box-shadow: 0 0 15px rgba(0, 229, 255, 0.4);
+}
+
+.restart-btn:active {
+    transform: translateY(0);
+}

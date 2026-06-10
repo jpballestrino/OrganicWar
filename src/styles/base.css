@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@500;700;900&display=swap');
+
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #0a0a0f;
+    color: white;
+    font-family: 'Inter', Arial, sans-serif;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+h1 { margin-bottom: 5px; font-size: 20px; letter-spacing: 0.5px; }
+
+/* ===== TOAST NOTIFICATIONS ===== */
+#notificationContainer {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 2000;
+    pointer-events: none;
+}
+.toast-notification {
+    background: rgba(220, 53, 69, 0.9);
+    color: white;
+    padding: 10px 20px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: bold;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    border-left: 4px solid #ff8080;
+    animation: slideIn 0.3s ease, fadeOut 0.3s ease 2.7s forwards;
+    min-width: 200px;
+}
+.toast-notification.success {
+    background: rgba(40, 167, 69, 0.9);
+    border-left-color: #a3e8a3;
+}
+.toast-notification.info {
+    background: rgba(0, 123, 255, 0.9);
+    border-left-color: #80bfff;
+}
+@keyframes slideIn {
+    from { transform: translateX(120%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+/* ===== GLOBAL ACTION BUTTONS ===== */
+.action-btn {
+    border-radius: 8px;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.action-btn:hover {
+    filter: brightness(1.15);
+    transform: translateY(-1px);
+}
+
+.action-btn:active {
+    transform: translateY(0);
+}

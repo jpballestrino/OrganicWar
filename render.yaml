@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: conqueror2-io
+    runtime: node
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production

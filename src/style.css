@@ -1,0 +1,5 @@
+@import './styles/base.css';
+@import './styles/auth.css';
+@import './styles/game.css';
+@import './styles/shop.css';
+@import './styles/guilds.css';
