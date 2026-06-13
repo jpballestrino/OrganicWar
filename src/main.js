@@ -7,6 +7,8 @@ import { state } from './js/state.js';
 import initWasm, { SimulationState } from './wasm/simulation_core.js';
 import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
+import { registerSim } from './js/simBridge.js';
+import { generateTerrain } from './js/mapGen.js';
 
 let wasmModule = null;
 let simulation = null;
@@ -158,7 +160,6 @@ function initLobbyUI() {
   const btnMultiplayer = document.getElementById('btn-multiplayer');
   if (btnMultiplayer) {
     btnMultiplayer.onclick = () => {
-      if (homeScreen) homeScreen.style.display = 'none';
       if (lobbyBrowser) lobbyBrowser.style.display = 'flex';
       socket.emit('request-rooms');
     };
@@ -167,7 +168,6 @@ function initLobbyUI() {
   const btnMultiplayerGuest = document.getElementById('btn-multiplayer-guest');
   if (btnMultiplayerGuest) {
     btnMultiplayerGuest.onclick = () => {
-      if (homeScreen) homeScreen.style.display = 'none';
       if (lobbyBrowser) lobbyBrowser.style.display = 'flex';
       socket.emit('request-rooms');
     };
@@ -333,13 +333,77 @@ function initDevSandboxUI() {
       socket.emit('dev-simulate-game-over', { result: 'loss' });
     };
   }
+}
 
-  const btnExitMatch = document.getElementById('btnExitMatch');
-  if (btnExitMatch) {
-    btnExitMatch.onclick = () => {
-      quitAndReload();
-    };
-  }
+// Context-aware Escape key:
+//   - In a match: toggle the pause menu (Resume / Main Menu).
+//   - In the lobby/menus: act as "back" — close the top-most open modal, or
+//     step back one screen, by reusing each surface's existing close/back button.
+// Ordered most-nested (modals) first; the first visible match wins.
+const ESC_BACK_CHAIN = [
+  ['guildEditModal', 'btnCancelGuildEdit'],
+  ['guildInviteModal', 'btnCancelInvite'],
+  ['profileModal', 'btn-close-profile'],
+  ['rankingsModal', 'btnCloseRankings'],
+  ['tutorialModal', 'btnCloseTutorial'],
+  ['guildHallOverlay', 'btn-close-guild-hall'],
+  ['createGameOverlay', 'btn-back-create'],
+  ['lobbyBrowserOverlay', 'btn-back-lobby'],
+  ['homeStateRankedQueue', 'btn-leave-ranked'],
+];
+
+function initEscMenu() {
+  const overlay = document.getElementById('escMenuOverlay');
+  if (!overlay) { return; }
+  const btnResume = document.getElementById('btnResumeGame');
+  const btnQuit = document.getElementById('btnQuitToMenu');
+
+  // #gameArea is always display:flex (the home overlay just covers it), so gate
+  // the pause menu on match state instead of visibility. SPAWN_SELECTION counts
+  // as in-game: in quick play the map is already on screen during the start
+  // countdown, and Esc should work there too.
+  const isInGame = () => state.gameState === 'PLAYING' || state.gameState === 'SPAWN_SELECTION';
+  const isOpen = () => overlay.style.display !== 'none';
+  const closeMenu = () => { overlay.style.display = 'none'; };
+  const openMenu = () => { overlay.style.display = 'flex'; };
+  const isVisible = (el) => el && getComputedStyle(el).display !== 'none';
+
+  const onEscKey = (e) => {
+    if (e.key !== 'Escape') { return; }
+
+    // In a match, Esc always toggles the pause menu — highest priority, so a
+    // focused field (e.g. guild chat) can't swallow the first press.
+    if (isInGame() || isOpen()) {
+      if (isOpen()) { closeMenu(); } else { openMenu(); }
+      return;
+    }
+
+    // In the lobby/menus: first Esc while typing just defocuses the field.
+    const active = document.activeElement;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+      active.blur();
+      return;
+    }
+
+    // Otherwise behave as back / close-modal for the current lobby surface.
+    for (const [containerId, btnId] of ESC_BACK_CHAIN) {
+      if (isVisible(document.getElementById(containerId))) {
+        document.getElementById(btnId)?.click();
+        return;
+      }
+    }
+  };
+
+  // Bind exactly once, replacing any previous binding (e.g. across dev
+  // hot-reloads) so duplicate listeners can't toggle the menu twice per press.
+  if (window.__escKeyHandler) { window.removeEventListener('keydown', window.__escKeyHandler); }
+  window.__escKeyHandler = onEscKey;
+  window.addEventListener('keydown', onEscKey);
+
+  if (btnResume) { btnResume.onclick = closeMenu; }
+  if (btnQuit) { btnQuit.onclick = () => quitAndReload(); }
+  // Clicking the dimmed backdrop (outside the menu box) also resumes.
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) { closeMenu(); } });
 }
 
 // Bootstrapping
@@ -349,6 +413,7 @@ initGuildUI();
 initRankingsUI();
 initLobbyUI();
 initDevSandboxUI();
+initEscMenu();
 
 // ------------------------------------------------------------------
 // High-Density Simulation & Renderer Initialization
@@ -357,34 +422,22 @@ async function startSimulationEngine() {
   try {
     wasmModule = await initWasm(wasmUrl);
     simulation = new SimulationState();
-    
-    // Initialize 5 players (Start with 10 cells, 100 troops, 500 gold, 50 pop/sec growth)
-    simulation.init_players(5, 10, 100, 500, 50, 5000);
-    
-    // Generate some random terrain and owners in Rust memory so we can visualize it
+
+    // Local SimulationState is now just a render cache; the server holds
+    // authoritative state and pushes owner deltas via sim-snapshot.
     const terrainPtr = simulation.get_resource_yield_ptr();
     const ownerPtr = simulation.get_owner_ptr();
-    
-    // 1920x1080 = 2073600 cells
-    const terrainArray = new Uint8Array(wasmModule.memory.buffer, terrainPtr, 2073600);
-    const ownerArray = new Uint32Array(wasmModule.memory.buffer, ownerPtr, 2073600);
-    
-    // Quick random generator for visualization
-    for (let i = 0; i < 2073600; i++) {
-        // Random terrain: 0 (Plain), 1 (Highland), 2 (Mountain), 3 (Water)
-        terrainArray[i] = Math.floor(Math.random() * 4);
-        
-        // Sprinkle some players randomly (5% chance to have an owner 1-5)
-        if (Math.random() < 0.05) {
-            ownerArray[i] = Math.floor(Math.random() * 5) + 1;
-        }
-    }
+
+    // Paint the static North America terrain straight into WASM memory. It never
+    // changes, so this runs once and the renderer uploads it a single time.
+    generateTerrain(wasmModule.memory, terrainPtr);
 
     const canvas = document.getElementById('gameCanvas');
     renderer = new WebGLRenderer(canvas, wasmModule.memory);
     renderer.setMemoryPointers(ownerPtr, terrainPtr);
-    
-    console.log("WASM Simulation & WebGL Renderer Started!");
+    registerSim({ memory: wasmModule.memory, ownerPointer: ownerPtr });
+
+    console.log("WASM render cache & WebGL Renderer Started!");
 
     requestAnimationFrame(gameLoop);
   } catch (err) {

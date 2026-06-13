@@ -10,6 +10,30 @@ import db, {
 } from '../database.js';
 import { userSocketMap } from '../game/state.js';
 
+// Shared guild field validation, used by both create and update routes.
+// `requireNameTag` is true on create (name+tag mandatory) and false on update
+// (every field optional — only validate the ones present). Returns an error
+// string, or null when all supplied fields are valid.
+function validateGuildFields({ name, tag, description, color }, { requireNameTag }) {
+  if (requireNameTag || name !== undefined) {
+    if (typeof name !== 'string' || name.length < 3 || name.length > 25 || /[<>]/.test(name)) {
+      return 'Name must be 3-25 chars and cannot contain < or >.';
+    }
+  }
+  if (requireNameTag || tag !== undefined) {
+    if (typeof tag !== 'string' || tag.length < 2 || tag.length > 5 || !/^[A-Z0-9]+$/i.test(tag)) {
+      return 'Tag must be 2-5 alphanumeric chars.';
+    }
+  }
+  if (description !== undefined && (typeof description !== 'string' || description.length > 500)) {
+    return 'Description must be a string up to 500 characters.';
+  }
+  if (color !== undefined && (typeof color !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(color))) {
+    return 'Color must be a hex code like #ffc107.';
+  }
+  return null;
+}
+
 export default function(io) {
   const router = express.Router();
 
@@ -56,10 +80,8 @@ export default function(io) {
     }
         
     let { name, tag, description, color } = req.body;
-    if (!name || name.length < 3 || name.length > 25) {return res.status(400).json({ error: 'Name must be 3-25 chars.' });}
-    if (!tag || tag.length < 2 || tag.length > 5 || !/^[A-Z0-9]+$/i.test(tag)) {
-      return res.status(400).json({ error: 'Tag must be 2-5 alphanumeric chars.' });
-    }
+    const validationError = validateGuildFields(req.body, { requireNameTag: true });
+    if (validationError) { return res.status(400).json({ error: validationError }); }
     tag = tag.toUpperCase();
         
     try {
@@ -122,9 +144,8 @@ export default function(io) {
       if (maxMembers !== undefined && (typeof maxMembers !== 'number' || maxMembers < 2 || maxMembers > 20)) {
         return res.status(400).json({ error: 'maxMembers must be between 2 and 20.' });
       }
-      if (description !== undefined && (typeof description !== 'string' || description.length > 500)) {
-        return res.status(400).json({ error: 'description must be a string up to 500 characters.' });
-      }
+      const validationError = validateGuildFields(req.body, { requireNameTag: false });
+      if (validationError) { return res.status(400).json({ error: validationError }); }
       updateGuildSettings(
         guild.id, 
         name !== undefined ? name : guild.name,

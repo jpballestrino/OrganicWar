@@ -1,10 +1,12 @@
 import express from 'express';
 import crypto from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { createUser, findUserByEmail, findUserByUsername, findUserById, updateLastLogin, findUserByOAuth, createOAuthUser, linkOAuthToUser, createPasswordResetToken, findValidResetToken, markResetTokenUsed, updateUserPassword, findGuildById } from '../database.js';
 import { generateToken, verifyToken, hashPassword, comparePassword, OAUTH_PLACEHOLDER } from '../auth.js';
 import { sendPasswordResetEmail } from '../email.js';
 
 const authRouter = express.Router();
+const googleOAuthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 authRouter.post('/register', (req, res) => {
   const { username, email, password, displayName } = req.body;
@@ -18,8 +20,8 @@ authRouter.post('/register', (req, res) => {
   if (!password || typeof password !== 'string' || password.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   }
-  if (displayName && (typeof displayName !== 'string' || displayName.length < 2 || displayName.length > 20)) {
-    return res.status(400).json({ error: 'Display name must be 2-20 characters.' });
+  if (displayName && (typeof displayName !== 'string' || displayName.length < 2 || displayName.length > 20 || /[<>]/.test(displayName))) {
+    return res.status(400).json({ error: 'Display name must be 2-20 characters and cannot contain < or >.' });
   }
 
   if (findUserByUsername(username)) {
@@ -239,9 +241,17 @@ authRouter.get('/google/callback', async (req, res) => {
       return res.redirect('/?oauth_error=' + encodeURIComponent('Google authentication failed.'));
     }
 
-    const payload = JSON.parse(Buffer.from(tokenData.id_token.split('.')[1], 'base64').toString());
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken: tokenData.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload || !payload.sub) {
+      console.error('[GOOGLE] id_token verification returned no payload');
+      return res.redirect('/?oauth_error=' + encodeURIComponent('Google authentication failed.'));
+    }
     const googleId = payload.sub;
-    const email = payload.email;
+    const email = payload.email_verified ? payload.email : null;
     const name = payload.name || payload.email?.split('@')[0] || 'Player';
 
     handleOAuthUser(res, 'google', googleId, email, name);

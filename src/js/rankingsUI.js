@@ -1,5 +1,6 @@
 import { showUserProfile } from './authUI.js';
 import { getUser } from './auth.js';
+import { escapeHtml } from './escape.js';
 
 function getE(id) { return document.getElementById(id); }
 
@@ -94,14 +95,14 @@ async function fetchAndRenderPlayers() {
       else if (rank === 2) {rankHtml = '<span style="color:#c0c0c0; font-weight:bold;">🥈 2</span>';}
       else if (rank === 3) {rankHtml = '<span style="color:#cd7f32; font-weight:bold;">🥉 3</span>';}
 
-      let guildText = p.guild_tag ? `<span style="color:${p.guild_color || '#ffc107'}; font-size:11px;">[${p.guild_tag}]</span> ` : '';
+      let guildText = p.guild_tag ? `<span style="color:${escapeHtml(p.guild_color) || '#ffc107'}; font-size:11px;">[${escapeHtml(p.guild_tag)}]</span> ` : '';
       let winRate = p.total_games > 0 ? Math.round((p.total_wins / p.total_games) * 100) : 0;
       let winRateColor = winRate >= 50 ? '#4ade80' : (winRate > 0 ? '#f87171' : '#888');
 
       row.innerHTML = `
                 <div style="width: 50px; text-align: center; font-size: 14px; align-self: center;">${rankHtml}</div>
                 <div style="flex: 1; align-self: center;">
-                    ${guildText}<span style="font-weight:bold; color:#fff;">${p.display_name}</span>
+                    ${guildText}<span style="font-weight:bold; color:#fff;">${escapeHtml(p.display_name)}</span>
                 </div>
                 <div style="width: 80px; text-align: center; color:#ccc; align-self: center; font-size:13px;">${p.total_games}</div>
                 <div style="width: 100px; text-align: center; color:${winRateColor}; align-self: center; font-size:13px; font-weight:bold;">${winRate}%</div>
@@ -110,7 +111,10 @@ async function fetchAndRenderPlayers() {
       list.appendChild(row);
     });
   } catch (err) {
-    list.innerHTML = `<div style="color:red; text-align:center; padding:20px;">Error: ${err.message}</div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = 'color:red; text-align:center; padding:20px;';
+    errDiv.textContent = `Error: ${err.message}`;
+    list.replaceChildren(errDiv);
   }
 }
 
@@ -167,8 +171,8 @@ async function fetchAndRenderGuilds() {
       row.innerHTML = `
                 <div style="width: 50px; text-align: center; font-size: 14px; align-self: center;">${rankHtml}</div>
                 <div style="flex: 1; align-self: center;">
-                    <span style="color:${g.color || '#ffc107'}; font-weight:bold;">[${g.tag}]</span> 
-                    <span style="color:#fff;">${g.name}</span>
+                    <span style="color:${escapeHtml(g.color) || '#ffc107'}; font-weight:bold;">[${escapeHtml(g.tag)}]</span>
+                    <span style="color:#fff;">${escapeHtml(g.name)}</span>
                 </div>
                 <div style="width: 80px; text-align: center; color:${membersColor}; align-self: center; font-size:13px;">${g.member_count}/${g.max_members}</div>
                 <div style="width: 100px; text-align: center; color:#ccc; align-self: center; font-size:13px;">${matches}</div>
@@ -199,6 +203,9 @@ async function fetchAndRenderGuilds() {
       list.appendChild(row);
     });
   } catch (err) {
-    list.innerHTML = `<div style="color:red; text-align:center; padding:20px;">Error: ${err.message}</div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = 'color:red; text-align:center; padding:20px;';
+    errDiv.textContent = `Error: ${err.message}`;
+    list.replaceChildren(errDiv);
   }
 }

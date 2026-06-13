@@ -1,6 +1,6 @@
 module.exports = {
     apps: [{
-        name: 'conqueror2-io',
+        name: 'organicwar-io',
         script: 'server/server.js',
         instances: 1,
         autorestart: true,

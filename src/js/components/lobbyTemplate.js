@@ -2,7 +2,7 @@ export function lobbyTemplate() {
   return `
     <!-- Lobby Browser Modal -->
     <div id="lobbyBrowserOverlay" class="game-overlay"
-        style="display: none; pointer-events: auto; justify-content: center; z-index: 1000; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
+        style="display: none; pointer-events: auto; justify-content: center; z-index: 1020; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
         <div class="setup-container">
             <h2
                 style="color: #ffc107; text-shadow: 0 0 10px rgba(255, 193, 7, 0.4); font-size: 26px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 20px; text-align: center; font-weight: bold;">
@@ -28,7 +28,7 @@ export function lobbyTemplate() {
 
     <!-- Create Game Modal -->
     <div id="createGameOverlay" class="game-overlay"
-        style="display: none; pointer-events: auto; justify-content: center; z-index: 1000; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
+        style="display: none; pointer-events: auto; justify-content: center; z-index: 1020; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
         <div class="setup-container">
             <h2
                 style="color: #ffc107; text-shadow: 0 0 10px rgba(255, 193, 7, 0.4); font-size: 26px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 20px; text-align: center; font-weight: bold;">
@@ -68,7 +68,7 @@ export function lobbyTemplate() {
 
     <!-- Waiting Overlay (For Quick Game and Lobby Waiting) -->
     <div id="waitingOverlay" class="game-overlay"
-        style="display: none; pointer-events: auto; justify-content: center; z-index: 1000; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
+        style="display: none; pointer-events: auto; justify-content: center; z-index: 1020; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
         <div class="setup-container" style="text-align: center;">
             <h2 id="waitingTitle"
                 style="color: #ffc107; text-shadow: 0 0 10px rgba(255, 193, 7, 0.4); font-size: 26px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 20px; text-align: center; font-weight: bold;">

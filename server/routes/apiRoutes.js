@@ -18,10 +18,13 @@ apiRouter.get('/api/profile/:username', (req, res) => {
   }
 });
 
+const clampLimit = (raw, def, max) =>
+  Math.min(Math.max(1, parseInt(raw) || def), max);
+
 apiRouter.get('/api/profile/:username/history', (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = clampLimit(req.query.limit, 20, 100);
     const history = getMatchHistory(req.params.username, page, limit);
     res.json({ history });
   } catch (err) {
@@ -31,7 +34,7 @@ apiRouter.get('/api/profile/:username/history', (req, res) => {
 
 apiRouter.get('/api/rankings/players', (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 100;
+    const limit = clampLimit(req.query.limit, 100, 500);
     const players = getTopPlayers(limit);
     res.json({ players });
   } catch (err) {
@@ -42,7 +45,7 @@ apiRouter.get('/api/rankings/players', (req, res) => {
 
 apiRouter.get('/api/rankings/guilds', (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = clampLimit(req.query.limit, 20, 200);
     const guilds = getTopGuilds(limit);
     res.json({ guilds });
   } catch (err) {

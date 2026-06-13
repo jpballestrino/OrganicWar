@@ -34,6 +34,14 @@ export class WebGLRenderer {
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        this.fitCameraToMap();
+    }
+
+    // Fit the whole map on screen and centre it (contain), with a small margin.
+    fitCameraToMap() {
+        this.camera.zoom = Math.min(this.canvas.width / MAP_WIDTH, this.canvas.height / MAP_HEIGHT) * 0.98;
+        this.camera.x = (MAP_WIDTH / 2) - (this.canvas.width / 2) / this.camera.zoom;
+        this.camera.y = (MAP_HEIGHT / 2) - (this.canvas.height / 2) / this.camera.zoom;
     }
 
     initShaders() {
@@ -95,9 +103,9 @@ export class WebGLRenderer {
                 vec2 worldCoord = (pixelCoord / u_zoom) + u_camera_pos;
 
                 // Debug: if out of bounds, draw bright magenta
-                if (worldCoord.x < 0.0 || worldCoord.x >= u_map_size.x || 
+                if (worldCoord.x < 0.0 || worldCoord.x >= u_map_size.x ||
                     worldCoord.y < 0.0 || worldCoord.y >= u_map_size.y) {
-                    outColor = vec4(1.0, 0.0, 1.0, 1.0); // Magenta for bounds
+                    outColor = vec4(0.20, 0.20, 0.22, 1.0); // Grey backdrop so the map border reads clearly
                     return;
                 }
 
@@ -217,6 +225,21 @@ export class WebGLRenderer {
     setMemoryPointers(ownerPtr, resourceYieldPtr) {
         this.ownerPtr = ownerPtr;
         this.resourceYieldPtr = resourceYieldPtr;
+        this.terrainUploaded = false;
+    }
+
+    uploadTerrainOnce() {
+        if (this.terrainUploaded || this.resourceYieldPtr === null || !this.wasmMemory) return;
+        const terrainArray = new Uint8Array(this.wasmMemory.buffer, this.resourceYieldPtr, TOTAL_CELLS);
+        this.gl.activeTexture(this.gl.TEXTURE1);
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
+        this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_BYTE, terrainArray);
+        this.terrainUploaded = true;
+    }
+
+    invalidateTerrain() {
+        // Call this if terrain ever changes (e.g., naval flooding, terraforming).
+        this.terrainUploaded = false;
     }
 
     setupControls() {
@@ -256,11 +279,6 @@ export class WebGLRenderer {
             this.camera.x -= (worldXAfter - worldXBefore);
             this.camera.y -= (worldYAfter - worldYBefore);
         });
-        
-        // Initial center camera
-        this.camera.zoom = Math.min(window.innerWidth / MAP_WIDTH, window.innerHeight / MAP_HEIGHT) * 1.5;
-        this.camera.x = (MAP_WIDTH / 2) - (window.innerWidth / 2) / this.camera.zoom;
-        this.camera.y = (MAP_HEIGHT / 2) - (window.innerHeight / 2) / this.camera.zoom;
     }
 
     updateCamera(dt) {
@@ -272,9 +290,18 @@ export class WebGLRenderer {
         if (this.keys['a'] || this.keys['ArrowLeft']) this.camera.x -= speed;
         if (this.keys['d'] || this.keys['ArrowRight']) this.camera.x += speed;
 
-        // Clamp camera to map bounds
-        this.camera.x = Math.max(-50, Math.min(this.camera.x, MAP_WIDTH + 50));
-        this.camera.y = Math.max(-50, Math.min(this.camera.y, MAP_HEIGHT + 50));
+        // View-aware clamp: when the map is smaller than the viewport on an axis
+        // (zoomed out / letterboxed), pin it centred; once zoomed in past the
+        // edge, clamp panning so the map can't be dragged fully off screen.
+        const pad = 50;
+        const viewW = this.canvas.width / this.camera.zoom;
+        const viewH = this.canvas.height / this.camera.zoom;
+        this.camera.x = viewW >= MAP_WIDTH
+            ? (MAP_WIDTH - viewW) / 2
+            : Math.max(-pad, Math.min(this.camera.x, MAP_WIDTH - viewW + pad));
+        this.camera.y = viewH >= MAP_HEIGHT
+            ? (MAP_HEIGHT - viewH) / 2
+            : Math.max(-pad, Math.min(this.camera.y, MAP_HEIGHT - viewH + pad));
     }
 
     render(time) {
@@ -285,16 +312,12 @@ export class WebGLRenderer {
 
         // Upload memory to GPU
         if (this.ownerPtr !== null && this.resourceYieldPtr !== null && this.wasmMemory) {
-            const ownerArray = new Uint32Array(this.wasmMemory.buffer, this.ownerPtr, TOTAL_CELLS);
-            const terrainArray = new Uint8Array(this.wasmMemory.buffer, this.resourceYieldPtr, TOTAL_CELLS);
+            this.uploadTerrainOnce();
 
+            const ownerArray = new Uint32Array(this.wasmMemory.buffer, this.ownerPtr, TOTAL_CELLS);
             this.gl.activeTexture(this.gl.TEXTURE0);
             this.gl.bindTexture(this.gl.TEXTURE_2D, this.ownerTexture);
             this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_INT, ownerArray);
-
-            this.gl.activeTexture(this.gl.TEXTURE1);
-            this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
-            this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_BYTE, terrainArray);
         }
 
         // Draw

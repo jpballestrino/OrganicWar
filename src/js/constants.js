@@ -5,6 +5,7 @@ export const MAX_FACTIONS = 20;
 export const BORDER_BRIGHTNESS = 65;
 export const MAP_WIDTH = COLS * CELL_SIZE;
 export const MAP_HEIGHT = ROWS * CELL_SIZE;
+export const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 
 export const factionRGB = {
   1: [84, 153, 199],   // Soft Blue

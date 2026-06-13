@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.join(__dirname, 'conqueror.db');
+const dbPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.join(__dirname, 'organicwar.db');
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');

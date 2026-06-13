@@ -3,6 +3,7 @@ import { recordMatch, updateUserStats, updateUserElo, updateGuildMatchStats, fin
 import { log } from '../utils/logger.js';
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
 import { io } from '../server.js';
+import { RoomSim } from './simulationRunner.js';
 
 // --- Mock Simulation Engine ---
 class MockSimulation {
@@ -79,6 +80,7 @@ export function checkRoomGC(room) {
     if (room.gcTimeout) { clearTimeout(room.gcTimeout); }
     if (room.countdownInterval) { clearInterval(room.countdownInterval); }
     if (room.sim && room.sim.destroy) { room.sim.destroy(); }
+    if (room.simReal) { room.simReal.destroy(); room.simReal = null; }
     delete activeRooms[room.id];
     updateLobbyList();
     log('info', `[GC] Room ${room.id} deleted instantly — no players`);
@@ -350,6 +352,12 @@ export function startMatchNow(room) {
     }
   }
 
+  try {
+    room.simReal = new RoomSim(room.id, room.maxPlayers, io);
+  } catch (err) {
+    log('error', `[Room ${room.id}] Failed to start server sim`, err.message);
+  }
+
   io.to(room.id).emit('start-match-now', { centroids: room.sim.factionCentroids });
   log('info', `[Room ${room.id}] Match started. (${Object.keys(room.activePlayerSlots).length} slots)`);
 
@@ -364,9 +372,15 @@ export function handleGameOver(room, winnerFaction) {
   if (room.gameOverHandled) { return; }
   room.gameOverHandled = true;
 
+  room.reconnectTokens.clear();
+
   room.matchStarted = false;
   room.isOpen = false;
   if (room.countdownInterval) { clearInterval(room.countdownInterval); }
+  if (room.simReal) {
+    room.simReal.destroy();
+    room.simReal = null;
+  }
 
   let isAllianceWin = winnerFaction ? !!room.sim.alliances[winnerFaction] : false;
 
@@ -412,10 +426,7 @@ export function handleGameOver(room, winnerFaction) {
     let result = 'loss';
     if (winnerFaction && (
       parseInt(fid) === winnerFaction ||
-      (isAllianceWin && (
-        parseInt(fid) === room.sim.alliances[winnerFaction] ||
-        room.sim.alliances[parseInt(fid)] === winnerFaction
-      ))
+      (isAllianceWin && room.sim.alliances[parseInt(fid)] === room.sim.alliances[winnerFaction])
     )) {
       result = 'win';
       player.placement = 1;

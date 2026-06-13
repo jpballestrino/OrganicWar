@@ -17,6 +17,15 @@ function sanitizeString(str) {
   return str.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Normalizes a player-supplied nickname before it is stored on a slot and
+// broadcast to other clients: strips angle brackets, trims, caps length, and
+// falls back when empty. Clients additionally escape on render.
+function cleanNickname(str, fallback) {
+  if (typeof str !== 'string') { return fallback; }
+  const cleaned = str.replace(/[<>]/g, '').trim().slice(0, 20);
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
 function getFactionForSocket(room, socketId) {
   for (let f in room.activePlayerSlots) {
     if (room.activePlayerSlots[f] && room.activePlayerSlots[f].socketId === socketId) {
@@ -138,7 +147,7 @@ export function setupSocketHandlers(io) {
         const { name, maxPlayers, preset, nickname } = parsed.data;
         const safeName = sanitizeString(name);
         const freshGuild = getFreshGuildInfo();
-        const effectiveNickname = socket.displayName || nickname || 'Host';
+        const effectiveNickname = cleanNickname(socket.displayName || nickname, 'Host');
         let room = createRoom(safeName, preset || 'north_america', parseInt(maxPlayers) || 5, false);
         room.hostSocketId = socket.id;
         socket.roomId = room.id;
@@ -215,12 +224,10 @@ export function setupSocketHandlers(io) {
             
         let chosenFid = availableSlots[Math.floor(Math.random() * availableSlots.length)];
         const freshGuild = getFreshGuildInfo();
-            
-        handlePlayerDisconnect(room, socket.id, false);
-            
+
         room.activePlayerSlots[chosenFid] = {
           socketId: socket.id,
-          nickname: nickname || 'Player',
+          nickname: cleanNickname(nickname, 'Player'),
           guildTag: freshGuild.guildTag,
         };
         room.humanPlayers[chosenFid] = { userId: socket.userId || null, isGuest: !socket.userId, status: 'playing' };
@@ -327,7 +334,7 @@ export function setupSocketHandlers(io) {
 
         room.activePlayerSlots[fid] = {
           socketId: socket.id,
-          nickname: nickname || `Player ${fid}`,
+          nickname: cleanNickname(nickname, `Player ${fid}`),
           guildTag: freshGuild.guildTag,
         };
         room.humanPlayers[fid] = { userId: socket.userId || null, isGuest: !socket.userId, status: 'playing' };
@@ -361,8 +368,23 @@ export function setupSocketHandlers(io) {
       }
     });
 
+    // ---------- SIM INPUT (server-authoritative simulation) ----------
+    socket.on('sim-input', (input) => {
+      try {
+        const room = activeRooms[socket.roomId];
+        if (!room || !room.matchStarted || !room.simReal) { return; }
+        const fid = getFactionForSocket(room, socket.id);
+        if (!fid) { return; }
+        room.simReal.handleInput(fid, input);
+      } catch (err) {
+        log('error', `[ERROR] sim-input failed for socket ${socket.id}:`, err.message);
+      }
+    });
+
     // ---------- DEV SIMULATOR END GAME ----------
     socket.on('dev-simulate-game-over', ({ result }) => {
+      if (process.env.NODE_ENV === 'production') { return; }
+      if (process.env.DEV_SANDBOX !== '1') { return; }
       try {
         let room = activeRooms[socket.roomId];
         if (!room || !room.matchStarted) { return; }

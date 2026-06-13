@@ -2,6 +2,8 @@ import { io } from 'socket.io-client';
 import { state } from './state.js';
 import { showToast } from './guildUI.js';
 import { getToken } from './auth.js';
+import { applyOwnerSnapshot } from './simBridge.js';
+import { escapeHtml } from './escape.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -31,7 +33,7 @@ export function updateSlotsUI(slots) {
     card.className = `slot-card ${slot ? 'taken' : ''} ${state.selectedSlot == fid ? 'active' : ''}`;
     card.style.borderLeft = `5px solid ${factionHexColors[fid] || '#fff'}`;
         
-    let statusText = slot ? `Occupied by ${slot.nickname}` : 'Available (Bot Control)';
+    let statusText = slot ? `Occupied by ${escapeHtml(slot.nickname)}` : 'Available (Bot Control)';
     let fName = `Faction ${fid}`;
         
     card.innerHTML = `
@@ -77,8 +79,8 @@ export function updateDevDashboard() {
     for (let fid in state.activePlayerSlots) {
       let slot = state.activePlayerSlots[fid];
       if (slot) {
-        let name = slot.nickname;
-        if (slot.guildTag) name = `[${slot.guildTag}] ${name}`;
+        let name = escapeHtml(slot.nickname);
+        if (slot.guildTag) name = `[${escapeHtml(slot.guildTag)}] ${name}`;
         listHTML += `
           <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
             <span class="faction-dot" style="background-color: ${factionHexColors[fid] || '#fff'}; width: 10px; height: 10px; border-radius: 50%; display: inline-block;"></span>
@@ -202,7 +204,7 @@ export function initNetwork() {
       waitingOverlay.style.display = 'flex';
       const title = document.getElementById('waitingTitle');
       if (state.isGuildWar) {
-        title.innerHTML = `GUILD WAR: <span style="color:#ffc107">[${state.guildA.tag}]</span> vs <span style="color:#ff6b6b">[${state.guildB.tag}]</span>`;
+        title.innerHTML = `GUILD WAR: <span style="color:#ffc107">[${escapeHtml(state.guildA.tag)}]</span> vs <span style="color:#ff6b6b">[${escapeHtml(state.guildB.tag)}]</span>`;
       } else if (config.isQuickPlay) {
         title.innerText = 'Quick Game Matchmaking';
       } else {
@@ -333,6 +335,11 @@ export function initNetwork() {
       card.appendChild(btn);
       container.appendChild(card);
     });
+  });
+
+  socket.on('sim-snapshot', ({ ownerDelta }) => {
+    if (!ownerDelta) return;
+    applyOwnerSnapshot(ownerDelta);
   });
 
   socket.on('waiting-tick', (ticks) => {

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: conqueror2-io
+    name: organicwar-io
     runtime: node
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm start

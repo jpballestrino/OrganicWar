@@ -1,6 +1,7 @@
 import { getUser, fetchProfile } from './auth.js';
 import { setupLoggedInState } from './authUI.js';
 import { socket } from './network.js';
+import { escapeHtml } from './escape.js';
 import 'emoji-picker-element';
 
 const getE = id => document.getElementById(id);
@@ -318,7 +319,7 @@ function switchGuildViewTab(tabName) {
 }
 
 async function api(path, method = 'GET', body = null) {
-  const token = localStorage.getItem('conqueror_auth_token');
+  const token = localStorage.getItem('organicwar_auth_token');
   const options = {
     method,
     headers: { 'Authorization': `Bearer ${token}` },
@@ -338,7 +339,7 @@ export async function openGuildHall() {
   if (!user) {return;}
 
   try {
-    const token = localStorage.getItem('conqueror_auth_token');
+    const token = localStorage.getItem('organicwar_auth_token');
     const res = await fetch(`/api/profile/${user.username}?t=${Date.now()}`, {
       headers: { 'Authorization': `Bearer ${token}` },
       cache: 'no-store',
@@ -425,7 +426,7 @@ async function loadGuildSearch(query) {
 
       const infoDiv = document.createElement('div');
       infoDiv.innerHTML = `
-                <div style="font-weight:bold; font-size:14px;"><span class="guild-tag-badge" style="color:${g.color}">[${g.tag}]</span> ${g.name}</div>
+                <div style="font-weight:bold; font-size:14px;"><span class="guild-tag-badge" style="color:${escapeHtml(g.color)}">[${escapeHtml(g.tag)}]</span> ${escapeHtml(g.name)}</div>
                 <div style="font-size:11px; color:#aaa; margin-top:4px;">${g.member_count}/${g.max_members} Members • ${g.elo_rating} ELO</div>
             `;
 
@@ -453,7 +454,10 @@ async function loadGuildSearch(query) {
       list.appendChild(item);
     });
   } catch (err) {
-    list.innerHTML = `<div style="color:red;">Error: ${err.message}</div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.color = 'red';
+    errDiv.textContent = `Error: ${err.message}`;
+    list.replaceChildren(errDiv);
   }
 }
 
@@ -506,7 +510,7 @@ window.requestGuildJoin = async function(id, btnElement) {
 
 async function updateInviteBadge() {
   try {
-    const token = localStorage.getItem('conqueror_auth_token');
+    const token = localStorage.getItem('organicwar_auth_token');
     const res = await fetch('/api/guilds/me/invites', { headers: { 'Authorization': `Bearer ${token}` }});
     const data = await res.json();
         
@@ -542,7 +546,7 @@ async function loadPendingInvites() {
             
       const infoDiv = document.createElement('div');
       infoDiv.innerHTML = `
-                <div style="font-weight:bold; font-size:14px;">[${inv.guild_tag}] ${inv.guild_name}</div>
+                <div style="font-weight:bold; font-size:14px;">[${escapeHtml(inv.guild_tag)}] ${escapeHtml(inv.guild_name)}</div>
                 <div style="font-size:11px; color:#aaa; margin-top:4px;">Invited on ${new Date(inv.created_at).toLocaleDateString()}</div>
             `;
 
@@ -569,7 +573,10 @@ async function loadPendingInvites() {
       list.appendChild(item);
     });
   } catch (err) {
-    list.innerHTML = `<div style="color:red;">Error: ${err.message}</div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.color = 'red';
+    errDiv.textContent = `Error: ${err.message}`;
+    list.replaceChildren(errDiv);
   }
 }
 
@@ -650,9 +657,9 @@ async function renderGuildView() {
       leftDiv.style.cssText = 'display:flex; align-items:center; gap: 8px;';
       leftDiv.innerHTML = `
                 <span class="status-dot ${dotClass}"></span>
-                <span class="role-badge role-${m.role}">${m.role}</span>
-                <span style="font-weight:bold; font-size:13px; color: ${isMe ? '#ffc107' : '#fff'}">${m.display_name}</span>
-                <span style="color:#888; font-size:11px;">@${m.username}</span>
+                <span class="role-badge role-${escapeHtml(m.role)}">${escapeHtml(m.role)}</span>
+                <span style="font-weight:bold; font-size:13px; color: ${isMe ? '#ffc107' : '#fff'}">${escapeHtml(m.display_name)}</span>
+                <span style="color:#888; font-size:11px;">@${escapeHtml(m.username)}</span>
             `;
 
       const rightDiv = document.createElement('div');
@@ -784,8 +791,8 @@ async function loadGuildRequests() {
 
       const infoDiv = document.createElement('div');
       infoDiv.innerHTML = `
-                <span style="font-weight:bold; font-size:13px; color:#fff">${r.display_name}</span>
-                <span style="color:#888; font-size:11px;">@${r.username}</span>
+                <span style="font-weight:bold; font-size:13px; color:#fff">${escapeHtml(r.display_name)}</span>
+                <span style="color:#888; font-size:11px;">@${escapeHtml(r.username)}</span>
             `;
 
       const btnsDiv = document.createElement('div');
@@ -893,13 +900,20 @@ function appendChatMessage(msg) {
   div.className = `chat-msg ${isMe ? 'self' : 'other'}`;
     
   const time = new Date(msg.timestamp + (msg.timestamp.endsWith('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  div.innerHTML = `
-        <div class="chat-msg-header" style="flex-direction: column;">
-            <span class="chat-msg-author">${msg.displayName}</span>
-            <span style="font-size: 9px; opacity: 0.8; margin-top: 2px;">${time}</span>
-        </div>
-        <div class="chat-msg-body">${msg.message}</div>
-    `;
+  const header = document.createElement('div');
+  header.className = 'chat-msg-header';
+  header.style.flexDirection = 'column';
+  const author = document.createElement('span');
+  author.className = 'chat-msg-author';
+  author.textContent = msg.displayName;
+  const timeEl = document.createElement('span');
+  timeEl.style.cssText = 'font-size: 9px; opacity: 0.8; margin-top: 2px;';
+  timeEl.textContent = time;
+  header.append(author, timeEl);
+  const body = document.createElement('div');
+  body.className = 'chat-msg-body';
+  body.textContent = msg.message;
+  div.append(header, body);
   container.appendChild(div);
 }
 

@@ -1,5 +1,5 @@
-const TOKEN_KEY = 'conqueror_auth_token';
-const USER_KEY = 'conqueror_auth_user';
+const TOKEN_KEY = 'organicwar_auth_token';
+const USER_KEY = 'organicwar_auth_user';
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);

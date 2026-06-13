@@ -25,7 +25,11 @@ pub struct SimulationState {
     // Fixed-stride flat array assuming 4 cardinal neighbors per cell (Top, Right, Bottom, Left).
     // Using i32 to allow -1 for boundary/no-neighbor conditions.
     neighbor_graph: Vec<i32>,
-    
+
+    // Scratch buffer for delta export: interleaved (cell_id, owner_id) u32 pairs.
+    // Sized to worst case so we never reallocate during a tick.
+    delta_scratch: Vec<u32>,
+
     // --- Player Data ---
     player_owned_cells: Vec<u32>,
     player_total_troops: Vec<u32>,
@@ -53,7 +57,8 @@ impl SimulationState {
             resource_yield: vec![0; TOTAL_CELLS],
             last_modified_tick: vec![0; TOTAL_CELLS],
             neighbor_graph: vec![-1; TOTAL_CELLS * 4],
-            
+            delta_scratch: vec![0; TOTAL_CELLS * 2],
+
             // Player Initializers
             player_owned_cells: vec![0; PLAYER_ARRAY_SIZE],
             player_total_troops: vec![0; PLAYER_ARRAY_SIZE],
@@ -209,4 +214,25 @@ impl SimulationState {
 
     #[wasm_bindgen]
     pub fn get_current_tick(&self) -> u32 { self.current_tick }
+
+    /// Fills the delta scratch buffer with interleaved (cell_id, owner_id) pairs
+    /// for every cell whose `last_modified_tick >= since_tick`. Returns the number
+    /// of *pairs* written (NOT u32 elements). Caller reads from `get_delta_scratch_ptr()`.
+    #[wasm_bindgen]
+    pub fn collect_dirty_cells(&mut self, since_tick: u32) -> u32 {
+        let mut count: usize = 0;
+        let cap = self.delta_scratch.len() / 2;
+        for cell_id in 0..TOTAL_CELLS {
+            if count >= cap { break; }
+            if self.last_modified_tick[cell_id] >= since_tick {
+                self.delta_scratch[count * 2] = cell_id as u32;
+                self.delta_scratch[count * 2 + 1] = self.owner[cell_id];
+                count += 1;
+            }
+        }
+        count as u32
+    }
+
+    #[wasm_bindgen]
+    pub fn get_delta_scratch_ptr(&self) -> *const u32 { self.delta_scratch.as_ptr() }
 }
