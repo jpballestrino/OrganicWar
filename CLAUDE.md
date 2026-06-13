@@ -32,9 +32,9 @@ Building WASM requires the Rust toolchain and `wasm-pack` installed.
 
 Production (`render.yaml` / `Procfile`): `npm run build` then `npm start` — the server serves the static `dist/` build when it exists.
 
-## Critical: the WASM module is committed, not auto-built
+## Critical: rebuild the WASM after any Rust change
 
-`src/wasm/` and `server/wasm/` contain generated `wasm-bindgen` output that **is checked into git**. After editing `simulation-core/src/lib.rs` you MUST run `npm run build:wasm` to regenerate *both* targets, or the running game will use stale simulation logic. The web and node copies must stay in sync.
+`src/wasm/` and `server/wasm/` hold generated `wasm-bindgen` output. They are **git-ignored** (wasm-pack writes a `.gitignore` into each output dir), so they are *not* committed — the deploy regenerates them via `npm run build` (see `render.yaml`). Locally, after editing `simulation-core/src/lib.rs` you MUST run `npm run build:wasm` to regenerate *both* targets, or the running game will use stale simulation logic: the browser loads `src/wasm/` and the server loads `server/wasm/` at boot, and the server only picks up the new module on restart. Keep the two targets in sync.
 
 ## Architecture
 

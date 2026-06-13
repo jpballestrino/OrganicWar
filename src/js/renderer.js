@@ -1,6 +1,9 @@
+import { state } from './state.js';
+
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
 const TOTAL_CELLS = 2073600;
+
 
 export class WebGLRenderer {
     constructor(canvas, wasmMemory) {
@@ -115,13 +118,13 @@ export class WebGLRenderer {
 
                 vec3 baseColor;
                 if (terrainVal == 0u) {
-                    baseColor = vec3(0.95, 0.98, 0.90); 
+                    baseColor = vec3(241.0/255.0, 245.0/255.0, 237.0/255.0); // Plains (#f1f5ed)
                 } else if (terrainVal == 1u) {
-                    baseColor = vec3(0.92, 0.85, 0.75); 
+                    baseColor = vec3(230.0/255.0, 223.0/255.0, 210.0/255.0); // Highlands (#e6dfd2)
                 } else if (terrainVal == 2u) {
-                    baseColor = vec3(0.85, 0.85, 0.88); 
+                    baseColor = vec3(215.0/255.0, 215.0/255.0, 215.0/255.0); // Mountains (#d7d7d7)
                 } else if (terrainVal == 3u) {
-                    baseColor = vec3(0.75, 0.88, 0.96); 
+                    baseColor = vec3(120.0/255.0, 190.0/255.0, 220.0/255.0); // Water (#78bedc)
                 } else {
                     // Debug: if terrainVal is wildly out of range, draw bright yellow
                     baseColor = vec3(1.0, 1.0, 0.0);
@@ -231,15 +234,34 @@ export class WebGLRenderer {
 
     setupControls() {
         window.addEventListener('keydown', (e) => {
-            if (this.keys.hasOwnProperty(e.key)) this.keys[e.key] = true;
+            if (!e.key) return;
+            const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+            if (this.keys.hasOwnProperty(key)) this.keys[key] = true;
         });
 
         window.addEventListener('keyup', (e) => {
-            if (this.keys.hasOwnProperty(e.key)) this.keys[e.key] = false;
+            if (!e.key) return;
+            const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+            if (this.keys.hasOwnProperty(key)) this.keys[key] = false;
         });
 
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
+
+            if (e.shiftKey) {
+                const change = e.deltaY < 0 ? 5 : -5;
+                state.attackPercentage = Math.max(1, Math.min(90, state.attackPercentage + change));
+                const sliderAttackPct = document.getElementById('sliderAttackPct');
+                const lblAttackPct = document.getElementById('lblAttackPct');
+                if (sliderAttackPct) {
+                    sliderAttackPct.value = state.attackPercentage;
+                }
+                if (lblAttackPct) {
+                    lblAttackPct.innerText = state.attackPercentage + '%';
+                }
+                return;
+            }
+
             // Mouse coords
             const rect = this.canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
