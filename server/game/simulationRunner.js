@@ -117,16 +117,38 @@ export class RoomSim {
       payload[0] = 0;
       scratchView.copy(payload, 1);
     }
-    this.io.to(this.roomId).emit('sim-snapshot', { tick: currentTick, ownerDelta: payload });
+
+    const troopsPtr = this.exports.simulationstate_get_player_total_troops_ptr(this.statePtr);
+    const maxPopPtr = this.exports.simulationstate_get_player_max_population_cap_ptr(this.statePtr);
+    
+    // PLAYER_ARRAY_SIZE is 21 (0 to 20).
+    const troopsBuffer = Buffer.from(this.exports.memory.buffer, troopsPtr, 21 * 4);
+    const maxPopBuffer = Buffer.from(this.exports.memory.buffer, maxPopPtr, 21 * 4);
+
+    this.io.to(this.roomId).emit('sim-snapshot', { 
+      tick: currentTick, 
+      ownerDelta: payload,
+      playerTroops: troopsBuffer,
+      playerMaxPop: maxPopBuffer
+    });
     this.lastSnapshotTick = currentTick;
   }
 
-  // Mechanics design will fan this out into typed handlers. For now,
-  // accept the message, validate scope, and discard the payload.
   handleInput(factionId, input) {
     if (this.destroyed) return;
     if (!input || typeof input.type !== 'string') return;
-    // No input types are wired up yet; payloads are intentionally discarded.
+    
+    if (input.type === 'expand') {
+      const { targetCell, attackPercentage } = input.payload;
+      if (typeof targetCell === 'number' && typeof attackPercentage === 'number') {
+        this.exports.simulationstate_execute_expansion(this.statePtr, factionId, targetCell, attackPercentage);
+      }
+    }
+  }
+
+  spawnFaction(factionId, row, col) {
+    if (this.destroyed) return;
+    this.exports.simulationstate_spawn_faction(this.statePtr, factionId, row, col);
   }
 
   destroy() {

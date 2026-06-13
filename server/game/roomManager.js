@@ -434,6 +434,9 @@ export function startMatchNow(room) {
 
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io);
+    for (let [fid, pos] of room.spawnSelections.entries()) {
+      room.simReal.spawnFaction(fid, pos.row, pos.col);
+    }
   } catch (err) {
     log('error', `[Room ${room.id}] Failed to start server sim`, err.message);
   }

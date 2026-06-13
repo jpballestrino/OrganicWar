@@ -27,6 +27,17 @@ export const state = {
   selectedDoctrine: 'balanced',
   activePurchaseMode: null,
   isInGameMenuOpen: false,
+  isRankedMatch: false,
+  isGuildWar: false,
+  guildA: null,
+  guildB: null,
+  teamSize: 0,
+  
+  // HUD variables
+  attackPercentage: 50,
+  playerTroops: 0,
+  playerMaxPop: 0,
+  
   navalTargetingMode: false,
   selectedSiloCell: null,
   keysPressed: {},

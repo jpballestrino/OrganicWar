@@ -21,6 +21,17 @@ export function gameUITemplate() {
             <div style="font-size: 24px; font-weight: bold; color: #ffc107; text-transform: uppercase; margin-bottom: 5px;">Select Spawn Location</div>
             <div style="font-size: 14px; color: #fff;">Click anywhere on land. Time remaining: <span id="spawnTimerText" style="font-weight: bold; font-size: 18px; color: #ff4444;">20</span>s</div>
         </div>
+
+        <!-- Game HUD -->
+        <div id="gameHUD" style="display: none; position: absolute; top: 0; left: 0; width: 100vw; height: 50px; z-index: 1000; background: rgba(15,15,20,0.9); border-bottom: 2px solid #ffc107; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; box-sizing: border-box; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
+            <div style="font-size: 16px; color: #fff; font-weight: bold; text-transform: uppercase;">
+                Troops: <span id="lblMyTroops" style="color: #ffc107; font-size: 18px;">0</span> / <span id="lblMyMaxPop" style="color: #aaa;">0</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="font-size: 14px; color: #ffc107; font-weight: bold; text-transform: uppercase;">Attack: <span id="lblAttackPct">50%</span></div>
+                <input type="range" id="sliderAttackPct" min="1" max="100" value="50" style="width: 200px; cursor: pointer; accent-color: #ffc107;">
+            </div>
+        </div>
     </div>
   `;
 }

@@ -249,6 +249,16 @@ function initLobbyUI() {
     };
   }
 
+  // Slider
+  const sliderAttackPct = document.getElementById('sliderAttackPct');
+  const lblAttackPct = document.getElementById('lblAttackPct');
+  if (sliderAttackPct && lblAttackPct) {
+    sliderAttackPct.oninput = (e) => {
+      state.attackPercentage = parseInt(e.target.value);
+      lblAttackPct.innerText = state.attackPercentage + '%';
+    };
+  }
+
   const btnBackCreate = document.getElementById('btn-back-create');
   if (btnBackCreate) {
     btnBackCreate.onclick = () => {
@@ -444,6 +454,19 @@ async function startSimulationEngine() {
       if (state.gameState === 'SPAWN_SELECTION') {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
         socket.emit('select-spawn', { row, col });
+      } else if (state.gameState === 'PLAYING') {
+        const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
+        // Ensure within bounds
+        if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
+          const targetCell = row * 1920 + col;
+          socket.emit('sim-input', {
+            type: 'expand',
+            payload: {
+              targetCell: targetCell,
+              attackPercentage: state.attackPercentage
+            }
+          });
+        }
       }
     });
 

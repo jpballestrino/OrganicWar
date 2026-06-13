@@ -32,7 +32,9 @@ pub struct SimulationState {
 
     // --- Player Data ---
     player_owned_cells: Vec<u32>,
-    player_total_troops: Vec<u32>,
+    player_total_troops: Vec<f32>,
+    player_attack_pool: Vec<f32>,
+    player_expansion_target: Vec<i32>,
     player_gold: Vec<u32>,
     player_population_growth_rate: Vec<u32>,
     player_is_alive: Vec<u8>,
@@ -61,7 +63,9 @@ impl SimulationState {
 
             // Player Initializers
             player_owned_cells: vec![0; PLAYER_ARRAY_SIZE],
-            player_total_troops: vec![0; PLAYER_ARRAY_SIZE],
+            player_total_troops: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_attack_pool: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_expansion_target: vec![-1; PLAYER_ARRAY_SIZE],
             player_gold: vec![0; PLAYER_ARRAY_SIZE],
             player_population_growth_rate: vec![0; PLAYER_ARRAY_SIZE],
             player_is_alive: vec![0; PLAYER_ARRAY_SIZE],
@@ -109,7 +113,7 @@ impl SimulationState {
         &mut self,
         num_players: u8,
         start_cells: u32,
-        start_troops: u32,
+        start_troops: f32,
         start_gold: u32,
         start_growth_rate: u32,
         start_max_cap: u32,
@@ -118,7 +122,9 @@ impl SimulationState {
         for i in 1..PLAYER_ARRAY_SIZE {
             self.player_is_alive[i] = 0;
             self.player_owned_cells[i] = 0;
-            self.player_total_troops[i] = 0;
+            self.player_total_troops[i] = 0.0;
+            self.player_attack_pool[i] = 0.0;
+            self.player_expansion_target[i] = -1;
             self.player_gold[i] = 0;
             self.player_population_growth_rate[i] = 0;
             self.player_max_population_cap[i] = 0;
@@ -134,9 +140,55 @@ impl SimulationState {
             self.player_owned_cells[i] = start_cells;
             self.player_total_troops[i] = start_troops;
             self.player_gold[i] = start_gold;
-            self.player_population_growth_rate[i] = start_growth_rate; // e.g., 50 pop per second
+            self.player_population_growth_rate[i] = start_growth_rate; 
             self.player_max_population_cap[i] = start_max_cap;
-            self.player_color_index[i] = i as u8; // By default, their color index is their player ID
+            self.player_color_index[i] = i as u8; 
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn spawn_faction(&mut self, faction_id: u32, center_row: usize, center_col: usize) {
+        let f = faction_id as usize;
+        if self.player_is_alive[f] == 0 { return; }
+        
+        let radius = 25isize;
+        let mut cells_claimed = 0;
+        
+        for r in -radius..=radius {
+            for c in -radius..=radius {
+                if r*r + c*c <= radius*radius {
+                    let rr = center_row as isize + r;
+                    let cc = center_col as isize + c;
+                    
+                    if rr >= 0 && rr < MAP_HEIGHT as isize && cc >= 0 && cc < MAP_WIDTH as isize {
+                        let idx = (rr as usize) * MAP_WIDTH + (cc as usize);
+                        
+                        // Ignore water (3)
+                        if self.resource_yield[idx] != 3 && self.owner[idx] == 0 { 
+                            self.owner[idx] = faction_id;
+                            self.last_modified_tick[idx] = self.current_tick;
+                            cells_claimed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        self.player_owned_cells[f] += cells_claimed;
+    }
+
+    #[wasm_bindgen]
+    pub fn execute_expansion(&mut self, faction_id: u32, target_cell: u32, attack_percentage: u8) {
+        let f = faction_id as usize;
+        if self.player_is_alive[f] == 0 { return; }
+        
+        let pct = (attack_percentage as f32).min(100.0) / 100.0;
+        let troops_to_send = self.player_total_troops[f] * pct;
+        
+        if troops_to_send > 1.0 {
+            self.player_total_troops[f] -= troops_to_send;
+            self.player_attack_pool[f] += troops_to_send;
+            self.player_expansion_target[f] = target_cell as i32;
         }
     }
 
@@ -149,15 +201,138 @@ impl SimulationState {
         self.process_war_fronts();
     }
 
-    /// Placeholder function: Calculates economic yield and troops reinforcement.
     fn apply_production(&mut self) {
-        // TODO: Iterate over relevant cells and increase troops/resources based on resource_yield and infrastructure_level
+        for i in 1..PLAYER_ARRAY_SIZE {
+            if self.player_is_alive[i] == 1 {
+                let cells = self.player_owned_cells[i];
+                if cells == 0 {
+                    self.player_is_alive[i] = 0;
+                    continue;
+                }
+                
+                // Max population grows dynamically
+                self.player_max_population_cap[i] = 1000 + (cells * 100);
+                
+                // Growth rate: e.g. 10% of max cap per second
+                // Tick is 20Hz, so divide by 20
+                let growth_per_tick = (self.player_max_population_cap[i] as f32 * 0.10) / 20.0;
+                
+                self.player_total_troops[i] += growth_per_tick;
+                
+                let max_f32 = self.player_max_population_cap[i] as f32;
+                if self.player_total_troops[i] > max_f32 {
+                    self.player_total_troops[i] = max_f32;
+                }
+            }
+        }
     }
 
-    /// Placeholder function: Resolves attacks, updates owners, and manages territorial shifts.
     fn process_war_fronts(&mut self) {
-        // TODO: Process movement and combat.
-        // If a cell changes state, update last_modified_tick[cell_id] = self.current_tick;
+        let mut faction_frontiers: Vec<Vec<usize>> = vec![Vec::with_capacity(1000); PLAYER_ARRAY_SIZE];
+        
+        // Find frontiers for expanding factions
+        for cell_id in 0..TOTAL_CELLS {
+            let owner = self.owner[cell_id] as usize;
+            if owner != 0 && self.player_attack_pool[owner] > 0.0 && self.player_expansion_target[owner] != -1 {
+                let base_idx = cell_id * 4;
+                for i in 0..4 {
+                    let n = self.neighbor_graph[base_idx + i];
+                    if n != -1 {
+                        let n_idx = n as usize;
+                        let n_owner = self.owner[n_idx] as usize;
+                        if n_owner != owner && self.resource_yield[n_idx] != 3 {
+                            faction_frontiers[owner].push(n_idx);
+                            break; 
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Resolve expansions per faction
+        for f in 1..PLAYER_ARRAY_SIZE {
+            let target = self.player_expansion_target[f];
+            if target != -1 && self.player_attack_pool[f] > 0.0 && !faction_frontiers[f].is_empty() {
+                let target_r = target / MAP_WIDTH as i32;
+                let target_c = target % MAP_WIDTH as i32;
+                
+                // Sort to expand towards target
+                faction_frontiers[f].sort_unstable_by_key(|&n_idx| {
+                    let r = (n_idx / MAP_WIDTH) as i32;
+                    let c = (n_idx % MAP_WIDTH) as i32;
+                    let dr = r - target_r;
+                    let dc = c - target_c;
+                    dr*dr + dc*dc
+                });
+                
+                let max_conquers_per_tick = 50; 
+                let mut conquers = 0;
+                
+                for &src_cell in faction_frontiers[f].iter() {
+                    if conquers >= max_conquers_per_tick { break; }
+                    if self.player_attack_pool[f] <= 0.0 { break; }
+                    
+                    let base_idx = src_cell * 4;
+                    for i in 0..4 {
+                        let n = self.neighbor_graph[base_idx + i];
+                        if n != -1 {
+                            let n_idx = n as usize;
+                            let n_owner = self.owner[n_idx] as usize;
+                            
+                            if n_owner != f && self.resource_yield[n_idx] != 3 {
+                                let terrain = self.resource_yield[n_idx];
+                                let base_cost = match terrain {
+                                    0 => 1.0, // Plains
+                                    1 => 3.0, // Highlands
+                                    2 => 6.0, // Mountains
+                                    _ => 99.0,
+                                };
+                                
+                                let mut total_cost = base_cost;
+                                if n_owner != 0 {
+                                    let enemy_cells = self.player_owned_cells[n_owner].max(1) as f32;
+                                    let enemy_defense_per_cell = self.player_total_troops[n_owner] / enemy_cells;
+                                    total_cost += enemy_defense_per_cell;
+                                }
+                                
+                                if self.player_attack_pool[f] >= total_cost {
+                                    self.player_attack_pool[f] -= total_cost;
+                                    
+                                    if n_owner != 0 {
+                                        self.player_total_troops[n_owner] -= total_cost - base_cost;
+                                        if self.player_total_troops[n_owner] < 0.0 {
+                                            self.player_total_troops[n_owner] = 0.0;
+                                        }
+                                        self.player_owned_cells[n_owner] = self.player_owned_cells[n_owner].saturating_sub(1);
+                                    }
+                                    
+                                    self.owner[n_idx] = f as u32;
+                                    self.last_modified_tick[n_idx] = self.current_tick;
+                                    self.player_owned_cells[f] += 1;
+                                    conquers += 1;
+                                    
+                                    // Also if this cell IS the target, we stop immediately
+                                    if n_idx as i32 == target {
+                                        self.player_expansion_target[f] = -1;
+                                        self.player_total_troops[f] += self.player_attack_pool[f];
+                                        self.player_attack_pool[f] = 0.0;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if self.player_expansion_target[f] == -1 { break; }
+                }
+                
+                // End attack condition
+                if self.player_attack_pool[f] < 1.0 {
+                    self.player_total_troops[f] += self.player_attack_pool[f];
+                    self.player_attack_pool[f] = 0.0;
+                    self.player_expansion_target[f] = -1;
+                }
+            }
+        }
     }
 
     // --- Raw Pointer Exposure for JavaScript Zero-Copy Access ---
@@ -192,7 +367,10 @@ impl SimulationState {
     pub fn get_player_owned_cells_ptr(&self) -> *const u32 { self.player_owned_cells.as_ptr() }
 
     #[wasm_bindgen]
-    pub fn get_player_total_troops_ptr(&self) -> *const u32 { self.player_total_troops.as_ptr() }
+    pub fn get_player_total_troops_ptr(&self) -> *const f32 { self.player_total_troops.as_ptr() }
+
+    #[wasm_bindgen]
+    pub fn get_player_attack_pool_ptr(&self) -> *const f32 { self.player_attack_pool.as_ptr() }
 
     #[wasm_bindgen]
     pub fn get_player_gold_ptr(&self) -> *const u32 { self.player_gold.as_ptr() }
@@ -215,9 +393,6 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn get_current_tick(&self) -> u32 { self.current_tick }
 
-    /// Fills the delta scratch buffer with interleaved (cell_id, owner_id) pairs
-    /// for every cell whose `last_modified_tick >= since_tick`. Returns the number
-    /// of *pairs* written (NOT u32 elements). Caller reads from `get_delta_scratch_ptr()`.
     #[wasm_bindgen]
     pub fn collect_dirty_cells(&mut self, since_tick: u32) -> u32 {
         let mut count: usize = 0;

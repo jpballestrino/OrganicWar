@@ -258,6 +258,9 @@ export function initNetwork() {
   socket.on('start-match-now', (data) => {
     state.gameState = 'PLAYING';
     
+    const gameHUD = document.getElementById('gameHUD');
+    if (gameHUD) gameHUD.style.display = 'block';
+
     const waitingOverlay = document.getElementById('waitingOverlay');
     if (waitingOverlay) waitingOverlay.style.display = 'none';
     const spawnOverlay = document.getElementById('spawnOverlay');
@@ -367,9 +370,26 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta }) => {
-    if (!ownerDelta) return;
-    applyOwnerSnapshot(ownerDelta);
+  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop }) => {
+    if (ownerDelta) {
+      applyOwnerSnapshot(ownerDelta);
+    }
+    
+    if (playerTroops && playerMaxPop && state.playerFaction) {
+      const troopsArray = new Float32Array(playerTroops);
+      const maxPopArray = new Uint32Array(playerMaxPop);
+      
+      const fid = parseInt(state.playerFaction);
+      if (fid >= 1 && fid <= 20) {
+        state.playerTroops = Math.floor(troopsArray[fid]);
+        state.playerMaxPop = maxPopArray[fid];
+        
+        const lblTroops = document.getElementById('lblMyTroops');
+        const lblMax = document.getElementById('lblMyMaxPop');
+        if (lblTroops) lblTroops.innerText = state.playerTroops;
+        if (lblMax) lblMax.innerText = state.playerMaxPop;
+      }
+    }
   });
 
   socket.on('waiting-tick', (ticks) => {
