@@ -304,6 +304,24 @@ export class WebGLRenderer {
             : Math.max(-pad, Math.min(this.camera.y, MAP_HEIGHT - viewH + pad));
     }
 
+    screenToWorld(clientX, clientY) {
+        const rect = this.canvas.getBoundingClientRect();
+        const mouseX = clientX - rect.left;
+        const mouseY = clientY - rect.top;
+
+        const worldX = (mouseX / this.camera.zoom) + this.camera.x;
+        const worldY = (mouseY / this.camera.zoom) + this.camera.y;
+
+        return { col: Math.floor(worldX), row: Math.floor(worldY) };
+    }
+
+    worldToScreen(worldX, worldY) {
+        const rect = this.canvas.getBoundingClientRect();
+        const screenX = (worldX - this.camera.x) * this.camera.zoom + rect.left;
+        const screenY = (worldY - this.camera.y) * this.camera.zoom + rect.top;
+        return { x: screenX, y: screenY };
+    }
+
     render(time) {
         const dt = time - this.lastTime;
         this.lastTime = time;
@@ -328,5 +346,37 @@ export class WebGLRenderer {
         this.gl.uniform1f(this.uniforms.zoom, this.camera.zoom);
 
         this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
+    }
+
+    // Called by main game loop to draw overlays after WebGL pass
+    drawSpawnOverlay(ctx, spawnSelections, myFactionId, safeZoneRadius) {
+        if (!spawnSelections || Object.keys(spawnSelections).length === 0) return;
+        
+        ctx.lineWidth = 2;
+        
+        for (const [fid, pos] of Object.entries(spawnSelections)) {
+            const screenPos = this.worldToScreen(pos.col, pos.row);
+            const isMe = parseInt(fid) === myFactionId;
+            
+            // Draw safe zone circle
+            const screenRadius = safeZoneRadius * this.camera.zoom;
+            ctx.beginPath();
+            ctx.arc(screenPos.x, screenPos.y, screenRadius, 0, Math.PI * 2);
+            ctx.fillStyle = isMe ? 'rgba(40, 167, 69, 0.2)' : 'rgba(220, 53, 69, 0.2)';
+            ctx.fill();
+            ctx.strokeStyle = isMe ? 'rgba(40, 167, 69, 0.8)' : 'rgba(220, 53, 69, 0.8)';
+            ctx.stroke();
+
+            // Draw center marker
+            ctx.beginPath();
+            ctx.arc(screenPos.x, screenPos.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Orbitron';
+            ctx.textAlign = 'center';
+            ctx.fillText(isMe ? 'YOU' : 'P' + fid, screenPos.x, screenPos.y - 10);
+        }
     }
 }

@@ -246,13 +246,7 @@ export function initNetwork() {
     const homeScreen = document.getElementById('homeScreen');
     if (homeScreen) homeScreen.style.opacity = '0';
     
-    if (isQuickPlay || isRankedMatch) {
-      state.gameState = 'SPAWN_SELECTION';
-      const waitingOverlay = document.getElementById('waitingOverlay');
-      if (waitingOverlay) waitingOverlay.style.display = 'none';
-    } else {
-      state.gameState = 'LOBBY_WAIT';
-    }
+    state.gameState = 'LOBBY_WAIT';
     
     setTimeout(() => {
       if (homeScreen) homeScreen.style.display = 'none';
@@ -275,10 +269,46 @@ export function initNetwork() {
     updateDevDashboard();
   });
 
-  socket.on('custom-game-starting', () => {
+  socket.on('spawn-selection-start', (data) => {
     state.gameState = 'SPAWN_SELECTION';
+    
+    const gameArea = document.getElementById('gameArea');
+    if (gameArea) gameArea.style.display = 'flex';
+    
     const waitingOverlay = document.getElementById('waitingOverlay');
     if (waitingOverlay) waitingOverlay.style.display = 'none';
+    
+    const spawnOverlay = document.getElementById('spawnOverlay');
+    if (spawnOverlay) {
+      spawnOverlay.style.display = 'flex';
+    }
+  });
+
+  socket.on('spawn-selections-update', (selections) => {
+    state.spawnSelections = selections;
+  });
+
+  socket.on('spawn-rejected', (reason) => {
+    showToast(reason, 'error');
+  });
+
+  socket.on('spawns-finalized', (data) => {
+    state.gameState = 'PLAYING';
+    const spawnOverlay = document.getElementById('spawnOverlay');
+    if (spawnOverlay) spawnOverlay.style.display = 'none';
+    
+    if (data.centroids) {
+      state.factionCentroids = data.centroids;
+    }
+    if (data.slots) {
+      state.activePlayerSlots = data.slots;
+      updateSlotsUI(data.slots);
+      updateDevDashboard();
+    }
+  });
+
+  socket.on('custom-game-starting', () => {
+    // Just informative, keep waiting overlay open
   });
 
   socket.on('notification', ({ message, type }) => {
@@ -347,6 +377,14 @@ export function initNetwork() {
     if (text) {
       text.style.display = 'block';
       text.innerText = ticks + 's';
+    }
+  });
+
+  socket.on('spawn-timer', (ticks) => {
+    state.spawnTimeLeft = ticks;
+    const spawnText = document.getElementById('spawnTimerText');
+    if (spawnText) {
+      spawnText.innerText = ticks;
     }
   });
 }

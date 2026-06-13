@@ -2,7 +2,8 @@ export function gameUITemplate() {
   return `
     <div id="gameArea">
         <div id="canvasContainer" style="position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1;">
-            <canvas id="gameCanvas" style="display: block; width: 100%; height: 100%;"></canvas>
+            <canvas id="gameCanvas" style="display: block; width: 100%; height: 100%; position: absolute; z-index: 1;"></canvas>
+            <canvas id="overlayCanvas" style="display: block; width: 100%; height: 100%; position: absolute; z-index: 2; pointer-events: none;"></canvas>
         </div>
 
         <!-- Esc / pause menu -->
@@ -13,6 +14,12 @@ export function gameUITemplate() {
                 <button id="btnResumeGame" style="width: 100%; padding: 14px; margin-bottom: 12px; font-size: 16px; font-weight: bold; background: #28a745; color: #fff; border: 1px solid #3bd95d; border-radius: 8px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;">Resume</button>
                 <button id="btnQuitToMenu" style="width: 100%; padding: 14px; font-size: 16px; font-weight: bold; background: rgba(220,53,69,0.85); color: #fff; border: 1px solid #dc3545; border-radius: 8px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;">Main Menu</button>
             </div>
+        </div>
+
+        <!-- Spawn Selection Overlay -->
+        <div id="spawnOverlay" style="display: none; position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 1000; background: rgba(15,15,20,0.85); border: 2px solid #ffc107; border-radius: 8px; padding: 15px 30px; text-align: center; pointer-events: none; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
+            <div style="font-size: 24px; font-weight: bold; color: #ffc107; text-transform: uppercase; margin-bottom: 5px;">Select Spawn Location</div>
+            <div style="font-size: 14px; color: #fff;">Click anywhere on land. Time remaining: <span id="spawnTimerText" style="font-weight: bold; font-size: 18px; color: #ff4444;">20</span>s</div>
         </div>
     </div>
   `;

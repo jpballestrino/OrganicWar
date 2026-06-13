@@ -39,6 +39,8 @@ export const state = {
   activePlayerSlots: {},
   lastRenderedSiloState: { r: -1, c: -1, level: -1, canAfford: false },
   currentLeaderId: null,
+  spawnSelections: {},
+  mySpawnSelection: null,
 };
 
 export function resetGameState() {
@@ -81,4 +83,6 @@ export function resetGameState() {
   state.activePlayerSlots = {};
   state.lastRenderedSiloState = { r: -1, c: -1, level: -1, canAfford: false };
   state.currentLeaderId = null;
+  state.spawnSelections = {};
+  state.mySpawnSelection = null;
 }

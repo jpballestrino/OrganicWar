@@ -1,5 +1,5 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
-import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startMatchNow } from './roomManager.js';
+import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startMatchNow, startSpawnSelection, SAFE_ZONE_RADIUS } from './roomManager.js';
 import { log } from '../utils/logger.js';
 import { io, ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
@@ -279,7 +279,7 @@ export function setupSocketHandlers(io) {
                 
           if (ticks <= 0) {
             clearInterval(room.countdownInterval);
-            startMatchNow(room);
+            startSpawnSelection(room);
           }
         }, 1000);
       } catch (err) {
@@ -357,7 +357,7 @@ export function setupSocketHandlers(io) {
               io.to(room.id).emit('waiting-tick', ticks);
               if (ticks <= 0) {
                 clearInterval(room.countdownInterval);
-                startMatchNow(room);
+                startSpawnSelection(room);
               }
             }, 1000);
           }
@@ -365,6 +365,41 @@ export function setupSocketHandlers(io) {
       } catch (err) {
         log('error', `[ERROR] join-faction failed for socket ${socket.id}:`, err.message);
         socket.emit('notification', { message: 'Server error occurred', type: 'error' });
+      }
+    });
+
+    socket.on('select-spawn', ({ row, col }) => {
+      try {
+        const room = activeRooms[socket.roomId];
+        if (!room || room.phase !== 'SPAWN_SELECTION') return;
+        
+        const fid = getFactionForSocket(room, socket.id);
+        if (!fid) return;
+
+        // Ensure within bounds
+        if (typeof row !== 'number' || typeof col !== 'number') return;
+        if (row < 0 || row >= 1080 || col < 0 || col >= 1920) return;
+
+        // Check if another player is too close
+        for (let [otherFid, pos] of room.spawnSelections.entries()) {
+          if (otherFid === fid) continue;
+          let distSq = (pos.row - row) ** 2 + (pos.col - col) ** 2;
+          if (distSq < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS) {
+            socket.emit('spawn-rejected', 'Too close to another player\'s safe zone.');
+            return;
+          }
+        }
+
+        // We will validate terrain properly later, for now accept the spawn
+        room.spawnSelections.set(fid, { row, col });
+        
+        // Broadcast the updated selections to everyone
+        let selectionsObj = {};
+        for (let [f, p] of room.spawnSelections.entries()) selectionsObj[f] = p;
+        io.to(room.id).emit('spawn-selections-update', selectionsObj);
+        
+      } catch (err) {
+        log('error', `[ERROR] select-spawn failed:`, err.message);
       }
     });
 

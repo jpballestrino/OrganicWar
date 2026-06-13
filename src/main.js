@@ -439,6 +439,14 @@ async function startSimulationEngine() {
 
     console.log("WASM render cache & WebGL Renderer Started!");
 
+    // Handle game input (clicks)
+    canvas.addEventListener('mousedown', (e) => {
+      if (state.gameState === 'SPAWN_SELECTION') {
+        const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
+        socket.emit('select-spawn', { row, col });
+      }
+    });
+
     requestAnimationFrame(gameLoop);
   } catch (err) {
     console.error("Failed to init WASM Simulation:", err);
@@ -461,6 +469,29 @@ function gameLoop(time) {
   const gameArea = document.getElementById('gameArea');
   if (gameArea && gameArea.style.display !== 'none' && renderer) {
       renderer.render(time);
+      
+      const overlayCanvas = document.getElementById('overlayCanvas');
+      const gameCanvas = document.getElementById('gameCanvas');
+      
+      if (state.gameState === 'SPAWN_SELECTION') {
+          if (gameCanvas) gameCanvas.style.cursor = 'crosshair';
+      } else {
+          if (gameCanvas) gameCanvas.style.cursor = 'default';
+      }
+
+      if (overlayCanvas) {
+        if (overlayCanvas.width !== window.innerWidth || overlayCanvas.height !== window.innerHeight) {
+          overlayCanvas.width = window.innerWidth;
+          overlayCanvas.height = window.innerHeight;
+        }
+        const ctx = overlayCanvas.getContext('2d');
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        
+        if (state.gameState === 'SPAWN_SELECTION') {
+          // SAFE_ZONE_RADIUS = 80 cells
+          renderer.drawSpawnOverlay(ctx, state.spawnSelections, parseInt(state.playerFaction), 80);
+        }
+      }
   }
   requestAnimationFrame(gameLoop);
 }

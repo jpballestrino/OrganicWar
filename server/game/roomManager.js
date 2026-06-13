@@ -4,6 +4,7 @@ import { log } from '../utils/logger.js';
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
+import { terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 
 // --- Mock Simulation Engine ---
 class MockSimulation {
@@ -141,6 +142,8 @@ function buildRoomObject({ roomId, name, sim, maxPlayers, preset, isQuickPlay, i
     pendingAlliances: [],
     humanPlayers: {},
     matchStarted: false,
+    phase: 'LOBBY',
+    spawnSelections: new Map(),
     preset: preset || 'north_america',
     maxPlayers,
     isQuickPlay: isQuickPlay || false,
@@ -194,13 +197,6 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
   if (isQuickPlay) {
     let ticks = 5;
 
-    // Mock spawn positions for slots
-    for (let fid of sim.factions) {
-      let spawnR = Math.floor(Math.random() * 80) + 10;
-      let spawnC = Math.floor(Math.random() * 80) + 10;
-      sim.forceSpawnPlayer(fid, spawnR, spawnC);
-    }
-
     room.countdownInterval = setInterval(() => {
       ticks--;
       io.to(roomId).emit('waiting-tick', ticks);
@@ -209,7 +205,7 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
 
       if (ticks <= 0 || isFull) {
         clearInterval(room.countdownInterval);
-        startMatchNow(room);
+        startSpawnSelection(room);
       }
     }, 1000);
   }
@@ -262,7 +258,7 @@ export function createRankedRoom(players) {
 
     if (ticks <= 0) {
       clearInterval(room.countdownInterval);
-      startMatchNow(room);
+      startSpawnSelection(room);
     }
   }, 1000);
 
@@ -330,18 +326,102 @@ export function matchmakeGuildWars() {
   }
 }
 
-export function startMatchNow(room) {
-  room.isOpen = false;
-  room.matchStarted = true;
+export const SAFE_ZONE_RADIUS = 80;
 
-  // Mock centroids
-  for (let fid of room.sim.factions) {
-    if (!room.sim.factionCentroids[fid]) {
-      let spawnR = Math.floor(Math.random() * 80) + 10;
-      let spawnC = Math.floor(Math.random() * 80) + 10;
-      room.sim.factionCentroids[fid] = { r: spawnR, c: spawnC };
+export function startSpawnSelection(room) {
+  room.isOpen = false;
+  room.phase = 'SPAWN_SELECTION';
+  
+  io.to(room.id).emit('spawn-selection-start', { duration: 5 });
+  log('info', `[Room ${room.id}] Entering spawn selection phase`);
+
+  updateLobbyList();
+
+  let ticks = 5;
+  io.to(room.id).emit('spawn-timer', ticks);
+  
+  room.countdownInterval = setInterval(() => {
+    ticks--;
+    io.to(room.id).emit('spawn-timer', ticks);
+
+    if (ticks <= 0) {
+      clearInterval(room.countdownInterval);
+      finalizeSpawns(room);
+    }
+  }, 1000);
+}
+
+export function finalizeSpawns(room) {
+  room.phase = 'PLAYING';
+
+  // Fill empty slots with bots
+  const androidNames = [
+    'Sentinel', 'Guardian', 'Bastion', 'Aegis', 'Rampart', 'Citadel',
+    'Nexus-1', 'Nova-7', 'Cygnus-X', 'Orion-9', 'Vanguard-2', 'Titan-6'
+  ];
+
+  for (let fid = 1; fid <= room.maxPlayers; fid++) {
+    if (room.activePlayerSlots[fid] === null) {
+      let botName = androidNames[Math.floor(Math.random() * androidNames.length)] + '-' + fid;
+      room.activePlayerSlots[fid] = { socketId: null, nickname: botName, isBot: true };
     }
   }
+  
+  // Validate and pick random land cells outside all existing safe zones
+  for (let fid = 1; fid <= room.maxPlayers; fid++) {
+    if (!room.spawnSelections.has(fid)) {
+      let valid = false;
+      let attempts = 0;
+      let row, col;
+      while (!valid && attempts < 1000) {
+        attempts++;
+        row = Math.floor(Math.random() * 1080);
+        col = Math.floor(Math.random() * 1920);
+        
+        let terrain = terrainAt(col / 1920, row / 1080);
+        if (terrain === TERRAIN.WATER) continue;
+        
+        // Check safe zones
+        let tooClose = false;
+        for (let [otherFid, pos] of room.spawnSelections.entries()) {
+          let distSq = (pos.row - row) ** 2 + (pos.col - col) ** 2;
+          if (distSq < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS) {
+            tooClose = true;
+            break;
+          }
+        }
+        
+        if (!tooClose) {
+          valid = true;
+        }
+      }
+      
+      // Fallback if we couldn't find a spot (rare, but just in case)
+      if (!valid) {
+        row = Math.floor(Math.random() * 800) + 100;
+        col = Math.floor(Math.random() * 1700) + 100;
+      }
+      
+      room.spawnSelections.set(fid, { row, col });
+    }
+  }
+
+  // Convert spawn selections to centroids map
+  let centroids = {};
+  for (let [fid, pos] of room.spawnSelections.entries()) {
+    centroids[fid] = { r: pos.row, c: pos.col };
+    // For mock sim compatibility temporarily
+    if (room.sim && room.sim.factionCentroids) {
+      room.sim.factionCentroids[fid] = { r: pos.row, c: pos.col };
+    }
+  }
+
+  io.to(room.id).emit('spawns-finalized', { centroids, slots: room.activePlayerSlots });
+  startMatchNow(room);
+}
+
+export function startMatchNow(room) {
+  room.matchStarted = true;
 
   if (room.isGuildWar) {
     for (let i = 1; i <= room.teamSize; i++) {
@@ -360,8 +440,6 @@ export function startMatchNow(room) {
 
   io.to(room.id).emit('start-match-now', { centroids: room.sim.factionCentroids });
   log('info', `[Room ${room.id}] Match started. (${Object.keys(room.activePlayerSlots).length} slots)`);
-
-  updateLobbyList();
 }
 
 export function updateLobbyList() {

@@ -33,79 +33,60 @@ function valueNoise(x, y) {
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-// Squared normalized distance to an ellipse centre; <= 1 means inside.
-function ellipse(nx, ny, cx, cy, rx, ry) {
-  const dx = (nx - cx) / rx;
-  const dy = (ny - cy) / ry;
-  return dx * dx + dy * dy;
-}
-
-// Landmass = union of these blobs (rough continental masses).
-const LAND_BLOBS = [
-  { cx: 0.47, cy: 0.28, rx: 0.40, ry: 0.19 }, // Canada (broad north)
-  { cx: 0.45, cy: 0.49, rx: 0.35, ry: 0.13 }, // United States
-  { cx: 0.13, cy: 0.21, rx: 0.09, ry: 0.075 }, // Alaska
-  { cx: 0.39, cy: 0.64, rx: 0.15, ry: 0.10 }, // Mexico
-  { cx: 0.30, cy: 0.66, rx: 0.035, ry: 0.085 }, // Baja California
-  { cx: 0.60, cy: 0.60, rx: 0.035, ry: 0.07 }, // Florida
-  { cx: 0.52, cy: 0.79, rx: 0.11, ry: 0.06 }, // Central America (isthmus)
-  { cx: 0.85, cy: 0.13, rx: 0.09, ry: 0.11 }, // Greenland
-];
-
-// Inland seas carved back out of the landmass.
-const WATER_CARVES = [
-  { cx: 0.50, cy: 0.25, rx: 0.09, ry: 0.07 }, // Hudson Bay
-  { cx: 0.50, cy: 0.59, rx: 0.11, ry: 0.055 }, // Gulf of Mexico
-];
-
-// West coast x-position as a function of latitude — the cordillera follows it.
-function westCoastX(ny) {
-  return 0.10 + 0.20 * clamp01((ny - 0.18) / (0.66 - 0.18));
+const NA_MASK = "fffffffffffffffffffffffffffffffff800fffffffffffffffffffffffffffffffffffffffffffff807fffffffffffffffffffffffffffffffffffffffffffff803fffffffffffffffffffffffffffffffffffffffffffff801fffffffffffffffffffffffffffffffffffffffffffffc01fffffffffffffffffffffffffffffffffffffffffffffc00fffffffffffffffffffffffffffffffffffffffffffffe00fffffffffffffffffffffffffffffffffffffffffffffe00ffffffffffff7fffffffffffffffffffffffffffffffff00ffffffffffff7fffffffffffffffffffffffffffffffff81ffffffffffff7fffffffffffffffffffffffffffffffffe1ffffffffffff7ffffffffffffffffffffffffffffffffff7ffffffffffff3fffffffffffffffffffffffffffffffffffffffffffffffe3fffffffffffffffffffffffffffffffffffffffffffffffefffffffffffffffffffffffffffffffffffffffffff0031f3fffffffffffffffffffffffffffffffffffffffffc0700f8fffffffffffffffffffffffffffffffffffffffff801e03f3fffffffffffffffffffffffffffffffffffffffc070101f8fffffffffffffffffffffffffffffffffffffff87fc00018fffffffffffffffffffffffffffffffffffffff1ff8000387fffffffffffffffffffffffffffffffffffffe7ff00001e7fffffffffffffffffffffffffffffffffffffdfff00001f7fffffffffffffffffffffffffffffffffffff3fff00000ffffffffffffffffffffffffffffffffffffffe7fff00000fffffffffffffffffffffffffffffffffffffffffffa0000fffffffffffffffffffffffffffffffffffffffffffb8000fffffffffffffffffffffffffffffffffffffffffffc6000fffffffffffffffffffffffffffffffffffffffffffff000fffffffffffffffffffffffffffffffffffffffffffff000fffffffffffffffffffffffffffffffffffffffffc0ff000fffffffffffffffffffffffffffffffffffffffff83f8000ffffffffffffffffffffffffffffffffffffffffe0fe0000ffffffffffffffffffffffffffffffffffffffff00f80000fffffffffffffffffffffffffffffffffffffff800e00001fffffffffffffffffffffffffffffffffffffff000000001ffffffffffffffffffffffffffffffffffffffe000000001ffffffffffffffffffffffffffffffffffffffe000000001ffffffffffffffffffffffffffffffffffffffe000000000ffffffffffffffffffffffffffffffffffffffe000000000fffffffffffffffffffffffffffffffffffffff800000000fffffffffffffffffffffffffffffffffffffe0000000001fffffffffffffffffffffffffffffffffffffe0000000001ffffffffffffffffffffffffffffffffffff800000000001ffffffffffffffffffffffffffffffffffffc00000000000ffffffffffffffffffffffffffffffffffff8000000000007fffffffffffffffffffffffffffffffffff8000000000007ffffffffffffffffffffffffffffffffffb0000000000007fffffffffffffffffffffffffffffffffdc0000000000003fffffffffffffffffffffffffffffffffdc0000000000001fffffffffffffffffffffffffffffffffec0000000000000fffffffffffffffffffffffffffffffffe80000000000000fffffffffffffffffffffffffffffffffe800000000000007ffffffffffffffffffffffffffffffffe000000000000003fffffffffffffffffffffffffffffffff000000000000003fffffffffffffffffffffffffffffffff000000000000001fffffffffffffffffffffffffffffffff000000000000000fffffffffffffffffffffffffffffffff0000000000000007ffffffffffffffffffffffffffffffff0000000000000003ffffffffffffffffffffffffffffffff0000000000000003fffffffffffffffffffffffffffffffc0000000000000001ffffffffffffffffffffffffffffffe000000000000000003fffffffffffffffffffffffffffffc000000000000000000fffffffffffffffffffffffffffff00000000000000000003fffffffffffffffffffffffffffe00000000000000000000fffffffffffffffffffffffffffc00000000000000000000fffffffffffffffffffffffffff000000000000000000000ffffffffffffffffffffffffffe0000000000000000000007fffffffffffffffffffffffffc0000000000000000000007effffffffffffffffffffffff80000000000000000000003e1fffffffffffffffffffffff00000000000000000000003e0fffffffffffffffffffffff00000000000000000000001e0fffffffffffffffffffffff00000000000000000000001e0fffffffffffffffffc73fff00000000000000000000000f07ffffffffffffffff800f7f00000000000000000000000787ffffffffffffe1ff80003f800000000000000000000003c3ffffffffffff800f80001f800000000000000000000000e3ffffffffffff000000000fc0000000000000000000000061fffffffffffc000000000fc0000000000000000000000070fffffffffff0000000000fe00000000000000000000000f83fffffffffe0000000000fe00000000000000000000001f81fffffffffc0000000000fe00000000000000000000000fc0fffffffffc00000000007f000000000000000000000003e07ffffffffc00000000007f0000000000000000000000000f03ffffffffc00000000003f000000000000000000000000781ffffffffc00000000001f000000000000000000000000381ffffffffc00000000001f0000000000000000000000001c1ffffffffc00000000000e0000000000000000000000001c07fffffff80000000000060000000000000000000000001e03fffffff80000000000000000000000000000000000000e01fffffff80000000000000000000000000000000000000780fffffff800000000000000000000000000000000000001803ffffff800000000000000000000000000000000000000c01ffffff800000000000000000000000000000000000000c01ffffff000000000000000000000000000000000000000000ffffff0000000000000000000000000000000000000000007fffff0000000000000000000000000000000000000000007fffff0000000000000000000000000000000000000000003fffff8000000000000000000000000000000000000000001fffffc000003f00000000000000000000000000000000001fffffc00001ff00000000000000000000000000000000003fffffc00003ff00000000000000000000000000000000007fffffe00003fe00000000000000000000000000000000003ffffff00003fc00000000000000000000000000000000001ffffff00007fc00000000000000000000000000000000001ffffff80007fc000000000000000000000000000000000007fffff8000ffc000000000000000000000000000000000001ffffff007ffc000000000000000000000000000000000000ffffffcfffe0000000000000000000";
+const MASK_BITS = new Uint8Array(192 * 108);
+for (let i = 0; i < NA_MASK.length; i++) {
+  const v = parseInt(NA_MASK[i], 16);
+  MASK_BITS[i*4]   = (v >> 3) & 1;
+  MASK_BITS[i*4+1] = (v >> 2) & 1;
+  MASK_BITS[i*4+2] = (v >> 1) & 1;
+  MASK_BITS[i*4+3] = v & 1;
 }
 
 function isLand(nx, ny) {
-  // Wobble the coastline a little so it isn't a clean ellipse.
-  const coast = (valueNoise(nx * 14, ny * 14) - 0.5) * 0.28;
-  let land = false;
-  for (const b of LAND_BLOBS) {
-    if (ellipse(nx, ny, b.cx, b.cy, b.rx, b.ry) <= 1 + coast) { land = true; break; }
-  }
-  if (!land) { return false; }
-  for (const w of WATER_CARVES) {
-    if (ellipse(nx, ny, w.cx, w.cy, w.rx, w.ry) <= 1 + coast * 0.5) { return false; }
-  }
-  return true;
+  // Wobble the coastline by dithering the mask lookup
+  const dx = (valueNoise(nx * 50, ny * 50) - 0.5) * 0.015;
+  const dy = (valueNoise(nx * 50 + 10, ny * 50 + 10) - 0.5) * 0.015;
+  
+  let px = Math.floor((nx + dx) * 192);
+  let py = Math.floor((ny + dy) * 108);
+  
+  px = Math.max(0, Math.min(191, px));
+  py = Math.max(0, Math.min(107, py));
+  
+  return MASK_BITS[py * 192 + px] === 1;
 }
 
 // Pure terrain classifier. Returns a TERRAIN value for any point in [0,1]^2.
 export function terrainAt(nx, ny) {
   if (!isLand(nx, ny)) { return TERRAIN.WATER; }
 
-  const n = valueNoise(nx * 22, ny * 22); // fine texture for band edges
+  const n = valueNoise(nx * 25, ny * 25);
 
-  // Greenland: icy plateau — mostly highlands with a few peaks.
-  if (ny < 0.20 && nx > 0.76) { return n > 0.7 ? TERRAIN.MOUNTAINS : TERRAIN.HIGHLANDS; }
-  // Alaska: rugged, mixed mountains and highlands.
-  if (ellipse(nx, ny, 0.13, 0.21, 0.09, 0.075) <= 1) { return n > 0.5 ? TERRAIN.MOUNTAINS : TERRAIN.HIGHLANDS; }
-
-  // Western cordillera (Rockies / Sierra Madre): a narrow band just inland of
-  // the coast, with foothills feathering eastward into the plains.
-  const coast = westCoastX(ny);
-  const fromCoast = nx - coast;
-  if (fromCoast > 0.012 && fromCoast < 0.06 + n * 0.03) {
+  // Rockies (western spine)
+  // They are roughly at nx = 0.2 to 0.35, going from NW to SE.
+  const rockiesSpine = 0.12 + ny * 0.22; 
+  const distToRockies = Math.abs(nx - rockiesSpine);
+  
+  if (distToRockies < 0.04 + n * 0.03) {
     return TERRAIN.MOUNTAINS;
   }
-  if (fromCoast >= 0.06 && fromCoast < 0.11 && n > 0.5) {
+  if (distToRockies < 0.12 + n * 0.05) {
     return TERRAIN.HIGHLANDS;
   }
 
-  // Appalachians: eastern highland strip.
-  if (nx > 0.58 && nx < 0.70 && ny > 0.40 && ny < 0.62 && n > 0.35) {
+  // Appalachians (eastern spine)
+  const appSpine = 0.81 - ny * 0.21;
+  const distToApp = Math.abs(nx - appSpine);
+  if (ny > 0.3 && ny < 0.8 && distToApp < 0.03 + n * 0.02) {
+    return TERRAIN.MOUNTAINS;
+  }
+  if (ny > 0.25 && ny < 0.85 && distToApp < 0.08 + n * 0.03) {
     return TERRAIN.HIGHLANDS;
   }
 
-  // Canadian Shield: scattered highlands across the north-centre.
-  if (ny < 0.32 && nx > 0.42 && nx < 0.70 && n > 0.62) {
+  // Canada/North
+  if (ny < 0.15 && n > 0.5) {
     return TERRAIN.HIGHLANDS;
   }
 
