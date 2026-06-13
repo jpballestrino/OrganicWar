@@ -4,6 +4,7 @@ import { showToast } from './guildUI.js';
 import { getToken } from './auth.js';
 import { applyOwnerSnapshot } from './simBridge.js';
 import { escapeHtml } from './escape.js';
+import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL } from './constants.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -370,24 +371,56 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop }) => {
+  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, centroids }) => {
     if (ownerDelta) {
       applyOwnerSnapshot(ownerDelta);
     }
-    
+
+    // Per-faction territory centroids + troops, for the in-territory labels.
+    if (centroids) { state.factionCentroids = centroids; }
+
     if (playerTroops && playerMaxPop && state.playerFaction) {
       const troopsArray = new Float32Array(playerTroops);
       const maxPopArray = new Uint32Array(playerMaxPop);
-      
+      const attackArray = playerAttack ? new Float32Array(playerAttack) : null;
+
       const fid = parseInt(state.playerFaction);
       if (fid >= 1 && fid <= 20) {
-        state.playerTroops = Math.floor(troopsArray[fid]);
-        state.playerMaxPop = maxPopArray[fid];
-        
+        const troops = troopsArray[fid];
+        const maxPop = maxPopArray[fid];
+        state.playerTroops = Math.floor(troops);
+        state.playerMaxPop = maxPop;
+
         const lblTroops = document.getElementById('lblMyTroops');
         const lblMax = document.getElementById('lblMyMaxPop');
         if (lblTroops) lblTroops.innerText = state.playerTroops;
         if (lblMax) lblMax.innerText = state.playerMaxPop;
+
+        // Troops currently committed to an active expansion (attack pool).
+        const attacking = attackArray ? Math.floor(attackArray[fid]) : 0;
+        const lblAttacking = document.getElementById('lblMyAttacking');
+        if (lblAttacking) {
+          lblAttacking.innerText = attacking;
+          lblAttacking.style.color = attacking > 0 ? '#ff9800' : '#aaa';
+        }
+
+        // Population fill ratio (drives the growth curve + its color).
+        const fill = maxPop > 0 ? troops / maxPop : 0;
+        const lblFill = document.getElementById('lblMyFill');
+        if (lblFill) lblFill.innerText = `${Math.round(fill * 100)}%`;
+
+        // Growth rate (troops/sec): green while still accelerating (below the
+        // peak fill), red once past the peak and slowing toward the cap.
+        const growth = troopGrowthPerSec(troops, maxPop);
+        const lblGrowth = document.getElementById('lblMyGrowth');
+        if (lblGrowth) {
+          lblGrowth.innerText = `+${Math.round(growth)}/s`;
+          lblGrowth.style.color = fill < GROWTH_PEAK_RATIO ? '#28a745' : '#dc3545';
+        }
+
+        // Territory (cells) — cap scales as cells * POP_CAP_PER_CELL.
+        const lblCells = document.getElementById('lblMyCells');
+        if (lblCells) lblCells.innerText = Math.round(maxPop / POP_CAP_PER_CELL);
       }
     }
   });

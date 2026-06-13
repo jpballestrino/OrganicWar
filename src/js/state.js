@@ -34,7 +34,7 @@ export const state = {
   teamSize: 0,
   
   // HUD variables
-  attackPercentage: 50,
+  attackPercentage: 20,
   playerTroops: 0,
   playerMaxPop: 0,
   

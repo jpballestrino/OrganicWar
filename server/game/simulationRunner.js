@@ -3,14 +3,17 @@
 // linear memory for snapshot encoding without copying through the JS wrapper.
 //
 // Snapshot wire format (Node.js Buffer, sent as the `ownerDelta` field):
-//   byte 0     : 0 = sparse delta, 1 = full owner buffer
+//   byte 0     : 0 = sparse delta, 1 = full packed-cell buffer
 //   if delta   : N pairs of (u32 cell_id, u32 owner_id), little-endian. N = (length-1)/8.
-//   if full    : TOTAL_CELLS * 4 bytes of u32 owner ids, little-endian.
+//   if full    : TOTAL_CELLS * 2 bytes of u16 packed cells, little-endian.
+// Cells pack owner/terrain/defense/has_building into one u16; the client merges
+// only the owner bits (it generates terrain locally). See src/js/simBridge.js.
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { log } from '../utils/logger.js';
+import { generateTerrain } from '../../src/js/mapGen.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,20 +71,37 @@ export class RoomSim {
     this.io = io;
     this.exports = instantiate();
     this.statePtr = this.exports.simulationstate_new();
+
+    // Generate the static terrain into the sim's packed cell buffer (same
+    // deterministic map the client paints) BEFORE any spawns, so the
+    // authoritative sim knows where water is and never lets factions expand
+    // onto it. Without this the server's terrain bits are all zero (plains).
+    const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
+    generateTerrain(this.exports.memory, cellPtr);
+
     this.exports.simulationstate_init_players(
       this.statePtr,
       Math.max(1, Math.min(20, numPlayers)),
       opts.startCells ?? 10,
-      opts.startTroops ?? 100,
+      opts.startTroops ?? 20,
       opts.startGold ?? 500,
       opts.startGrowthRate ?? 50,
       opts.startMaxCap ?? 5000,
     );
 
-    this.tickHz = parseInt(process.env.SIM_TICK_HZ) || 20;
-    this.snapshotEveryTicks = Math.max(1, Math.floor(this.tickHz / 5));
+    this.tickHz = parseInt(process.env.SIM_TICK_HZ) || 60;
+    // Keep the sim's per-second rates (troop growth) correct at this tick rate.
+    this.exports.simulationstate_set_tick_hz(this.statePtr, this.tickHz);
+    // Snapshot ~20x/sec so border expansion is shown as a smooth creep rather
+    // than a few big jumps. Deltas stay tiny since only a thin shell changes.
+    this.snapshotEveryTicks = Math.max(1, Math.floor(this.tickHz / 20));
     this.lastSnapshotTick = 0;
     this.destroyed = false;
+
+    // Bot AI: faction ids the server drives (set via setBotFactions). Each bot
+    // re-commits an expansion every ~1.5s so it keeps growing on its own.
+    this.botFactions = [];
+    this.botThinkEveryTicks = Math.max(1, Math.floor(this.tickHz * 1.5));
 
     this.tickInterval = setInterval(() => this._safeTick(), Math.floor(1000 / this.tickHz));
     log('info', `[Sim ${roomId}] started: ${numPlayers} players, ${this.tickHz} Hz`);
@@ -92,6 +112,9 @@ export class RoomSim {
     try {
       this.exports.simulationstate_tick(this.statePtr);
       const tick = this.exports.simulationstate_get_current_tick(this.statePtr);
+      if (this.botFactions.length && tick % this.botThinkEveryTicks === 0) {
+        this._botThink();
+      }
       if (tick % this.snapshotEveryTicks === 0) {
         this._sendSnapshot(tick);
       }
@@ -101,15 +124,32 @@ export class RoomSim {
     }
   }
 
+  setBotFactions(factionIds) {
+    this.botFactions = Array.isArray(factionIds) ? factionIds.slice() : [];
+  }
+
+  // Each bot commits troops toward a random point on the map. Expansion is
+  // radial, so the target only steers roughly / sets a stop point — this keeps
+  // bots steadily growing their territory in all directions.
+  _botThink() {
+    for (const fid of this.botFactions) {
+      const row = Math.floor(Math.random() * MAP_HEIGHT);
+      const col = Math.floor(Math.random() * MAP_WIDTH);
+      const target = row * MAP_WIDTH + col;
+      // Commit ~45% of current troops (sim no-ops if the bot is too depleted).
+      this.exports.simulationstate_execute_expansion(this.statePtr, fid, target, 45);
+    }
+  }
+
   _sendSnapshot(currentTick) {
     const dirtyPairs = this.exports.simulationstate_collect_dirty_cells(this.statePtr, this.lastSnapshotTick);
     let payload;
     if (dirtyPairs > FULL_SNAPSHOT_THRESHOLD) {
-      const ownerPtr = this.exports.simulationstate_get_owner_ptr(this.statePtr);
-      const ownerView = Buffer.from(this.exports.memory.buffer, ownerPtr, TOTAL_CELLS * 4);
-      payload = Buffer.allocUnsafe(1 + ownerView.byteLength);
+      const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
+      const cellView = Buffer.from(this.exports.memory.buffer, cellPtr, TOTAL_CELLS * 2);
+      payload = Buffer.allocUnsafe(1 + cellView.byteLength);
       payload[0] = 1;
-      ownerView.copy(payload, 1);
+      cellView.copy(payload, 1);
     } else {
       const scratchPtr = this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr);
       const scratchView = Buffer.from(this.exports.memory.buffer, scratchPtr, dirtyPairs * 8);
@@ -120,16 +160,36 @@ export class RoomSim {
 
     const troopsPtr = this.exports.simulationstate_get_player_total_troops_ptr(this.statePtr);
     const maxPopPtr = this.exports.simulationstate_get_player_max_population_cap_ptr(this.statePtr);
-    
-    // PLAYER_ARRAY_SIZE is 21 (0 to 20).
+    const attackPtr = this.exports.simulationstate_get_player_attack_pool_ptr(this.statePtr);
+
+    // PLAYER_ARRAY_SIZE is 21 (0 to 20). All three are f32 arrays.
     const troopsBuffer = Buffer.from(this.exports.memory.buffer, troopsPtr, 21 * 4);
     const maxPopBuffer = Buffer.from(this.exports.memory.buffer, maxPopPtr, 21 * 4);
+    const attackBuffer = Buffer.from(this.exports.memory.buffer, attackPtr, 21 * 4);
 
-    this.io.to(this.roomId).emit('sim-snapshot', { 
-      tick: currentTick, 
+    // Territory centroids (+ troops) for the in-territory name/troop labels.
+    const rowSum = new Float32Array(this.exports.memory.buffer, this.exports.simulationstate_get_player_row_sum_ptr(this.statePtr), 21);
+    const colSum = new Float32Array(this.exports.memory.buffer, this.exports.simulationstate_get_player_col_sum_ptr(this.statePtr), 21);
+    const owned = new Uint32Array(this.exports.memory.buffer, this.exports.simulationstate_get_player_owned_cells_ptr(this.statePtr), 21);
+    const troops = new Float32Array(this.exports.memory.buffer, troopsPtr, 21);
+    const centroids = {};
+    for (let fid = 1; fid <= 20; fid++) {
+      if (owned[fid] > 0) {
+        centroids[fid] = {
+          row: Math.round(rowSum[fid] / owned[fid]),
+          col: Math.round(colSum[fid] / owned[fid]),
+          troops: Math.floor(troops[fid]),
+        };
+      }
+    }
+
+    this.io.to(this.roomId).emit('sim-snapshot', {
+      tick: currentTick,
       ownerDelta: payload,
       playerTroops: troopsBuffer,
-      playerMaxPop: maxPopBuffer
+      playerMaxPop: maxPopBuffer,
+      playerAttack: attackBuffer,
+      centroids
     });
     this.lastSnapshotTick = currentTick;
   }
@@ -143,6 +203,9 @@ export class RoomSim {
       if (typeof targetCell === 'number' && typeof attackPercentage === 'number') {
         this.exports.simulationstate_execute_expansion(this.statePtr, factionId, targetCell, attackPercentage);
       }
+    } else if (input.type === 'cancel') {
+      // Recall un-spent attacking troops back to the defending pool.
+      this.exports.simulationstate_cancel_expansion(this.statePtr, factionId);
     }
   }
 

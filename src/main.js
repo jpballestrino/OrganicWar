@@ -435,17 +435,18 @@ async function startSimulationEngine() {
 
     // Local SimulationState is now just a render cache; the server holds
     // authoritative state and pushes owner deltas via sim-snapshot.
-    const terrainPtr = simulation.get_resource_yield_ptr();
-    const ownerPtr = simulation.get_owner_ptr();
+    // Owner + terrain + defense + has_building are bit-packed into one u16 per
+    // cell (cell_data); the renderer unpacks owner/terrain on the GPU.
+    const cellDataPtr = simulation.get_cell_data_ptr();
 
-    // Paint the static North America terrain straight into WASM memory. It never
-    // changes, so this runs once and the renderer uploads it a single time.
-    generateTerrain(wasmModule.memory, terrainPtr);
+    // Paint the static North America terrain into the packed cell buffer's
+    // terrain bits. It never changes, so this runs once at startup.
+    generateTerrain(wasmModule.memory, cellDataPtr);
 
     const canvas = document.getElementById('gameCanvas');
     renderer = new WebGLRenderer(canvas, wasmModule.memory);
-    renderer.setMemoryPointers(ownerPtr, terrainPtr);
-    registerSim({ memory: wasmModule.memory, ownerPointer: ownerPtr });
+    renderer.setMemoryPointers(cellDataPtr);
+    registerSim({ memory: wasmModule.memory, cellDataPtr });
 
     console.log("WASM render cache & WebGL Renderer Started!");
 
@@ -468,6 +469,15 @@ async function startSimulationEngine() {
           });
         }
       }
+    });
+
+    // Space cancels an in-progress attack, recalling the attacking troops to defense.
+    window.addEventListener('keydown', (e) => {
+      if (e.code !== 'Space' || state.gameState !== 'PLAYING') { return; }
+      const active = document.activeElement;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) { return; }
+      e.preventDefault();
+      socket.emit('sim-input', { type: 'cancel' });
     });
 
     requestAnimationFrame(gameLoop);
@@ -513,6 +523,9 @@ function gameLoop(time) {
         if (state.gameState === 'SPAWN_SELECTION') {
           // SAFE_ZONE_RADIUS = 80 cells
           renderer.drawSpawnOverlay(ctx, state.spawnSelections, parseInt(state.playerFaction), 80);
+        } else if (state.gameState === 'PLAYING') {
+          // Name + total troops drawn at each faction's territory centroid.
+          renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
         }
       }
   }

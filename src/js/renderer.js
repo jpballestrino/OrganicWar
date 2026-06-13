@@ -12,11 +12,9 @@ export class WebGLRenderer {
         this.camera = { x: 0, y: 0, zoom: 1.0 };
         this.keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false };
 
-        this.ownerPtr = null;
-        this.resourceYieldPtr = null;
-        
-        this.ownerTexture = null;
-        this.terrainTexture = null;
+        // Single packed-cell buffer (u16/cell): owner + terrain + defense + building.
+        this.cellDataPtr = null;
+        this.cellTexture = null;
 
         this.initShaders();
         this.initBuffers();
@@ -64,8 +62,9 @@ export class WebGLRenderer {
             in vec2 v_uv;
             out vec4 outColor;
 
-            uniform usampler2D u_owner_tex;
-            uniform usampler2D u_terrain_tex;
+            // One u16 per cell: owner (bits 0-6), terrain (bits 7-10),
+            // defense (bits 11-14), has-building (bit 15).
+            uniform usampler2D u_cell_tex;
 
             uniform vec2 u_resolution;
             uniform vec2 u_camera_pos;
@@ -110,8 +109,9 @@ export class WebGLRenderer {
                 }
 
                 ivec2 texCoord = ivec2(worldCoord);
-                uint terrainVal = texelFetch(u_terrain_tex, texCoord, 0).r;
-                uint ownerVal = texelFetch(u_owner_tex, texCoord, 0).r;
+                uint packed = texelFetch(u_cell_tex, texCoord, 0).r;
+                uint ownerVal = packed & 127u;
+                uint terrainVal = (packed >> 7u) & 15u;
 
                 vec3 baseColor;
                 if (terrainVal == 0u) {
@@ -133,6 +133,20 @@ export class WebGLRenderer {
                 } else if (ownerVal > 20u) {
                     // Debug: if ownerVal is out of range, draw red
                     baseColor = vec3(1.0, 0.0, 0.0);
+                }
+
+                // Territory borders: darken an owned cell that touches a cell with
+                // a different owner, drawing a 1-cell outline around each territory
+                // (against neutral land and against other factions alike).
+                if (ownerVal > 0u) {
+                    ivec2 sz = ivec2(u_map_size);
+                    uint l = (texCoord.x > 0)        ? (texelFetch(u_cell_tex, texCoord + ivec2(-1, 0), 0).r & 127u) : 0u;
+                    uint r = (texCoord.x < sz.x - 1) ? (texelFetch(u_cell_tex, texCoord + ivec2( 1, 0), 0).r & 127u) : 0u;
+                    uint u = (texCoord.y > 0)        ? (texelFetch(u_cell_tex, texCoord + ivec2( 0,-1), 0).r & 127u) : 0u;
+                    uint d = (texCoord.y < sz.y - 1) ? (texelFetch(u_cell_tex, texCoord + ivec2( 0, 1), 0).r & 127u) : 0u;
+                    if (l != ownerVal || r != ownerVal || u != ownerVal || d != ownerVal) {
+                        baseColor *= 0.45; // border line: darker shade of the territory color
+                    }
                 }
 
                 outColor = vec4(baseColor, 1.0);
@@ -158,13 +172,11 @@ export class WebGLRenderer {
             cameraPos: this.gl.getUniformLocation(this.program, 'u_camera_pos'),
             zoom: this.gl.getUniformLocation(this.program, 'u_zoom'),
             mapSize: this.gl.getUniformLocation(this.program, 'u_map_size'),
-            ownerTex: this.gl.getUniformLocation(this.program, 'u_owner_tex'),
-            terrainTex: this.gl.getUniformLocation(this.program, 'u_terrain_tex')
+            cellTex: this.gl.getUniformLocation(this.program, 'u_cell_tex')
         };
 
         this.gl.uniform2f(this.uniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
-        this.gl.uniform1i(this.uniforms.ownerTex, 0); // Texture unit 0
-        this.gl.uniform1i(this.uniforms.terrainTex, 1); // Texture unit 1
+        this.gl.uniform1i(this.uniforms.cellTex, 0); // Texture unit 0
     }
 
     compileShader(type, source) {
@@ -203,43 +215,18 @@ export class WebGLRenderer {
     }
 
     initTextures() {
-        // Create Owner Texture (R32UI - 32-bit unsigned integer)
-        this.ownerTexture = this.gl.createTexture();
-        this.gl.bindTexture(this.gl.TEXTURE_2D, this.ownerTexture);
+        // Single packed-cell texture (R16UI - 16-bit unsigned integer per cell).
+        this.cellTexture = this.gl.createTexture();
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.NEAREST);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.NEAREST);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
-        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.R32UI, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RED_INTEGER, this.gl.UNSIGNED_INT, null);
-
-        // Create Terrain Texture (R8UI - 8-bit unsigned integer)
-        this.terrainTexture = this.gl.createTexture();
-        this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
-        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.NEAREST);
-        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.NEAREST);
-        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
-        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
-        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.R8UI, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RED_INTEGER, this.gl.UNSIGNED_BYTE, null);
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.R16UI, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, null);
     }
 
-    setMemoryPointers(ownerPtr, resourceYieldPtr) {
-        this.ownerPtr = ownerPtr;
-        this.resourceYieldPtr = resourceYieldPtr;
-        this.terrainUploaded = false;
-    }
-
-    uploadTerrainOnce() {
-        if (this.terrainUploaded || this.resourceYieldPtr === null || !this.wasmMemory) return;
-        const terrainArray = new Uint8Array(this.wasmMemory.buffer, this.resourceYieldPtr, TOTAL_CELLS);
-        this.gl.activeTexture(this.gl.TEXTURE1);
-        this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
-        this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_BYTE, terrainArray);
-        this.terrainUploaded = true;
-    }
-
-    invalidateTerrain() {
-        // Call this if terrain ever changes (e.g., naval flooding, terraforming).
-        this.terrainUploaded = false;
+    setMemoryPointers(cellDataPtr) {
+        this.cellDataPtr = cellDataPtr;
     }
 
     setupControls() {
@@ -328,14 +315,12 @@ export class WebGLRenderer {
 
         this.updateCamera(dt);
 
-        // Upload memory to GPU
-        if (this.ownerPtr !== null && this.resourceYieldPtr !== null && this.wasmMemory) {
-            this.uploadTerrainOnce();
-
-            const ownerArray = new Uint32Array(this.wasmMemory.buffer, this.ownerPtr, TOTAL_CELLS);
+        // Upload the packed cell buffer to the GPU (owner + terrain in one texture).
+        if (this.cellDataPtr !== null && this.wasmMemory) {
+            const cellArray = new Uint16Array(this.wasmMemory.buffer, this.cellDataPtr, TOTAL_CELLS);
             this.gl.activeTexture(this.gl.TEXTURE0);
-            this.gl.bindTexture(this.gl.TEXTURE_2D, this.ownerTexture);
-            this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_INT, ownerArray);
+            this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
+            this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, cellArray);
         }
 
         // Draw
@@ -378,5 +363,50 @@ export class WebGLRenderer {
             ctx.textAlign = 'center';
             ctx.fillText(isMe ? 'YOU' : 'P' + fid, screenPos.x, screenPos.y - 10);
         }
+    }
+
+    // Draw each faction's name + total troops at its territory centroid.
+    // `centroids` is { fid: { row, col, troops } } from the latest sim-snapshot.
+    drawFactionLabels(ctx, centroids, slots, myFactionId) {
+        if (!centroids) return;
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round';
+
+        for (const fid in centroids) {
+            const c = centroids[fid];
+            // Only the sim-snapshot shape has row/col/troops; ignore the
+            // spawn-time { r, c } entries until the first snapshot arrives.
+            if (!c || typeof c.row !== 'number' || typeof c.col !== 'number' || typeof c.troops !== 'number') {
+                continue;
+            }
+            const pos = this.worldToScreen(c.col, c.row);
+
+            // Cull labels outside the viewport.
+            if (pos.x < -60 || pos.x > this.canvas.width + 60 ||
+                pos.y < -30 || pos.y > this.canvas.height + 30) { continue; }
+
+            const slot = slots && slots[fid];
+            const name = slot && slot.nickname ? slot.nickname : ('Faction ' + fid);
+            const isMe = parseInt(fid) === myFactionId;
+            const troopsText = c.troops.toLocaleString();
+
+            // Name (bold) on top, troop count below; dark outline for legibility.
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+            ctx.lineWidth = 3;
+
+            ctx.font = "bold 13px 'Orbitron', sans-serif";
+            ctx.strokeText(name, pos.x, pos.y - 8);
+            ctx.fillStyle = isMe ? '#ffe07a' : '#ffffff';
+            ctx.fillText(name, pos.x, pos.y - 8);
+
+            ctx.font = "12px 'Orbitron', sans-serif";
+            ctx.strokeText(troopsText, pos.x, pos.y + 8);
+            ctx.fillStyle = '#d0d0d0';
+            ctx.fillText(troopsText, pos.x, pos.y + 8);
+        }
+
+        ctx.textBaseline = 'alphabetic';
     }
 }

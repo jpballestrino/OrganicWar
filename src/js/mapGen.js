@@ -1,14 +1,15 @@
 // Static "North America" terrain generator.
 //
-// Terrain lives in the WASM `resource_yield` buffer (one u8 per cell):
-//   0 = plains, 1 = highlands, 2 = mountains, 3 = water
-// The map is purely static — the same deterministic shape every game — so we
-// generate it client-side straight into WASM memory at startup. The shape is
-// expressed as a pure function of normalized coordinates (nx, ny) in [0,1]
-// (nx: 0 = west .. 1 = east, ny: 0 = north .. 1 = south) so it is resolution
-// independent and can be previewed as ASCII without running the renderer.
+// Terrain is one of: 0 = plains, 1 = highlands, 2 = mountains, 3 = water.
+// It is written into the terrain bits (7-10) of the WASM packed cell buffer
+// (one u16 per cell — see src/js/constants.js). The map is purely static — the
+// same deterministic shape every game — so we generate it client-side straight
+// into WASM memory at startup. The shape is expressed as a pure function of
+// normalized coordinates (nx, ny) in [0,1] (nx: 0 = west .. 1 = east, ny: 0 =
+// north .. 1 = south) so it is resolution independent and can be previewed as
+// ASCII without running the renderer.
 
-import { MAP_WIDTH, MAP_HEIGHT, TOTAL_CELLS } from './constants.js';
+import { MAP_WIDTH, MAP_HEIGHT, TOTAL_CELLS, CELL_TERRAIN_SHIFT, CELL_TERRAIN_MASK } from './constants.js';
 
 export const TERRAIN = { PLAINS: 0, HIGHLANDS: 1, MOUNTAINS: 2, WATER: 3 };
 
@@ -93,15 +94,19 @@ export function terrainAt(nx, ny) {
   return TERRAIN.PLAINS;
 }
 
-// Fill the WASM terrain buffer in place. `memory` is the WASM Memory, `ptr` the
-// resource_yield pointer (TOTAL_CELLS bytes). Called once at startup.
+// Write the static terrain into the packed cell buffer in place. `memory` is the
+// WASM Memory, `ptr` the cell_data pointer (TOTAL_CELLS u16s). Only the terrain
+// bits are touched; owner/defense/building bits are preserved. Called once at
+// startup (cell_data starts all-zero, so this effectively seeds the map).
 export function generateTerrain(memory, ptr) {
-  const terrain = new Uint8Array(memory.buffer, ptr, TOTAL_CELLS);
+  const cells = new Uint16Array(memory.buffer, ptr, TOTAL_CELLS);
   let i = 0;
   for (let y = 0; y < MAP_HEIGHT; y++) {
     const ny = y / MAP_HEIGHT;
     for (let x = 0; x < MAP_WIDTH; x++) {
-      terrain[i++] = terrainAt(x / MAP_WIDTH, ny);
+      const t = (terrainAt(x / MAP_WIDTH, ny) << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
+      cells[i] = (cells[i] & ~CELL_TERRAIN_MASK) | t;
+      i++;
     }
   }
 }

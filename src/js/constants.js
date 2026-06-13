@@ -7,6 +7,32 @@ export const MAP_WIDTH = COLS * CELL_SIZE;
 export const MAP_HEIGHT = ROWS * CELL_SIZE;
 export const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 
+// Packed per-cell layout (one u16 per cell). Mirrors the bit layout in
+// simulation-core/src/lib.rs — keep both in lockstep.
+//   bits 0-6   owner (0-127), bits 7-10 terrain (0-15),
+//   bits 11-14 defense (0-15), bit 15 has-building.
+export const CELL_OWNER_MASK = 0x007F;
+export const CELL_TERRAIN_SHIFT = 7;
+export const CELL_TERRAIN_MASK = 0x000F << CELL_TERRAIN_SHIFT; // 0x0780
+
+// Population growth model — MUST mirror simulation-core/src/lib.rs. Used only to
+// display the growth rate in the HUD (the server runs the authoritative sim).
+export const POP_CAP_PER_CELL = 2;
+export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill
+export const PEAK_GROWTH_FRACTION = 0.05; // peak troops/sec as a fraction of cap
+export const MIN_GROWTH_PER_SEC = 5.0;    // recovery floor
+
+// Troops/sec a player gains right now, given current troops and max population.
+// Same downward parabola the sim uses (peak at GROWTH_PEAK_RATIO, 0 at full pop).
+export function troopGrowthPerSec(troops, maxPop) {
+  if (maxPop <= 0 || troops >= maxPop) { return 0; }
+  const p = Math.min(Math.max(troops / maxPop, 0), 1);
+  const root2 = 2 * GROWTH_PEAK_RATIO - 1;                       // -0.2
+  const shapePeak = (1 - GROWTH_PEAK_RATIO) * (GROWTH_PEAK_RATIO - root2); // 0.36
+  const shape = Math.max((1 - p) * (p - root2) / shapePeak, 0);
+  return Math.max(maxPop * PEAK_GROWTH_FRACTION * shape, MIN_GROWTH_PER_SEC);
+}
+
 export const factionRGB = {
   1: [84, 153, 199],   // Soft Blue
   2: [205, 97, 85],    // Soft Red
