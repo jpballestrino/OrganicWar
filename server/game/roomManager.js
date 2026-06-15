@@ -452,24 +452,27 @@ export function startMatchNow(room) {
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
       onGameOver: (winnerId) => handleGameOver(room, winnerId),
-    });
-    for (let [fid, pos] of room.spawnSelections.entries()) {
-      room.simReal.spawnFaction(fid, pos.row, pos.col);
-    }
-    // Hand the sim the list of bot-controlled factions so it drives them.
-    const botFactions = [];
-    for (let fid = 1; fid <= room.maxPlayers; fid++) {
-      if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
-        botFactions.push(fid);
+      onReady: () => {
+        for (let [fid, pos] of room.spawnSelections.entries()) {
+          room.simReal.spawnFaction(fid, pos.row, pos.col);
+        }
+        // Hand the sim the list of bot-controlled factions so it drives them.
+        const botFactions = [];
+        for (let fid = 1; fid <= room.maxPlayers; fid++) {
+          if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
+            botFactions.push(fid);
+          }
+        }
+        room.simReal.setBotFactions(botFactions);
+
+        // Tell the clients the simulation is finally booted and running.
+        io.to(room.id).emit('start-match-now', { centroids: room.sim.factionCentroids });
+        log('info', `[Room ${room.id}] Match started. (${Object.keys(room.activePlayerSlots).length} slots)`);
       }
-    }
-    room.simReal.setBotFactions(botFactions);
+    });
   } catch (err) {
     log('error', `[Room ${room.id}] Failed to start server sim`, err.message);
   }
-
-  io.to(room.id).emit('start-match-now', { centroids: room.sim.factionCentroids });
-  log('info', `[Room ${room.id}] Match started. (${Object.keys(room.activePlayerSlots).length} slots)`);
 }
 
 export function updateLobbyList() {

@@ -25,7 +25,7 @@ Per-room memory is ~110–130 MB (the `neighbor_graph` alone is ~63 MB).
 
 ---
 
-## Step 0 — Instrumentation (do this first)
+## Step 0 — Instrumentation (do this first) DONE
 
 **Risk:** none · **Impact:** enables measuring every other step · **Scope:** Server JS + Client JS
 
@@ -48,7 +48,7 @@ Without numbers you can't tell if a step is "worth applying." Add lightweight, t
 
 ---
 
-## Step 1 — Lower the sim tick rate
+## Step 1 — Lower the sim tick rate DONE 
 
 **Risk:** low (config) · **Impact:** 2–3× server CPU cut · **Scope:** Rust (constants) + Server JS / env
 
@@ -74,7 +74,7 @@ multiplying by `60/tick_hz` once.)
 
 ---
 
-## Step 2 — Drop `neighbor_graph` (compute neighbors inline)
+## Step 2 — Drop `neighbor_graph` (compute neighbors inline) DONE
 
 **Risk:** low · **Impact:** −63 MB per room; slight CPU win (better cache locality) · **Scope:** Rust
 
@@ -99,7 +99,7 @@ It's a regular grid, so the 8 Moore neighbors are O(1) arithmetic. Storing 63 MB
 
 ---
 
-## Step 3 — Incremental dirty list (replace the full-grid `collect_dirty_cells` scan)
+## Step 3 — Incremental dirty list (replace the full-grid `collect_dirty_cells` scan) DONE
 
 **Risk:** low–medium · **Impact:** removes a 2M-cell scan per snapshot (40M/s → O(changes)) · **Scope:** Rust + Server JS
 
@@ -236,7 +236,7 @@ territory size. Long-match soak test for frontier drift (no missed/extra conquer
 
 ---
 
-## Step 10 — Horizontal scaling (multi-process + Redis adapter)
+## Step 10 — Horizontal scaling (multi-process + Redis adapter) DONE
 
 **Risk:** high (infra) · **Impact:** scales rooms past one core · **Scope:** Server JS + infra
 
