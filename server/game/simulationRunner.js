@@ -89,7 +89,7 @@ export class RoomSim {
       opts.startMaxCap ?? 5000,
     );
 
-    this.tickHz = parseInt(process.env.SIM_TICK_HZ) || 60;
+    this.tickHz = parseInt(process.env.SIM_TICK_HZ) || 25;
     // Keep the sim's per-second rates (troop growth) correct at this tick rate.
     this.exports.simulationstate_set_tick_hz(this.statePtr, this.tickHz);
     // Snapshot ~20x/sec so border expansion is shown as a smooth creep rather

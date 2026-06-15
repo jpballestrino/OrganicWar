@@ -58,9 +58,9 @@ const INITIAL_FILL_RATIO: f32 = 0.80;
 // conquered per tick ≈ attack_pool * EXPANSION_CELLS_PER_TROOP, clamped to
 // [MIN, MAX] so a tiny attack still creeps forward and a huge one advances as
 // an organic shell rather than teleporting. As the pool drains the front slows.
-const EXPANSION_CELLS_PER_TROOP: f32 = 0.3;
-const MIN_CONQUERS_PER_TICK: usize = 2;
-const MAX_CONQUERS_PER_TICK: usize = 100;
+const EXPANSION_CELLS_PER_TROOP: f32 = 0.72;
+const MIN_CONQUERS_PER_TICK: usize = 5;
+const MAX_CONQUERS_PER_TICK: usize = 240;
 
 // A front with fewer committed troops than this is treated as inactive/closed.
 const FRONT_EPS: f32 = 0.0001;
@@ -99,15 +99,13 @@ pub struct SimulationState {
     difficulty_to_invade: Vec<u32>,
     last_modified_tick: Vec<u32>,
     
-    // Fixed-stride flat array of 8 neighbors per cell (Moore neighborhood):
-    //   0=Top, 1=Right, 2=Bottom, 3=Left,
-    //   4=Top-Left, 5=Top-Right, 6=Bottom-Right, 7=Bottom-Left.
-    // Using i32 to allow -1 for boundary/no-neighbor conditions.
-    neighbor_graph: Vec<i32>,
 
     // Scratch buffer for delta export: interleaved (cell_id, owner_id) u32 pairs.
     // Sized to worst case so we never reallocate during a tick.
     delta_scratch: Vec<u32>,
+    
+    // Incremental dirty list of cell_ids whose ownership changed since the last snapshot clear.
+    dirty_cells: Vec<u32>,
 
     // Active defense buildings: each entry is center encoded as row*MAP_WIDTH+col.
     defense_buildings: Vec<u32>,
@@ -162,14 +160,14 @@ pub struct SimulationState {
 impl SimulationState {
     #[wasm_bindgen(constructor)]
     pub fn new() -> SimulationState {
-        let mut state = SimulationState {
+        let state = SimulationState {
             // Map Initializers
             cell_data: vec![0; TOTAL_CELLS],
             troops: vec![0; TOTAL_CELLS],
             difficulty_to_invade: vec![0; TOTAL_CELLS],
             last_modified_tick: vec![0; TOTAL_CELLS],
-            neighbor_graph: vec![-1; TOTAL_CELLS * 8],
             delta_scratch: vec![0; TOTAL_CELLS * 2],
+            dirty_cells: Vec::new(),
             defense_buildings: Vec::new(),
             destroyed_buildings_buf: Vec::new(),
             placed_buildings_buf: Vec::new(),
@@ -194,7 +192,6 @@ impl SimulationState {
             rng_state: 0x9E3779B9,
         };
 
-        state.initialize_neighbor_graph();
         state
     }
 
@@ -209,7 +206,12 @@ impl SimulationState {
 
     #[inline]
     fn set_cell_owner(&mut self, i: usize, owner: u32) {
-        self.cell_data[i] = (self.cell_data[i] & !OWNER_MASK) | ((owner as u16) & OWNER_MASK);
+        let old_owner = self.cell_data[i] & OWNER_MASK;
+        let new_owner = (owner as u16) & OWNER_MASK;
+        if old_owner != new_owner {
+            self.cell_data[i] = (self.cell_data[i] & !OWNER_MASK) | new_owner;
+            self.dirty_cells.push(i as u32);
+        }
     }
 
     #[inline]
@@ -263,54 +265,26 @@ impl SimulationState {
         false
     }
 
-    /// Precomputes the neighbor graph for O(1) adjacency lookups.
-    fn initialize_neighbor_graph(&mut self) {
-        for row in 0..MAP_HEIGHT {
-            for col in 0..MAP_WIDTH {
-                let cell_id = row * MAP_WIDTH + col;
-                let base_idx = cell_id * 8;
+    /// Returns the neighbor of a cell in a given direction (0-7), or -1 if none.
+    #[inline(always)]
+    fn get_neighbor(cell: usize, dir: usize) -> i32 {
+        let row = cell / MAP_WIDTH;
+        let col = cell % MAP_WIDTH;
+        let has_up = row > 0;
+        let has_down = row < MAP_HEIGHT - 1;
+        let has_left = col > 0;
+        let has_right = col < MAP_WIDTH - 1;
 
-                let has_up = row > 0;
-                let has_down = row < MAP_HEIGHT - 1;
-                let has_left = col > 0;
-                let has_right = col < MAP_WIDTH - 1;
-
-                // --- Cardinal neighbors ---
-                // Top (0)
-                if has_up {
-                    self.neighbor_graph[base_idx + 0] = ((row - 1) * MAP_WIDTH + col) as i32;
-                }
-                // Right (1)
-                if has_right {
-                    self.neighbor_graph[base_idx + 1] = (row * MAP_WIDTH + col + 1) as i32;
-                }
-                // Bottom (2)
-                if has_down {
-                    self.neighbor_graph[base_idx + 2] = ((row + 1) * MAP_WIDTH + col) as i32;
-                }
-                // Left (3)
-                if has_left {
-                    self.neighbor_graph[base_idx + 3] = (row * MAP_WIDTH + col - 1) as i32;
-                }
-
-                // --- Diagonal neighbors (completes the Moore neighborhood) ---
-                // Top-Left (4)
-                if has_up && has_left {
-                    self.neighbor_graph[base_idx + 4] = ((row - 1) * MAP_WIDTH + col - 1) as i32;
-                }
-                // Top-Right (5)
-                if has_up && has_right {
-                    self.neighbor_graph[base_idx + 5] = ((row - 1) * MAP_WIDTH + col + 1) as i32;
-                }
-                // Bottom-Right (6)
-                if has_down && has_right {
-                    self.neighbor_graph[base_idx + 6] = ((row + 1) * MAP_WIDTH + col + 1) as i32;
-                }
-                // Bottom-Left (7)
-                if has_down && has_left {
-                    self.neighbor_graph[base_idx + 7] = ((row + 1) * MAP_WIDTH + col - 1) as i32;
-                }
-            }
+        match dir {
+            0 => if has_up { ((row - 1) * MAP_WIDTH + col) as i32 } else { -1 },
+            1 => if has_right { (row * MAP_WIDTH + col + 1) as i32 } else { -1 },
+            2 => if has_down { ((row + 1) * MAP_WIDTH + col) as i32 } else { -1 },
+            3 => if has_left { (row * MAP_WIDTH + col - 1) as i32 } else { -1 },
+            4 => if has_up && has_left { ((row - 1) * MAP_WIDTH + col - 1) as i32 } else { -1 },
+            5 => if has_up && has_right { ((row - 1) * MAP_WIDTH + col + 1) as i32 } else { -1 },
+            6 => if has_down && has_right { ((row + 1) * MAP_WIDTH + col + 1) as i32 } else { -1 },
+            7 => if has_down && has_left { ((row + 1) * MAP_WIDTH + col - 1) as i32 } else { -1 },
+            _ => -1,
         }
     }
 
@@ -481,9 +455,8 @@ impl SimulationState {
             if o == 0 || o >= PLAYER_ARRAY_SIZE || !consider[o] {
                 continue;
             }
-            let base = cell * 8;
             for i in 0..8 {
-                let n = self.neighbor_graph[base + i];
+                let n = Self::get_neighbor(cell, i);
                 if n == -1 { continue; }
                 let n_idx = n as usize;
                 let terrain = self.cell_terrain(n_idx);
@@ -641,10 +614,9 @@ impl SimulationState {
     /// Higher = more enclosed by our territory; used to fill concavities first.
     #[inline]
     fn owned_neighbor_count(&self, cell: usize, f: usize) -> u8 {
-        let base = cell * 8;
         let mut count = 0u8;
         for i in 0..8 {
-            let nb = self.neighbor_graph[base + i];
+            let nb = Self::get_neighbor(cell, i);
             if nb != -1 && self.cell_owner(nb as usize) as usize == f {
                 count += 1;
             }
@@ -707,9 +679,8 @@ impl SimulationState {
             if owner == 0 || !any_front[owner] { continue; }
 
             let owner_base = owner * PLAYER_ARRAY_SIZE;
-            let base_idx = cell_id * 8;
             for i in 0..8 {
-                let n = self.neighbor_graph[base_idx + i];
+                let n = Self::get_neighbor(cell_id, i);
                 if n != -1 {
                     let n_idx = n as usize;
                     let n_owner = self.cell_owner(n_idx) as usize;
@@ -894,8 +865,7 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn get_last_modified_tick_ptr(&self) -> *const u32 { self.last_modified_tick.as_ptr() }
 
-    #[wasm_bindgen]
-    pub fn get_neighbor_graph_ptr(&self) -> *const i32 { self.neighbor_graph.as_ptr() }
+
     
     // Player Fields
     #[wasm_bindgen]
@@ -937,17 +907,25 @@ impl SimulationState {
 
     #[wasm_bindgen]
     pub fn collect_dirty_cells(&mut self, since_tick: u32) -> u32 {
+        self.dirty_cells.sort_unstable();
+        self.dirty_cells.dedup();
+
         let mut count: usize = 0;
         let cap = self.delta_scratch.len() / 2;
-        for cell_id in 0..TOTAL_CELLS {
+        
+        for &cell_idx in &self.dirty_cells {
             if count >= cap { break; }
+            let cell_id = cell_idx as usize;
+            
             if self.last_modified_tick[cell_id] >= since_tick {
                 let owner = self.cell_owner(cell_id);
-                self.delta_scratch[count * 2] = cell_id as u32;
+                self.delta_scratch[count * 2] = cell_idx;
                 self.delta_scratch[count * 2 + 1] = owner;
                 count += 1;
             }
         }
+        
+        self.dirty_cells.clear();
         count as u32
     }
 

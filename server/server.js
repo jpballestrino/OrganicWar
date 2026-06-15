@@ -66,7 +66,7 @@ export const io = new Server(httpServer, {
     origin: CORS_ORIGIN,
     methods: ['GET', 'POST'],
   },
-  perMessageDeflate: false,
+  perMessageDeflate: true,
 });
 
 export const ipConnectionCounts = new Map();
