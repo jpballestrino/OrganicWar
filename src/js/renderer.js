@@ -715,6 +715,69 @@ export class WebGLRenderer {
         }
     }
 
+    // Draw parabolic missiles flying to their targets.
+    drawMissiles(ctx, missiles, explosions) {
+        if (!missiles || missiles.length === 0) return missiles || [];
+        const now = performance.now();
+        const surviving = [];
+        
+        for (const m of missiles) {
+            const t = (now - m.startedAt) / m.flightTimeMs;
+            
+            if (t >= 1.0) {
+                // Missile landed! Trigger explosion.
+                explosions.push({ row: m.targetRow, col: m.targetCol, blastRadius: MISSILE_BLAST_RADIUS, startedAt: now });
+                continue; 
+            }
+            
+            surviving.push(m);
+            
+            // Interpolate position
+            const currRow = m.sourceRow + (m.targetRow - m.sourceRow) * t;
+            const currCol = m.sourceCol + (m.targetCol - m.sourceCol) * t;
+            
+            // Calculate screen positions
+            const sStart = this.worldToScreen(m.sourceCol, m.sourceRow);
+            const sTarget = this.worldToScreen(m.targetCol, m.targetRow);
+            const sCurr = this.worldToScreen(currCol, currRow);
+            
+            // Parabola math: peak at t = 0.5. Height in pixels.
+            const arcHeight = 150 * Math.sin(t * Math.PI);
+            
+            // Actual draw Y is offset upwards by the arcHeight
+            const drawX = sCurr.x;
+            const drawY = sCurr.y - arcHeight;
+            
+            const factionColor = factionHexColors[m.factionId] || '#fff';
+            
+            // Draw a tiny trailing line (from slightly earlier t)
+            const tOld = Math.max(0, t - 0.05);
+            const oldRow = m.sourceRow + (m.targetRow - m.sourceRow) * tOld;
+            const oldCol = m.sourceCol + (m.targetCol - m.sourceCol) * tOld;
+            const sOld = this.worldToScreen(oldCol, oldRow);
+            const oldArc = 150 * Math.sin(tOld * Math.PI);
+            
+            ctx.beginPath();
+            ctx.moveTo(sOld.x, sOld.y - oldArc);
+            ctx.lineTo(drawX, drawY);
+            ctx.strokeStyle = factionColor;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // Draw the glowing missile head
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.shadowColor = factionColor;
+            ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.shadowBlur = 0; // reset
+        }
+        
+        return surviving;
+    }
+
     // Draw active missile blasts as an expanding fading flash. Returns the list of
     // explosions still animating (callers reassign to prune finished ones).
     drawExplosions(ctx, explosions) {

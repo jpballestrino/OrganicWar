@@ -579,6 +579,15 @@ async function startSimulationEngine() {
       if (e.key === '2' && state.gameState === 'PLAYING') {
         if (inField) return;
         e.preventDefault();
+        const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;
+        if (siloCount === 0) {
+          showToast('You must build a Missile Silo first.', 'error');
+          return;
+        }
+        if (state.playerGold < MISSILE_COST) {
+          showToast('Not enough gold to fire a missile.', 'error');
+          return;
+        }
         state.activePurchaseMode = state.activePurchaseMode === 'missile' ? null : 'missile';
         return;
       }
@@ -588,6 +597,35 @@ async function startSimulationEngine() {
         return;
       }
     });
+
+    // HUD Build Button Click Listeners
+    const bindBuildButton = (id, mode) => {
+      const btn = document.getElementById(id);
+      if (btn) {
+        btn.addEventListener('click', (e) => {
+          if (state.gameState !== 'PLAYING') return;
+          if (btn.classList.contains('disabled')) {
+            if (mode === 'missile') {
+              const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;
+              if (siloCount === 0) {
+                showToast('You must build a Missile Silo first.', 'error');
+                return;
+              }
+            }
+            showToast('Not enough gold to build this.', 'error');
+            return;
+          }
+          state.activePurchaseMode = state.activePurchaseMode === mode ? null : mode;
+        });
+      }
+    };
+
+    // Need to wait slightly or bind them dynamically since the HUD is created 
+    // after startSimulationEngine if it's dynamic. Wait, gameUITemplate is in index.html already via main.js rendering it?
+    // Actually gameArea is rendered initially. Let's bind them right away.
+    bindBuildButton('btnBuildTower', 'defense_building');
+    bindBuildButton('btnBuildSilo', 'silo');
+    bindBuildButton('btnFireMissile', 'missile');
 
     requestAnimationFrame(gameLoop);
   } catch (err) {
@@ -638,6 +676,15 @@ function gameLoop(time) {
           if (gameCanvas) gameCanvas.style.cursor = 'default';
       }
 
+      // Sync HUD buttons active state
+      const btnTower = document.getElementById('btnBuildTower');
+      const btnSilo = document.getElementById('btnBuildSilo');
+      const btnMissile = document.getElementById('btnFireMissile');
+      
+      if (btnTower) btnTower.classList.toggle('active', state.activePurchaseMode === 'defense_building');
+      if (btnSilo) btnSilo.classList.toggle('active', state.activePurchaseMode === 'silo');
+      if (btnMissile) btnMissile.classList.toggle('active', state.activePurchaseMode === 'missile');
+
       if (overlayCanvas) {
         if (overlayCanvas.width !== window.innerWidth || overlayCanvas.height !== window.innerHeight) {
           overlayCanvas.width = window.innerWidth;
@@ -654,6 +701,8 @@ function gameLoop(time) {
           renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
           // Draw defense building + silo icons.
           renderer.drawBuildings(ctx, state.buildings);
+          // Active missiles flying through the air
+          state.activeMissiles = renderer.drawMissiles(ctx, state.activeMissiles, state.activeExplosions);
           // Active missile blasts (expanding flash), pruned when finished.
           state.activeExplosions = renderer.drawExplosions(ctx, state.activeExplosions);
           // Placement / targeting previews depending on the active mode.

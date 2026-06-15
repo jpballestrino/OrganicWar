@@ -7,6 +7,7 @@ export const state = {
   gold: {},
   cellCounts: {},
   activeExplosions: [],
+  activeMissiles: [],
   activeAttacks: [],
   missilesFired: {},
   factionStructures: {},

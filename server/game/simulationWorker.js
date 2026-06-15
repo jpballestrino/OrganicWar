@@ -225,13 +225,15 @@ class RoomSimWorker {
     const count = this.exports.simulationstate_get_fired_missiles_count(this.statePtr);
     if (!count) return;
     const ptr = this.exports.simulationstate_get_fired_missiles_ptr(this.statePtr);
-    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 3);
+    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 5);
     for (let i = 0; i < count; i++) {
-      const row = buf[i * 3];
-      const col = buf[i * 3 + 1];
-      const blastRadius = buf[i * 3 + 2];
-      parentPort.postMessage({ type: 'emit', event: 'missile-explosion', payload: {
-        row, col, blastRadius
+      const sourceRow = buf[i * 5];
+      const sourceCol = buf[i * 5 + 1];
+      const targetRow = buf[i * 5 + 2];
+      const targetCol = buf[i * 5 + 3];
+      const factionId = buf[i * 5 + 4];
+      parentPort.postMessage({ type: 'emit', event: 'missile-fired', payload: {
+        sourceRow, sourceCol, targetRow, targetCol, factionId
       }});
     }
     this.exports.simulationstate_clear_fired_missiles(this.statePtr);

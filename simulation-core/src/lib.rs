@@ -1129,7 +1129,7 @@ impl SimulationState {
 
         if self.player_gold[f] < MISSILE_COST { return 1; }
 
-        // Require a completed silo OWNED by this faction within firing range.
+        let mut source_center = 0;
         let mut in_range = false;
         for i in 0..self.defense_buildings.len() {
             if self.building_type[i] != BTYPE_SILO { continue; }
@@ -1140,7 +1140,11 @@ impl SimulationState {
             let cc = (center % MAP_WIDTH as u32) as i32;
             let dr = target_row - cr;
             let dc = target_col - cc;
-            if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE { in_range = true; break; }
+            if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE { 
+                in_range = true; 
+                source_center = center;
+                break; 
+            }
         }
         if !in_range { return 1; }
 
@@ -1183,9 +1187,14 @@ impl SimulationState {
             }
         }
 
+        let source_row = (source_center / MAP_WIDTH as u32) as u32;
+        let source_col = (source_center % MAP_WIDTH as u32) as u32;
+
+        self.fired_missiles_buf.push(source_row);
+        self.fired_missiles_buf.push(source_col);
         self.fired_missiles_buf.push(target_row as u32);
         self.fired_missiles_buf.push(target_col as u32);
-        self.fired_missiles_buf.push(radius as u32);
+        self.fired_missiles_buf.push(faction_id);
 
         0
     }
@@ -1419,10 +1428,10 @@ impl SimulationState {
         self.placed_buildings_buf.clear();
     }
 
-    /// Number of (row, col, radius) triplets in the fired missiles buffer.
+    /// Number of (source_row, source_col, target_row, target_col, faction_id) tuples in the fired missiles buffer.
     #[wasm_bindgen]
     pub fn get_fired_missiles_count(&self) -> u32 {
-        (self.fired_missiles_buf.len() / 3) as u32
+        (self.fired_missiles_buf.len() / 5) as u32
     }
 
     #[wasm_bindgen]

@@ -68,12 +68,36 @@ export function gameUITemplate() {
                     <span class="hud-stat-value text-success" id="lblMyGoldRate">+0/s</span>
                 </div>
                 <div class="hud-stat-box">
-                    <span class="hud-stat-label" title="Defense buildings you have placed">Buildings</span>
-                    <span class="hud-stat-value text-muted" id="lblMyBuildings">0</span>
+                    <span class="hud-stat-label" title="Defense Towers you have placed">Towers</span>
+                    <span class="hud-stat-value text-muted" id="lblMyTowers">0</span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label" title="Missile Silos you have placed">Silos</span>
+                    <span class="hud-stat-value text-muted" id="lblMySilos">0</span>
                 </div>
             </div>
-            <div class="hud-controls">
-                <div class="hud-stat-label">Press <span class="text-gold">3</span> to build a Defense Tower <span class="text-gold">(2,000g)</span></div>
+            <div class="hud-controls hud-build-controls">
+                <div class="build-option" id="btnBuildTower" data-mode="defense_building">
+                    <span class="build-key">3</span>
+                    <div class="build-info">
+                        <span class="build-name">Defense Tower</span>
+                        <span class="build-cost text-gold">2,000g</span>
+                    </div>
+                </div>
+                <div class="build-option" id="btnBuildSilo" data-mode="silo">
+                    <span class="build-key">4</span>
+                    <div class="build-info">
+                        <span class="build-name">Missile Silo</span>
+                        <span class="build-cost text-gold">10,000g</span>
+                    </div>
+                </div>
+                <div class="build-option" id="btnFireMissile" data-mode="missile">
+                    <span class="build-key">2</span>
+                    <div class="build-info">
+                        <span class="build-name">Fire Missile</span>
+                        <span class="build-cost text-gold">2,000g</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

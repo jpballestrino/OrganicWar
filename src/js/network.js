@@ -472,11 +472,29 @@ export function initNetwork() {
         const lblGoldRate = document.getElementById('lblMyGoldRate');
         if (lblGoldRate) lblGoldRate.innerText = `+${goldRate}/s`;
 
-        // Count of this player's own placed defense buildings.
-        const lblBuildings = document.getElementById('lblMyBuildings');
-        if (lblBuildings) {
-          lblBuildings.innerText = state.buildings.filter(b => b.factionId === fid).length;
+        // Count of this player's own placed buildings.
+        const myBuildings = state.buildings.filter(b => b.factionId === fid);
+        
+        const lblTowers = document.getElementById('lblMyTowers');
+        if (lblTowers) {
+          lblTowers.innerText = myBuildings.filter(b => b.type === 'defense').length;
         }
+
+        const siloCount = myBuildings.filter(b => b.type === 'silo').length;
+        const lblSilos = document.getElementById('lblMySilos');
+        if (lblSilos) {
+          lblSilos.innerText = siloCount;
+        }
+
+        // Toggle disabled states on HUD build buttons
+        const btnTower = document.getElementById('btnBuildTower');
+        if (btnTower) btnTower.classList.toggle('disabled', gold < DEFENSE_BUILDING_COST);
+
+        const btnSilo = document.getElementById('btnBuildSilo');
+        if (btnSilo) btnSilo.classList.toggle('disabled', gold < SILO_BUILDING_COST);
+
+        const btnMissile = document.getElementById('btnFireMissile');
+        if (btnMissile) btnMissile.classList.toggle('disabled', gold < MISSILE_COST || siloCount === 0);
       }
     }
   });
@@ -538,8 +556,19 @@ export function initNetwork() {
     if (b) b.factionId = factionId;
   });
 
-  socket.on('missile-explosion', ({ row, col, blastRadius }) => {
-    state.activeExplosions.push({ row, col, blastRadius: blastRadius ?? MISSILE_BLAST_RADIUS, startedAt: performance.now() });
+  socket.on('missile-fired', ({ sourceRow, sourceCol, targetRow, targetCol, factionId }) => {
+    // Distance from source to target determines flight time
+    const dr = targetRow - sourceRow;
+    const dc = targetCol - sourceCol;
+    const dist = Math.sqrt(dr * dr + dc * dc);
+    const speed = 40; // cells per second (adjust to taste)
+    const flightTimeMs = (dist / speed) * 1000;
+
+    state.activeMissiles.push({
+      sourceRow, sourceCol, targetRow, targetCol, factionId,
+      startedAt: performance.now(),
+      flightTimeMs
+    });
   });
 
   socket.on('build-rejected', ({ type } = {}) => {
