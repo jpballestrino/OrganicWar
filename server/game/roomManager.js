@@ -450,7 +450,9 @@ export function startMatchNow(room) {
   }
 
   try {
-    room.simReal = new RoomSim(room.id, room.maxPlayers, io);
+    room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
+      onGameOver: (winnerId) => handleGameOver(room, winnerId),
+    });
     for (let [fid, pos] of room.spawnSelections.entries()) {
       room.simReal.spawnFaction(fid, pos.row, pos.col);
     }

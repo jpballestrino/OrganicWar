@@ -2,9 +2,9 @@ import { io } from 'socket.io-client';
 import { state } from './state.js';
 import { showToast } from './guildUI.js';
 import { getToken } from './auth.js';
-import { applyOwnerSnapshot } from './simBridge.js';
+import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones } from './simBridge.js';
 import { escapeHtml } from './escape.js';
-import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL } from './constants.js';
+import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, DIFFICULTY_CAP, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST } from './constants.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -260,7 +260,9 @@ export function initNetwork() {
     state.gameState = 'PLAYING';
     
     const gameHUD = document.getElementById('gameHUD');
-    if (gameHUD) gameHUD.style.display = 'block';
+    if (gameHUD) gameHUD.style.display = 'flex';
+    const economyHUD = document.getElementById('gameEconomyHUD');
+    if (economyHUD) economyHUD.style.display = 'flex';
 
     const waitingOverlay = document.getElementById('waitingOverlay');
     if (waitingOverlay) waitingOverlay.style.display = 'none';
@@ -371,13 +373,48 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, centroids }) => {
+  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, centroids }) => {
+    let t0 = 0;
+    if (state.debug) t0 = performance.now();
+
     if (ownerDelta) {
       applyOwnerSnapshot(ownerDelta);
+      // Owner bits just changed; re-derive fort zones so newly-conquered cells
+      // inside a building radius gain (and cells lost out of it drop) tier 10.
+      resyncBuildingZones(state.buildings);
+    }
+
+    if (state.debug && ownerDelta) {
+      const t1 = performance.now();
+      state.lastApplyMs = t1 - t0;
+      if (state.avgApplyMs === 0) state.avgApplyMs = state.lastApplyMs;
+      else state.avgApplyMs = state.avgApplyMs * 0.9 + state.lastApplyMs * 0.1;
     }
 
     // Per-faction territory centroids + troops, for the in-territory labels.
     if (centroids) { state.factionCentroids = centroids; }
+
+    if (playerTroops && playerMaxPop) {
+      const troopsArray = new Float32Array(playerTroops);
+      const maxPopArray = new Uint32Array(playerMaxPop);
+      const attackArray = playerAttack ? new Float32Array(playerAttack) : null;
+
+      // Per-faction troop density ratio sent to the shader as u_player_opacity.
+      // The shader multiplies this by the per-cell enclosure ratio (0=border,
+      // 1=interior) to produce per-cell opacity: dense interiors solid, new borders
+      // faint. A 0.12 opacity floor is applied in GLSL so owned cells stay visible.
+      const opacity = state.factionOpacity || (state.factionOpacity = new Float32Array(21));
+      for (let i = 1; i <= 20; i++) {
+        const mp = maxPopArray[i];
+        if (mp > 0) {
+          const ownedCells = mp / POP_CAP_PER_CELL;
+          const density = ownedCells > 0 ? troopsArray[i] / ownedCells : 0;
+          opacity[i] = Math.min(density / 25, 1.0);
+        } else {
+          opacity[i] = 0;
+        }
+      }
+    }
 
     if (playerTroops && playerMaxPop && state.playerFaction) {
       const troopsArray = new Float32Array(playerTroops);
@@ -419,8 +456,27 @@ export function initNetwork() {
         }
 
         // Territory (cells) — cap scales as cells * POP_CAP_PER_CELL.
+        const cells = Math.round(maxPop / POP_CAP_PER_CELL);
         const lblCells = document.getElementById('lblMyCells');
-        if (lblCells) lblCells.innerText = Math.round(maxPop / POP_CAP_PER_CELL);
+        if (lblCells) lblCells.innerText = cells;
+
+        // --- Economy / building HUD (bottom bar) ---
+        // Gold accumulated, and income rate (scales with territory owned).
+        const goldArray = playerGold ? new Float32Array(playerGold) : null;
+        const gold = goldArray ? Math.floor(goldArray[fid]) : 0;
+        state.playerGold = gold;
+        const lblGold = document.getElementById('lblMyGold');
+        if (lblGold) lblGold.innerText = gold.toLocaleString();
+
+        const goldRate = Math.round(cells * GOLD_PER_CELL_PER_SEC);
+        const lblGoldRate = document.getElementById('lblMyGoldRate');
+        if (lblGoldRate) lblGoldRate.innerText = `+${goldRate}/s`;
+
+        // Count of this player's own placed defense buildings.
+        const lblBuildings = document.getElementById('lblMyBuildings');
+        if (lblBuildings) {
+          lblBuildings.innerText = state.buildings.filter(b => b.factionId === fid).length;
+        }
       }
     }
   });
@@ -439,5 +495,23 @@ export function initNetwork() {
     if (spawnText) {
       spawnText.innerText = ticks;
     }
+  });
+
+  socket.on('building-placed', (data) => {
+    state.buildings.push(data);
+    applyDefenseBuilding(data.row, data.col, data.radius, data.defTier, data.factionId);
+  });
+
+  socket.on('building-destroyed', ({ row, col }) => {
+    // Clear exactly what placement stamped: use the stored building's radius,
+    // falling back to the current constant if the descriptor is missing.
+    const b = state.buildings.find(b => b.row === row && b.col === col);
+    const radius = b ? b.radius : BUILDING_RADIUS;
+    state.buildings = state.buildings.filter(b => !(b.row === row && b.col === col));
+    removeDefenseBuilding(row, col, radius);
+  });
+
+  socket.on('build-rejected', () => {
+    showToast(`Cannot build here — need ${DEFENSE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`, 'error');
   });
 }

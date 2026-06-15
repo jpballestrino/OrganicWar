@@ -2,7 +2,11 @@
 // main.js registers the simulation handles here once WASM is loaded;
 // network.js calls applyOwnerSnapshot() on sim-snapshot events.
 
-import { TOTAL_CELLS, CELL_OWNER_MASK } from './constants.js';
+import { TOTAL_CELLS, CELL_OWNER_MASK, COLS, ROWS } from './constants.js';
+
+const DEFENSE_SHIFT = 11;
+const DEFENSE_MASK = 0x7800;
+const BUILDING_MASK_JS = 0x8000;
 
 let wasmMemory = null;
 let cellDataPtr = null;
@@ -54,6 +58,95 @@ export function applyOwnerSnapshot(ownerDelta) {
       const cellId = payload[i];
       if (cellId < TOTAL_CELLS) {
         cellView[cellId] = (cellView[cellId] & ~CELL_OWNER_MASK) | (payload[i + 1] & CELL_OWNER_MASK);
+      }
+    }
+  }
+}
+
+// Remove a destroyed defense building from the client's local cell_data.
+// Called from the `building-destroyed` network event.
+export function removeDefenseBuilding(buildingRow, buildingCol, radius) {
+  if (!wasmMemory || cellDataPtr === null) return;
+
+  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+
+  // Clear defense tier bits in the radius circle.
+  const rMin = Math.max(0, buildingRow - radius);
+  const rMax = Math.min(ROWS - 1, buildingRow + radius);
+  const cMin = Math.max(0, buildingCol - radius);
+  const cMax = Math.min(COLS - 1, buildingCol + radius);
+
+  for (let r = rMin; r <= rMax; r++) {
+    for (let c = cMin; c <= cMax; c++) {
+      const dr = r - buildingRow;
+      const dc = c - buildingCol;
+      if (dr * dr + dc * dc <= radius * radius) {
+        cellView[r * COLS + c] &= ~DEFENSE_MASK;
+      }
+    }
+  }
+
+  // Clear has_building flag on the 8×8 footprint.
+  for (let r = buildingRow - 4; r < buildingRow + 4; r++) {
+    for (let c = buildingCol - 4; c < buildingCol + 4; c++) {
+      if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+        cellView[r * COLS + c] &= ~BUILDING_MASK_JS;
+      }
+    }
+  }
+}
+
+// Re-derive every building's fortification zone after an owner snapshot.
+// Snapshots carry owner bits only, so when the builder expands into new
+// cells inside a fort radius (or loses cells out of it) the defense tier bits
+// would otherwise go stale. We clear every zone first, then re-stamp tier 10
+// on the cells each builder currently owns — matching the server invariant
+// "tier 10 iff owned by the builder and inside a live building radius".
+// Two separate passes (clear-all then stamp-all) so overlapping zones of the
+// same faction don't clobber each other.
+export function resyncBuildingZones(buildings) {
+  if (!buildings || buildings.length === 0) return;
+  for (const b of buildings) {
+    removeDefenseBuilding(b.row, b.col, b.radius);
+  }
+  for (const b of buildings) {
+    applyDefenseBuilding(b.row, b.col, b.radius, b.defTier, b.factionId);
+  }
+}
+
+// Apply a placed defense building into the client's local cell_data.
+// Called from the `building-placed` network event so the GLSL heatmap
+// shows the fortification zone immediately without waiting for a snapshot.
+export function applyDefenseBuilding(buildingRow, buildingCol, radius, defTier, factionId) {
+  if (!wasmMemory || cellDataPtr === null) return;
+
+  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+
+  // Stamp defense tier bits in the radius circle — own cells only.
+  const tierBits = (defTier & 0xF) << DEFENSE_SHIFT;
+  const rMin = Math.max(0, buildingRow - radius);
+  const rMax = Math.min(ROWS - 1, buildingRow + radius);
+  const cMin = Math.max(0, buildingCol - radius);
+  const cMax = Math.min(COLS - 1, buildingCol + radius);
+
+  for (let r = rMin; r <= rMax; r++) {
+    for (let c = cMin; c <= cMax; c++) {
+      const dr = r - buildingRow;
+      const dc = c - buildingCol;
+      if (dr * dr + dc * dc <= radius * radius) {
+        const cell = r * COLS + c;
+        if ((cellView[cell] & CELL_OWNER_MASK) === factionId) {
+          cellView[cell] = (cellView[cell] & ~DEFENSE_MASK) | tierBits;
+        }
+      }
+    }
+  }
+
+  // Stamp has_building flag on the 8×8 footprint.
+  for (let r = buildingRow - 4; r < buildingRow + 4; r++) {
+    for (let c = buildingCol - 4; c < buildingCol + 4; c++) {
+      if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+        cellView[r * COLS + c] |= BUILDING_MASK_JS;
       }
     }
   }

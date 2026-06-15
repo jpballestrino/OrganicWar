@@ -18,9 +18,23 @@ export const CELL_TERRAIN_MASK = 0x000F << CELL_TERRAIN_SHIFT; // 0x0780
 // Population growth model — MUST mirror simulation-core/src/lib.rs. Used only to
 // display the growth rate in the HUD (the server runs the authoritative sim).
 export const POP_CAP_PER_CELL = 2;
+// Gold income per owned cell per second — mirrors GOLD_PER_CELL_PER_SEC in
+// simulation-core/src/lib.rs. Used to show the income rate in the economy HUD.
+export const GOLD_PER_CELL_PER_SEC = 0.00333;
+// Gold cost of a defense building — mirrors DEFENSE_BUILDING_COST in
+// simulation-core/src/lib.rs. The server is authoritative; this is for the HUD
+// and a client-side pre-check so we don't send unaffordable build requests.
+export const DEFENSE_BUILDING_COST = 2000;
 export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill
 export const PEAK_GROWTH_FRACTION = 0.05; // peak troops/sec as a fraction of cap
 export const MIN_GROWTH_PER_SEC = 5.0;    // recovery floor
+
+// Max troops a single defended cell can cost (defender troops-per-cell density is
+// clamped to this in the sim). Also the top of the territory render-opacity ramp:
+// difficulty 0..DIFFICULTY_CAP maps to colour opacity 0..100%. Mirror lib.rs.
+export const DIFFICULTY_CAP = 50;
+// Floor so freshly-taken, low-density territory still reads as owned (not invisible).
+export const MIN_TERRITORY_OPACITY = 0.12;
 
 // Troops/sec a player gains right now, given current troops and max population.
 // Same downward parabola the sim uses (peak at GROWTH_PEAK_RATIO, 0 at full pop).
@@ -123,6 +137,10 @@ export const SILO_RANGE = [100, 150, 200];
 export const SILO_BLAST_RADIUS = [18, 30, 46];
 export const EXPLOSION_VISUAL_MULTIPLIER = 3;
 export const VITAL_SPACE_RADIUS = 40;
+
+// Defense building influence radius (cells). Must match BUILDING_RADIUS in
+// simulation-core/src/lib.rs and the radius emitted in the building-placed event.
+export const BUILDING_RADIUS = 40;
 
 // Faction & Doctrine modifiers
 export const CAPACITY_GAIN_STANDARD = 0.125;

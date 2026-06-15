@@ -1,8 +1,41 @@
 import { state } from './state.js';
+import { factionHexColors, BUILDING_RADIUS } from './constants.js';
 
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
 const TOTAL_CELLS = 2073600;
+
+// Compact troop count formatting where "k" = thousand and "kk" = million.
+//   <1000        -> as-is            (100, 200, 999)
+//   1000..9999   -> one decimal + k  (1.1k, 2.2k, 9.9k)
+//   10000..999999-> integer + k      (10k, 12k, 99k, 100k)
+//   >=1_000_000  -> one decimal + kk (1.1kk, 1.2kk), integer kk past 10 million
+// Decimals are floored (never rounded up) so 9999 reads "9.9k", not "10.0k".
+function formatTroops(n) {
+    n = Math.max(0, Math.floor(n));
+    if (n < 1000) return String(n);
+    const units = ['k', 'kk', 'kkk'];
+    let v = n;
+    let u = -1;
+    while (v >= 1000 && u < units.length - 1) { v /= 1000; u++; }
+    if (v < 10) {
+        // One decimal place, floored: floor(v * 10) / 10.
+        return (Math.floor(v * 10) / 10).toFixed(1) + units[u];
+    }
+    return Math.floor(v) + units[u];
+}
+
+// Label font size scales with a faction's territory size (owned cells), using
+// the territory's linear extent (~sqrt of area) so a region twice as wide gets
+// a roughly twice-as-big label. Clamped to a readable [MIN, MAX] range.
+const LABEL_MIN_PX = 11;
+const LABEL_MAX_PX = 34;
+function territoryLabelSize(cells) {
+    const extent = Math.sqrt(Math.max(0, cells));
+    // extent ~30 (~900 cells) hits the floor; ~400 (~160k cells) hits the cap.
+    const t = (extent - 30) / (400 - 30);
+    return LABEL_MIN_PX + (LABEL_MAX_PX - LABEL_MIN_PX) * Math.min(1, Math.max(0, t));
+}
 
 
 export class WebGLRenderer {
@@ -18,6 +51,11 @@ export class WebGLRenderer {
         // Single packed-cell buffer (u16/cell): owner + terrain + defense + building.
         this.cellDataPtr = null;
         this.cellTexture = null;
+
+        // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1),
+        // indexed by owner id 0..20. Multiplied by per-cell enclosure in the shader
+        // to produce per-cell opacity variation. Updated each sim snapshot.
+        this.playerOpacity = new Float32Array(21).fill(1.0);
 
         this.initShaders();
         this.initBuffers();
@@ -73,6 +111,11 @@ export class WebGLRenderer {
             uniform vec2 u_camera_pos;
             uniform float u_zoom;
             uniform vec2 u_map_size;
+
+            // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1).
+            // Combined per-pixel with the cell's terrain cost to produce per-cell opacity:
+            // mountains in a dense empire render fully solid; plains in a weak one stay faint.
+            uniform float u_player_opacity[21];
 
             // Palette for 20 players (Index 0 is Neutral)
             const vec3 playerColors[21] = vec3[](
@@ -132,24 +175,41 @@ export class WebGLRenderer {
 
                 if (ownerVal > 0u && ownerVal <= 20u) {
                     vec3 pColor = playerColors[ownerVal];
-                    baseColor = mix(baseColor, pColor, 0.5); // More visible mix
-                } else if (ownerVal > 20u) {
-                    // Debug: if ownerVal is out of range, draw red
-                    baseColor = vec3(1.0, 0.0, 0.0);
-                }
-
-                // Territory borders: darken an owned cell that touches a cell with
-                // a different owner, drawing a 1-cell outline around each territory
-                // (against neutral land and against other factions alike).
-                if (ownerVal > 0u) {
                     ivec2 sz = ivec2(u_map_size);
-                    uint l = (texCoord.x > 0)        ? (texelFetch(u_cell_tex, texCoord + ivec2(-1, 0), 0).r & 127u) : 0u;
-                    uint r = (texCoord.x < sz.x - 1) ? (texelFetch(u_cell_tex, texCoord + ivec2( 1, 0), 0).r & 127u) : 0u;
-                    uint u = (texCoord.y > 0)        ? (texelFetch(u_cell_tex, texCoord + ivec2( 0,-1), 0).r & 127u) : 0u;
-                    uint d = (texCoord.y < sz.y - 1) ? (texelFetch(u_cell_tex, texCoord + ivec2( 0, 1), 0).r & 127u) : 0u;
-                    if (l != ownerVal || r != ownerVal || u != ownerVal || d != ownerVal) {
-                        baseColor *= 0.45; // border line: darker shade of the territory color
+                    bool inL = texCoord.x > 0;
+                    bool inR = texCoord.x < sz.x - 1;
+                    bool inU = texCoord.y > 0;
+                    bool inD = texCoord.y < sz.y - 1;
+
+                    // Cardinal neighbors for border outline detection.
+                    uint nl = inL ? (texelFetch(u_cell_tex, texCoord + ivec2(-1, 0), 0).r & 127u) : ownerVal;
+                    uint nr = inR ? (texelFetch(u_cell_tex, texCoord + ivec2( 1, 0), 0).r & 127u) : ownerVal;
+                    uint nu = inU ? (texelFetch(u_cell_tex, texCoord + ivec2( 0,-1), 0).r & 127u) : ownerVal;
+                    uint nd = inD ? (texelFetch(u_cell_tex, texCoord + ivec2( 0, 1), 0).r & 127u) : ownerVal;
+
+                    // Per-cell HEATMAP opacity: proportional to that cell's
+                    // difficulty_to_invade = (density + terrain) * defense_tier.
+                    // terrainVal 0=plains(1pt), 1=highlands(3pt), 2=mountains(6pt).
+                    float terrainCost = (terrainVal == 0u) ? 1.0 : (terrainVal == 1u) ? 3.0 : (terrainVal == 2u) ? 6.0 : 0.0;
+                    // Defense tier in bits 11-14; defaults to 1 until buildings raise it.
+                    uint defTierRaw = (packed >> 11u) & 15u;
+                    float defTier = float(defTierRaw == 0u ? 1u : defTierRaw);
+                    // u_player_opacity[owner] = density / DIFFICULTY_CAP. Normalize the
+                    // full per-cell difficulty to 0..1 (its share of DIFFICULTY_CAP).
+                    float diffNorm = clamp((u_player_opacity[ownerVal] + terrainCost / 25.0) * defTier, 0.0, 1.0);
+                    // Linear ramp from a visibility floor: easy cells stay faint but
+                    // visible (0.12), the hardest cells render fully solid (1.0). Using
+                    // a ramp (not a hard clamp) keeps EVERY difficulty step visible, so
+                    // the territory reads as a heatmap instead of flattening at the floor.
+                    float opacity = 0.12 + 0.88 * diffNorm;
+                    baseColor = mix(baseColor, pColor, opacity);
+
+                    // Border outline: darken cells where any cardinal neighbor differs.
+                    if (nl != ownerVal || nr != ownerVal || nu != ownerVal || nd != ownerVal) {
+                        baseColor *= 0.45;
                     }
+                } else if (ownerVal > 20u) {
+                    baseColor = vec3(1.0, 0.0, 0.0); // debug: out-of-range owner
                 }
 
                 outColor = vec4(baseColor, 1.0);
@@ -175,7 +235,8 @@ export class WebGLRenderer {
             cameraPos: this.gl.getUniformLocation(this.program, 'u_camera_pos'),
             zoom: this.gl.getUniformLocation(this.program, 'u_zoom'),
             mapSize: this.gl.getUniformLocation(this.program, 'u_map_size'),
-            cellTex: this.gl.getUniformLocation(this.program, 'u_cell_tex')
+            cellTex: this.gl.getUniformLocation(this.program, 'u_cell_tex'),
+            playerOpacity: this.gl.getUniformLocation(this.program, 'u_player_opacity')
         };
 
         this.gl.uniform2f(this.uniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
@@ -236,13 +297,13 @@ export class WebGLRenderer {
         window.addEventListener('keydown', (e) => {
             if (!e.key) return;
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-            if (this.keys.hasOwnProperty(key)) this.keys[key] = true;
+            if (Object.prototype.hasOwnProperty.call(this.keys, key)) this.keys[key] = true;
         });
 
         window.addEventListener('keyup', (e) => {
             if (!e.key) return;
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-            if (this.keys.hasOwnProperty(key)) this.keys[key] = false;
+            if (Object.prototype.hasOwnProperty.call(this.keys, key)) this.keys[key] = false;
         });
 
         this.canvas.addEventListener('wheel', (e) => {
@@ -352,6 +413,13 @@ export class WebGLRenderer {
         this.gl.uniform2f(this.uniforms.cameraPos, this.camera.x, this.camera.y);
         this.gl.uniform1f(this.uniforms.zoom, this.camera.zoom);
 
+        // Territory opacity per faction (from difficulty_to_invade). Pull the
+        // latest values the network layer computed from the last snapshot.
+        if (state.factionOpacity) {
+            this.playerOpacity.set(state.factionOpacity);
+        }
+        this.gl.uniform1fv(this.uniforms.playerOpacity, this.playerOpacity);
+
         this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
     }
 
@@ -412,23 +480,129 @@ export class WebGLRenderer {
             const slot = slots && slots[fid];
             const name = slot && slot.nickname ? slot.nickname : ('Faction ' + fid);
             const isMe = parseInt(fid) === myFactionId;
-            const troopsText = c.troops.toLocaleString();
+            const troopsText = formatTroops(c.troops);
+
+            // Label size scales with territory size (owned cells), low-capped.
+            const nameSize = territoryLabelSize(c.cells || 0);
+            const troopSize = nameSize * 0.85;
+            // Vertical offsets and outline width track the font size so the two
+            // lines stay tidily stacked at every label scale.
+            const gap = nameSize * 0.6;
 
             // Name (bold) on top, troop count below; dark outline for legibility.
             ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
-            ctx.lineWidth = 3;
+            ctx.lineWidth = Math.max(3, nameSize * 0.25);
 
-            ctx.font = "bold 13px 'Orbitron', sans-serif";
-            ctx.strokeText(name, pos.x, pos.y - 8);
+            ctx.font = `bold ${nameSize.toFixed(1)}px 'Orbitron', sans-serif`;
+            ctx.strokeText(name, pos.x, pos.y - gap);
             ctx.fillStyle = isMe ? '#ffe07a' : '#ffffff';
-            ctx.fillText(name, pos.x, pos.y - 8);
+            ctx.fillText(name, pos.x, pos.y - gap);
 
-            ctx.font = "12px 'Orbitron', sans-serif";
-            ctx.strokeText(troopsText, pos.x, pos.y + 8);
+            ctx.font = `${troopSize.toFixed(1)}px 'Orbitron', sans-serif`;
+            ctx.strokeText(troopsText, pos.x, pos.y + gap);
             ctx.fillStyle = '#d0d0d0';
-            ctx.fillText(troopsText, pos.x, pos.y + 8);
+            ctx.fillText(troopsText, pos.x, pos.y + gap);
         }
 
         ctx.textBaseline = 'alphabetic';
+    }
+
+    // Draw a shield icon at each placed defense building.
+    drawBuildings(ctx, buildings) {
+        if (!buildings || buildings.length === 0) return;
+
+        for (const b of buildings) {
+            const pos = this.worldToScreen(b.col, b.row);
+
+            // Cull off-screen buildings.
+            if (pos.x < -50 || pos.x > this.canvas.width + 50 ||
+                pos.y < -50 || pos.y > this.canvas.height + 50) continue;
+
+            const iconSize = Math.max(5, 10 * this.camera.zoom);
+            const color = factionHexColors[b.factionId] || '#888888';
+
+            // Dark backdrop circle.
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, iconSize * 1.4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(8, 8, 18, 0.78)';
+            ctx.fill();
+
+            // Shield silhouette.
+            ctx.save();
+            ctx.translate(pos.x, pos.y);
+            const sw = iconSize * 0.8;
+            const sh = iconSize;
+            ctx.beginPath();
+            ctx.moveTo(0, -sh);
+            ctx.lineTo(sw, -sh * 0.35);
+            ctx.lineTo(sw, sh * 0.2);
+            ctx.lineTo(0, sh);
+            ctx.lineTo(-sw, sh * 0.2);
+            ctx.lineTo(-sw, -sh * 0.35);
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = Math.max(1, 1.5 * this.camera.zoom);
+            ctx.stroke();
+
+            // Tower label inside shield (only when large enough to read).
+            if (iconSize > 7) {
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${Math.floor(iconSize * 0.9)}px monospace`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('⛌', 0, sh * 0.05); // ⛌ castle-tower glyph
+            }
+            ctx.restore();
+
+            // Dashed influence ring — only visible when zoomed in enough to be useful.
+            if (this.camera.zoom > 1.2) {
+                const screenRadius = b.radius * this.camera.zoom;
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, screenRadius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 200, 50, 0.28)';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([5, 7]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+    }
+
+    // Draw a placement preview (8×8 footprint + influence zone) at the hovered world cell.
+    drawBuildingPlacementPreview(ctx, hoverRow, hoverCol) {
+        const topLeft = this.worldToScreen(hoverCol - 4, hoverRow - 4);
+        const bottomRight = this.worldToScreen(hoverCol + 4, hoverRow + 4);
+        const w = bottomRight.x - topLeft.x;
+        const h = bottomRight.y - topLeft.y;
+
+        // Footprint square.
+        ctx.fillStyle = 'rgba(255, 215, 50, 0.18)';
+        ctx.fillRect(topLeft.x, topLeft.y, w, h);
+        ctx.strokeStyle = 'rgba(255, 215, 50, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.strokeRect(topLeft.x, topLeft.y, w, h);
+
+        // Influence radius circle.
+        const center = this.worldToScreen(hoverCol, hoverRow);
+        const screenRadius = BUILDING_RADIUS * this.camera.zoom;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, screenRadius, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 215, 50, 0.07)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 215, 50, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 7]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Hint text above the footprint.
+        ctx.font = "12px 'Orbitron', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(255,215,50,0.9)';
+        ctx.fillText('Defense Tower (click to place)', center.x, topLeft.y - 4);
     }
 }

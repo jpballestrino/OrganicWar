@@ -520,7 +520,9 @@ async function updateInviteBadge() {
         
     getE('inviteTabBadge').style.display = count > 0 ? 'inline-block' : 'none';
     getE('inviteTabBadge').textContent = count;
-  } catch(e) {}
+  } catch(e) {
+    console.error('Failed to update invite badge:', e);
+  }
 }
 
 async function loadPendingInvites() {

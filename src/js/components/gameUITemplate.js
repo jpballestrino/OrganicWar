@@ -23,17 +23,57 @@ export function gameUITemplate() {
         </div>
 
         <!-- Game HUD -->
-        <div id="gameHUD" style="display: none; position: absolute; top: 0; left: 0; width: 100vw; height: 50px; z-index: 1000; background: rgba(15,15,20,0.9); border-bottom: 2px solid #ffc107; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; box-sizing: border-box; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
-            <div style="display: flex; align-items: center; gap: 18px; font-size: 14px; color: #fff; font-weight: bold; text-transform: uppercase;">
-                <div>Troops: <span id="lblMyTroops" style="color: #ffc107; font-size: 18px;">0</span> / <span id="lblMyMaxPop" style="color: #aaa;">0</span></div>
-                <div>Attacking: <span id="lblMyAttacking" style="color: #aaa;" title="Troops currently committed to an active expansion">0</span></div>
-                <div>Fill: <span id="lblMyFill" style="color: #aaa;">0%</span></div>
-                <div>Growth: <span id="lblMyGrowth" style="color: #28a745; font-size: 16px;" title="Pop / sec — green while accelerating (below 40% fill), red while slowing">+0/s</span></div>
-                <div>Land: <span id="lblMyCells" style="color: #ffc107;">0</span></div>
+        <div id="gameHUD" class="game-hud" style="display: none;">
+            <div class="hud-stats-container">
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label">Troops</span>
+                    <span class="hud-stat-value">
+                        <span id="lblMyTroops" class="text-gold" style="font-size: 1.2rem;">0</span>
+                        <span class="text-muted" style="font-size: 0.9rem; margin: 0 4px;">/</span>
+                        <span id="lblMyMaxPop" class="text-muted" style="font-size: 0.9rem;">0</span>
+                    </span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label" title="Troops currently committed to an active expansion">Attacking</span>
+                    <span class="hud-stat-value text-muted" id="lblMyAttacking">0</span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label">Fill</span>
+                    <span class="hud-stat-value text-muted" id="lblMyFill">0%</span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label" title="Pop / sec — green while accelerating, red while slowing">Growth</span>
+                    <span class="hud-stat-value text-success" id="lblMyGrowth">+0/s</span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label">Land</span>
+                    <span class="hud-stat-value text-gold" id="lblMyCells">0</span>
+                </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 15px;">
-                <div style="font-size: 14px; color: #ffc107; font-weight: bold; text-transform: uppercase;">Attack: <span id="lblAttackPct">20%</span></div>
-                <input type="range" id="sliderAttackPct" min="1" max="90" value="20" style="width: 200px; cursor: pointer; accent-color: #ffc107;">
+            <div class="hud-controls">
+                <div class="hud-stat-label">Attack: <span id="lblAttackPct" class="text-gold">20%</span></div>
+                <input type="range" id="sliderAttackPct" class="hud-slider" min="1" max="90" value="20">
+            </div>
+        </div>
+
+        <!-- Economy / building HUD (bottom bar) -->
+        <div id="gameEconomyHUD" class="game-hud game-hud-bottom" style="display: none;">
+            <div class="hud-stats-container">
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label" title="Gold accumulated">Gold</span>
+                    <span class="hud-stat-value text-gold" id="lblMyGold">0</span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label" title="Gold per second — scales with territory owned">Income</span>
+                    <span class="hud-stat-value text-success" id="lblMyGoldRate">+0/s</span>
+                </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label" title="Defense buildings you have placed">Buildings</span>
+                    <span class="hud-stat-value text-muted" id="lblMyBuildings">0</span>
+                </div>
+            </div>
+            <div class="hud-controls">
+                <div class="hud-stat-label">Press <span class="text-gold">3</span> to build a Defense Tower <span class="text-gold">(2,000g)</span></div>
             </div>
         </div>
     </div>
