@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { factionHexColors, BUILDING_RADIUS } from './constants.js';
+import { factionHexColors, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS } from './constants.js';
 
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
@@ -511,6 +511,8 @@ export class WebGLRenderer {
     drawBuildings(ctx, buildings) {
         if (!buildings || buildings.length === 0) return;
 
+        const now = performance.now();
+
         for (const b of buildings) {
             const pos = this.worldToScreen(b.col, b.row);
 
@@ -521,24 +523,48 @@ export class WebGLRenderer {
             const iconSize = Math.max(5, 10 * this.camera.zoom);
             const color = factionHexColors[b.factionId] || '#888888';
 
+            // Construction progress (0..1), clamped so a wall-clock bar can't
+            // overshoot before the authoritative `building-completed` arrives.
+            const constructing = !!b.constructing;
+            const progress = constructing
+                ? Math.min(1, Math.max(0, (now - (b.builtAt || now)) / (b.buildMs || 5000)))
+                : 1;
+
             // Dark backdrop circle.
             ctx.beginPath();
             ctx.arc(pos.x, pos.y, iconSize * 1.4, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(8, 8, 18, 0.78)';
             ctx.fill();
 
-            // Shield silhouette.
+            const isSilo = b.type === 'silo';
+
+            // Icon silhouette (dimmed while still under construction).
             ctx.save();
             ctx.translate(pos.x, pos.y);
+            if (constructing) ctx.globalAlpha = 0.5;
             const sw = iconSize * 0.8;
             const sh = iconSize;
             ctx.beginPath();
-            ctx.moveTo(0, -sh);
-            ctx.lineTo(sw, -sh * 0.35);
-            ctx.lineTo(sw, sh * 0.2);
-            ctx.lineTo(0, sh);
-            ctx.lineTo(-sw, sh * 0.2);
-            ctx.lineTo(-sw, -sh * 0.35);
+            if (isSilo) {
+                // Upward rocket: nose cone, body, fins.
+                ctx.moveTo(0, -sh);
+                ctx.lineTo(sw * 0.7, -sh * 0.1);
+                ctx.lineTo(sw * 0.7, sh * 0.55);
+                ctx.lineTo(sw, sh);             // right fin
+                ctx.lineTo(sw * 0.35, sh * 0.7);
+                ctx.lineTo(-sw * 0.35, sh * 0.7);
+                ctx.lineTo(-sw, sh);            // left fin
+                ctx.lineTo(-sw * 0.7, sh * 0.55);
+                ctx.lineTo(-sw * 0.7, -sh * 0.1);
+            } else {
+                // Defense shield.
+                ctx.moveTo(0, -sh);
+                ctx.lineTo(sw, -sh * 0.35);
+                ctx.lineTo(sw, sh * 0.2);
+                ctx.lineTo(0, sh);
+                ctx.lineTo(-sw, sh * 0.2);
+                ctx.lineTo(-sw, -sh * 0.35);
+            }
             ctx.closePath();
             ctx.fillStyle = color;
             ctx.fill();
@@ -546,8 +572,8 @@ export class WebGLRenderer {
             ctx.lineWidth = Math.max(1, 1.5 * this.camera.zoom);
             ctx.stroke();
 
-            // Tower label inside shield (only when large enough to read).
-            if (iconSize > 7) {
+            // Glyph inside the icon (only when large enough to read).
+            if (iconSize > 7 && !isSilo) {
                 ctx.fillStyle = '#fff';
                 ctx.font = `bold ${Math.floor(iconSize * 0.9)}px monospace`;
                 ctx.textAlign = 'center';
@@ -556,8 +582,28 @@ export class WebGLRenderer {
             }
             ctx.restore();
 
-            // Dashed influence ring — only visible when zoomed in enough to be useful.
-            if (this.camera.zoom > 1.2) {
+            // Construction progress bar under the icon — fills left→right over the
+            // build time, then disappears once `building-completed` clears the flag.
+            if (constructing) {
+                const barW = iconSize * 3;
+                const barH = Math.max(3, iconSize * 0.45);
+                const barX = pos.x - barW / 2;
+                const barY = pos.y + iconSize * 1.8;
+                // Track.
+                ctx.fillStyle = 'rgba(8, 8, 18, 0.85)';
+                ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+                // Fill.
+                ctx.fillStyle = color;
+                ctx.fillRect(barX, barY, barW * progress, barH);
+                // Border.
+                ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(barX - 1, barY - 1, barW + 2, barH + 2);
+            }
+
+            // Dashed influence ring — defense towers only (silos have no zone and
+            // carry `range`, not `radius`), and only when zoomed in enough to be useful.
+            if (!isSilo && this.camera.zoom > 1.2) {
                 const screenRadius = b.radius * this.camera.zoom;
                 ctx.beginPath();
                 ctx.arc(pos.x, pos.y, screenRadius, 0, Math.PI * 2);
@@ -604,5 +650,94 @@ export class WebGLRenderer {
         ctx.textBaseline = 'bottom';
         ctx.fillStyle = 'rgba(255,215,50,0.9)';
         ctx.fillText('Defense Tower (click to place)', center.x, topLeft.y - 4);
+    }
+
+    // Silo placement preview: 8×8 footprint + the dashed firing-range circle.
+    drawSiloPlacementPreview(ctx, hoverRow, hoverCol) {
+        const topLeft = this.worldToScreen(hoverCol - 4, hoverRow - 4);
+        const bottomRight = this.worldToScreen(hoverCol + 4, hoverRow + 4);
+        const w = bottomRight.x - topLeft.x;
+        const h = bottomRight.y - topLeft.y;
+        const center = this.worldToScreen(hoverCol, hoverRow);
+
+        // Footprint square (cyan to distinguish from the gold defense tower).
+        ctx.fillStyle = 'rgba(80, 200, 255, 0.18)';
+        ctx.fillRect(topLeft.x, topLeft.y, w, h);
+        ctx.strokeStyle = 'rgba(80, 200, 255, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.strokeRect(topLeft.x, topLeft.y, w, h);
+
+        // Firing-range circle (black dashed).
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, SILO_RANGE * this.camera.zoom, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 7]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.font = "12px 'Orbitron', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(80, 200, 255, 0.95)';
+        ctx.fillText('Missile Silo (click to place)', center.x, topLeft.y - 4);
+    }
+
+    // Missile-targeting overlay: dashed firing-range rings around the player's own
+    // completed silos, plus a blast-radius preview at the hovered cell.
+    drawMissileTargeting(ctx, buildings, myFaction, hoverRow, hoverCol) {
+        if (buildings && buildings.length) {
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+            ctx.lineWidth = 1.5;
+            for (const b of buildings) {
+                if (b.type !== 'silo' || b.constructing || b.factionId !== myFaction) continue;
+                const c = this.worldToScreen(b.col, b.row);
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, SILO_RANGE * this.camera.zoom, 0, Math.PI * 2);
+                ctx.setLineDash([6, 8]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        // Blast-radius preview where the player is aiming.
+        if (hoverRow >= 0) {
+            const c = this.worldToScreen(hoverCol, hoverRow);
+            const r = MISSILE_BLAST_RADIUS * this.camera.zoom;
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 60, 30, 0.20)';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 60, 30, 0.85)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+    }
+
+    // Draw active missile blasts as an expanding fading flash. Returns the list of
+    // explosions still animating (callers reassign to prune finished ones).
+    drawExplosions(ctx, explosions) {
+        if (!explosions || explosions.length === 0) return explosions || [];
+        const now = performance.now();
+        const DURATION = 700; // ms
+        const surviving = [];
+        for (const ex of explosions) {
+            const t = (now - ex.startedAt) / DURATION;
+            if (t >= 1) continue; // finished — drop it
+            surviving.push(ex);
+            const c = this.worldToScreen(ex.col, ex.row);
+            const maxR = ex.blastRadius * this.camera.zoom;
+            // Shockwave ring expands outward; bright core fades.
+            const ringR = maxR * Math.min(1, t * 1.3);
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, ringR, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, ${Math.floor(180 * (1 - t))}, 40, ${0.55 * (1 - t)})`;
+            ctx.fill();
+            ctx.strokeStyle = `rgba(255, 240, 180, ${0.9 * (1 - t)})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        return surviving;
     }
 }

@@ -25,6 +25,18 @@ export const GOLD_PER_CELL_PER_SEC = 0.00333;
 // simulation-core/src/lib.rs. The server is authoritative; this is for the HUD
 // and a client-side pre-check so we don't send unaffordable build requests.
 export const DEFENSE_BUILDING_COST = 2000;
+// Defense building construction time (ms) — mirrors DEFENSE_BUILD_SECONDS (5s) in
+// simulation-core/src/lib.rs. Used as the client fill-bar duration; the server
+// sends the authoritative value in the building-placed event (this is a fallback).
+export const DEFENSE_BUILD_MS = 5000;
+// Missile silo + missiles — mirror SILO_* / MISSILE_* in simulation-core/src/lib.rs.
+// The server is authoritative; these drive HUD labels, client-side affordability
+// pre-checks, the dashed range/blast previews, and the build-time fill bar.
+export const SILO_BUILDING_COST = 10000;
+export const SILO_BUILD_MS = 10000;
+export const SILO_RANGE = 120;      // missile firing range from a completed silo (cells)
+export const MISSILE_COST = 2000;
+export const MISSILE_BLAST_RADIUS = 15;
 export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill
 export const PEAK_GROWTH_FRACTION = 0.05; // peak troops/sec as a fraction of cap
 export const MIN_GROWTH_PER_SEC = 5.0;    // recovery floor
@@ -133,7 +145,7 @@ export const SHOP_COSTS = {
 export const INITIAL_MISSILE_COOLDOWN = -0.8;
 export const SILO_UPGRADE_COST_L2 = 20000;
 export const SILO_UPGRADE_COST_L3 = 50000;
-export const SILO_RANGE = [100, 150, 200];
+export const SILO_UPGRADE_RANGES = [100, 150, 200];
 export const SILO_BLAST_RADIUS = [18, 30, 46];
 export const EXPLOSION_VISUAL_MULTIPLIER = 3;
 export const VITAL_SPACE_RADIUS = 40;

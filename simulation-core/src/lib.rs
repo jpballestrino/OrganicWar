@@ -75,6 +75,29 @@ const BUILDING_RADIUS: i32 = 40;
 // src/js/constants.js (DEFENSE_BUILDING_COST) for the HUD / client pre-check.
 const DEFENSE_BUILDING_COST: f32 = 2000.0;
 
+// Construction time for a defense building, in seconds. The tower occupies its
+// footprint immediately but grants NO defense bonus until this elapses (the
+// client shows a fill bar meanwhile). Converted to ticks via tick_hz at
+// placement so the build time is identical at any SIM_TICK_HZ. Mirrored in
+// src/js/constants.js (DEFENSE_BUILD_MS) and emitted in the building-placed event.
+const DEFENSE_BUILD_SECONDS: f32 = 5.0;
+
+// Building type tags, stored in `building_type` parallel to `defense_buildings`.
+const BTYPE_DEFENSE: u8 = 0;
+const BTYPE_SILO: u8 = 1;
+
+// Missile silo: a building that can fire missiles at targets within SILO_RANGE
+// cells. Costs more and takes longer to build than a defense tower, and grants
+// NO fortification bonus. Mirrored in src/js/constants.js.
+const SILO_BUILDING_COST: f32 = 10000.0;
+const SILO_BUILD_SECONDS: f32 = 10.0;
+const SILO_RANGE: i32 = 120;
+// Missile: fired from a completed silo. Costs MISSILE_COST gold and razes every
+// cell within MISSILE_BLAST_RADIUS of the impact to neutral (nature), destroying
+// troops and any buildings there. Mirrored in src/js/constants.js.
+const MISSILE_COST: f32 = 2000.0;
+const MISSILE_BLAST_RADIUS: i32 = 15;
+
 // Upper bound for per-cell difficulty_to_invade (troops-per-cell × enclosure).
 // The client uses this same value to normalize density to 0..1 for the shader,
 // so density == DIFFICULTY_CAP → fully solid interior at max enclosure.
@@ -109,13 +132,47 @@ pub struct SimulationState {
 
     // Active defense buildings: each entry is center encoded as row*MAP_WIDTH+col.
     defense_buildings: Vec<u32>,
+    // Parallel to defense_buildings (same index `i`): the tick at which each
+    // building finishes construction. 0 = complete/active. While > current_tick
+    // the building occupies its footprint and can be destroyed, but grants no
+    // defense bonus (no tier stamp, skipped in cell_in_own_building_radius).
+    // INVARIANT: defense_build_complete.len() == defense_buildings.len() — both
+    // are mutated only in place_defense_building (push) and destroy_building
+    // (swap_remove), always in lockstep.
+    defense_build_complete: Vec<u32>,
+    // Parallel to defense_buildings (same index `i`): building type tag
+    // (BTYPE_DEFENSE / BTYPE_SILO). Same INVARIANT — pushed in
+    // place_building_internal and swap_remove'd in destroy_building alongside the
+    // others. Lets one list hold every building type while keeping the defense
+    // fortification logic (cell_in_own_building_radius, completion stamp) to
+    // BTYPE_DEFENSE only.
+    building_type: Vec<u8>,
+    // Parallel to defense_buildings (same index `i`): the faction that owns the
+    // building. Defense towers are destroyed on any footprint conquest so this
+    // never changes for them, but a silo survives partial conquest and only
+    // transfers (try_transfer_silo) once a single enemy owns all 64 footprint
+    // cells — so fire_missile / completion read this, NOT cell_owner(center).
+    // INVARIANT: all four of defense_buildings / defense_build_complete /
+    // building_type / building_owner share one length, pushed together in
+    // place_building_internal and swap_remove'd together in destroy_building.
+    building_owner: Vec<u32>,
+    // Silos that changed owner since the last clear, as (center, new_owner) u32
+    // pairs. Broadcast as `building-owner-changed` so clients recolor the icon
+    // and update who may fire from it. (A broadcast buffer, NOT a parallel vec.)
+    transferred_buildings_buf: Vec<u32>,
     // Buildings destroyed since the last clear_destroyed_buildings() call.
     // Encoded the same way as defense_buildings so the server can broadcast them.
     destroyed_buildings_buf: Vec<u32>,
+    // Buildings that finished construction since the last clear_completed_buildings()
+    // call, as (center, faction_id) u32 pairs. The server polls this to broadcast
+    // `building-completed` so clients stamp the fortification tier locally.
+    completed_buildings_buf: Vec<u32>,
     // Bot-placed buildings since the last clear_placed_buildings() call, as
     // (center, faction_id) u32 pairs. Human placements are broadcast directly
     // from handleInput, so only bot builds need this poll-and-broadcast buffer.
     placed_buildings_buf: Vec<u32>,
+    // Successful missile fires by humans and bots, broadcast as (row, col, radius) triplets
+    fired_missiles_buf: Vec<u32>,
 
     // --- Player Data ---
     player_owned_cells: Vec<u32>,
@@ -169,8 +226,14 @@ impl SimulationState {
             delta_scratch: vec![0; TOTAL_CELLS * 2],
             dirty_cells: Vec::new(),
             defense_buildings: Vec::new(),
+            defense_build_complete: Vec::new(),
+            building_type: Vec::new(),
+            building_owner: Vec::new(),
+            transferred_buildings_buf: Vec::new(),
             destroyed_buildings_buf: Vec::new(),
+            completed_buildings_buf: Vec::new(),
             placed_buildings_buf: Vec::new(),
+            fired_missiles_buf: Vec::new(),
 
             // Player Initializers
             player_owned_cells: vec![0; PLAYER_ARRAY_SIZE],
@@ -528,6 +591,11 @@ impl SimulationState {
         self.current_tick += 1;
         self.apply_production();
         self.process_war_fronts();
+        // Finish any buildings whose construction time has elapsed. MUST run after
+        // process_war_fronts: a building conquered the same tick it would complete
+        // is swap_removed first and never reaches the completion buffer, so it can
+        // never emit both building-completed and building-destroyed.
+        self.process_construction();
         // Recompute per-cell difficulty once per second. Interior cells of a dense
         // territory become progressively harder to crack; freshly taken border cells
         // reset to 0 at conquest and rebuild over this interval.
@@ -800,11 +868,19 @@ impl SimulationState {
                             self.player_col_sum[n_owner] -= nc;
                         }
 
-                        // If the conquered cell is part of a defense building footprint,
-                        // destroy the whole building before changing ownership.
+                        // If the conquered cell holds a building: a DEFENSE tower is
+                        // destroyed the moment any footprint cell falls; a SILO is
+                        // tougher — it survives partial conquest and only changes
+                        // hands once a single enemy owns all 64 footprint cells
+                        // (checked by try_transfer_silo after this cell flips).
+                        let mut silo_to_check: Option<usize> = None;
                         if self.cell_data[n_idx] & BUILDING_MASK != 0 {
                             if let Some(bidx) = self.find_building_for_cell(n_idx) {
-                                self.destroy_building(bidx);
+                                if self.building_type[bidx] == BTYPE_DEFENSE {
+                                    self.destroy_building(bidx);
+                                } else {
+                                    silo_to_check = Some(bidx);
+                                }
                             }
                         }
 
@@ -825,6 +901,12 @@ impl SimulationState {
                         self.player_row_sum[f] += nr;
                         self.player_col_sum[f] += nc;
                         conquers += 1;
+
+                        // bidx is still valid here: silos are never destroyed above,
+                        // so the building list (and indices) didn't shift this cell.
+                        if let Some(bidx) = silo_to_check {
+                            self.try_transfer_silo(bidx, f as u32);
+                        }
                     }
                 }
 
@@ -937,20 +1019,43 @@ impl SimulationState {
     /// Validates that the entire 8×8 footprint is owned by faction_id and free
     /// of existing buildings, then:
     ///   - sets the BUILDING_MASK bit on every footprint cell (has_building=1)
-    ///   - stamps defense_tier=10 on every cell within BUILDING_RADIUS cells
+    ///   - charges DEFENSE_BUILDING_COST gold and registers the building with a
+    ///     completion tick DEFENSE_BUILD_SECONDS in the future
     ///
-    /// Defense tier persists through conquest so that client and server tier
-    /// bits stay in sync after the one-time `building-placed` broadcast.
+    /// The tower is "under construction" until then: it occupies its footprint and
+    /// can be destroyed, but grants NO defense bonus. process_construction() stamps
+    /// defense_tier=10 across the radius on completion. The defense tier then
+    /// persists through conquest so client/server tier bits stay in sync after the
+    /// one-time `building-completed` broadcast.
     ///
     /// Returns true on success, false if the placement is invalid.
     #[wasm_bindgen]
     pub fn place_defense_building(&mut self, faction_id: u32, center_row: i32, center_col: i32) -> bool {
+        self.place_building_internal(faction_id, center_row, center_col, BTYPE_DEFENSE, DEFENSE_BUILDING_COST, DEFENSE_BUILD_SECONDS)
+    }
+
+    /// Place a missile silo (key '4'). Same footprint rules and construction
+    /// mechanic as a defense tower, but costs more, takes longer, and grants no
+    /// fortification. Once complete it can fire missiles at targets within
+    /// SILO_RANGE (see fire_missile).
+    #[wasm_bindgen]
+    pub fn place_silo(&mut self, faction_id: u32, center_row: i32, center_col: i32) -> bool {
+        self.place_building_internal(faction_id, center_row, center_col, BTYPE_SILO, SILO_BUILDING_COST, SILO_BUILD_SECONDS)
+    }
+
+    /// Shared placement logic for every building type. Validates the 8×8 footprint
+    /// (fully owned, clear of existing buildings) and affordability, stamps the
+    /// BUILDING_MASK footprint, charges gold, and registers the building with its
+    /// type + completion tick — keeping defense_buildings / defense_build_complete /
+    /// building_type index-aligned (see the field INVARIANTs). The defense bonus
+    /// (if any) is applied later by process_construction, never here.
+    fn place_building_internal(&mut self, faction_id: u32, center_row: i32, center_col: i32, btype: u8, cost: f32, build_seconds: f32) -> bool {
         let f = faction_id as usize;
         if f == 0 || f >= PLAYER_ARRAY_SIZE || self.player_is_alive[f] == 0 { return false; }
 
         // Must be able to afford it. Gold is charged only on a fully successful
         // placement (below), so a failed validation never costs anything.
-        if self.player_gold[f] < DEFENSE_BUILDING_COST { return false; }
+        if self.player_gold[f] < cost { return false; }
 
         // Validate the 8×8 footprint (center ± 4 in each axis).
         let half: i32 = 4;
@@ -974,35 +1079,21 @@ impl SimulationState {
             }
         }
 
-        // Stamp defense_tier=10 on every cell within the influence radius.
-        let radius: i32 = BUILDING_RADIUS;
-        let r_min = (center_row - radius).max(0) as usize;
-        let r_max = (center_row + radius).min(MAP_HEIGHT as i32 - 1) as usize;
-        let c_min = (center_col - radius).max(0) as usize;
-        let c_max = (center_col + radius).min(MAP_WIDTH as i32 - 1) as usize;
-
-        for r in r_min..=r_max {
-            for c in c_min..=c_max {
-                let dr = r as i32 - center_row;
-                let dc = c as i32 - center_col;
-                if dr * dr + dc * dc <= radius * radius {
-                    let cell = r * MAP_WIDTH + c;
-                    // Only fortify cells owned by this faction; neutral and enemy
-                    // cells in the radius keep their existing defense tier.
-                    if self.cell_owner(cell) as usize == f {
-                        self.set_cell_defense(cell, 10);
-                        self.last_modified_tick[cell] = self.current_tick;
-                    }
-                }
-            }
-        }
+        // NOTE: defense_tier is NOT stamped here — the building is "under
+        // construction" and grants no bonus yet. process_construction() applies the
+        // type-specific effect once build_seconds have elapsed.
 
         // Charge the builder now that the placement has fully succeeded.
-        self.player_gold[f] -= DEFENSE_BUILDING_COST;
+        self.player_gold[f] -= cost;
 
-        // Register this building so conquest can look it up.
+        // Register this building so conquest can look it up, with its type and
+        // completion tick (all three vecs kept index-aligned — see the INVARIANTs).
         let center = (center_row as usize * MAP_WIDTH + center_col as usize) as u32;
+        let build_ticks = (build_seconds * self.tick_hz.max(1) as f32) as u32;
         self.defense_buildings.push(center);
+        self.defense_build_complete.push(self.current_tick + build_ticks.max(1));
+        self.building_type.push(btype);
+        self.building_owner.push(faction_id);
 
         // Bot builds are broadcast by the server polling placed_buildings_buf
         // each tick; human builds are broadcast directly from handleInput.
@@ -1013,17 +1104,158 @@ impl SimulationState {
         true
     }
 
+    /// Fire a missile from one of faction `f`'s completed silos at (target_row,
+    /// target_col). Razes every cell within MISSILE_BLAST_RADIUS to neutral:
+    /// troops lost at the same per-cell density as conquest, buildings destroyed,
+    /// owners set to 0 (nature) — collateral hits the firer's own cells too, while
+    /// nature cells are a no-op.
+    ///
+    /// Returns a status code (so the caller knows whether to surface a message):
+    ///   0 = fired
+    ///   1 = rejected, SHOW a message (can't afford, or no silo in range)
+    ///   2 = rejected, SILENT (invalid target: out of bounds, own cell, or nature —
+    ///       a missile must always be aimed at an enemy cell, with no message)
+    #[wasm_bindgen]
+    pub fn fire_missile(&mut self, faction_id: u32, target_row: i32, target_col: i32) -> i32 {
+        let f = faction_id as usize;
+        if f == 0 || f >= PLAYER_ARRAY_SIZE || self.player_is_alive[f] == 0 { return 2; }
+        if target_row < 0 || target_row >= MAP_HEIGHT as i32 || target_col < 0 || target_col >= MAP_WIDTH as i32 { return 2; }
+
+        // Target must be an ENEMY cell: never the firer's own land, never nature.
+        // This is the silent "no friendly fire / always damage another player" rule.
+        let target_cell = target_row as usize * MAP_WIDTH + target_col as usize;
+        let target_owner = self.cell_owner(target_cell) as usize;
+        if target_owner == 0 || target_owner == f { return 2; }
+
+        if self.player_gold[f] < MISSILE_COST { return 1; }
+
+        // Require a completed silo OWNED by this faction within firing range.
+        let mut in_range = false;
+        for i in 0..self.defense_buildings.len() {
+            if self.building_type[i] != BTYPE_SILO { continue; }
+            if self.defense_build_complete[i] > self.current_tick { continue; } // still building
+            if self.building_owner[i] as usize != f { continue; }
+            let center = self.defense_buildings[i];
+            let cr = (center / MAP_WIDTH as u32) as i32;
+            let cc = (center % MAP_WIDTH as u32) as i32;
+            let dr = target_row - cr;
+            let dc = target_col - cc;
+            if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE { in_range = true; break; }
+        }
+        if !in_range { return 1; }
+
+        self.player_gold[f] -= MISSILE_COST;
+
+        // Raze the blast zone to neutral.
+        let radius = MISSILE_BLAST_RADIUS;
+        let r_min = (target_row - radius).max(0) as usize;
+        let r_max = (target_row + radius).min(MAP_HEIGHT as i32 - 1) as usize;
+        let c_min = (target_col - radius).max(0) as usize;
+        let c_max = (target_col + radius).min(MAP_WIDTH as i32 - 1) as usize;
+        for r in r_min..=r_max {
+            for c in c_min..=c_max {
+                let dr = r as i32 - target_row;
+                let dc = c as i32 - target_col;
+                if dr * dr + dc * dc > radius * radius { continue; }
+                let cell = r * MAP_WIDTH + c;
+                let owner = self.cell_owner(cell) as usize;
+                if owner != 0 {
+                    // Defender loses live density per cell, identical to conquest.
+                    let def_cells = self.player_owned_cells[owner].max(1) as f32;
+                    let density = self.player_total_troops[owner] / def_cells;
+                    self.player_total_troops[owner] -= density;
+                    if self.player_total_troops[owner] < 0.0 { self.player_total_troops[owner] = 0.0; }
+                    self.player_owned_cells[owner] = self.player_owned_cells[owner].saturating_sub(1);
+                    self.player_row_sum[owner] -= r as f32;
+                    self.player_col_sum[owner] -= c as f32;
+                }
+                // Destroy any building whose footprint this cell belongs to. The
+                // first footprint cell hit clears BUILDING_MASK on all 64, so later
+                // cells of the same building skip this (re-scan via find_building).
+                if self.cell_data[cell] & BUILDING_MASK != 0 {
+                    if let Some(bidx) = self.find_building_for_cell(cell) {
+                        self.destroy_building(bidx);
+                    }
+                }
+                self.set_cell_owner(cell, 0);
+                self.set_cell_defense(cell, 0);
+                self.last_modified_tick[cell] = self.current_tick;
+            }
+        }
+
+        self.fired_missiles_buf.push(target_row as u32);
+        self.fired_missiles_buf.push(target_col as u32);
+        self.fired_missiles_buf.push(radius as u32);
+
+        0
+    }
+
+    /// Complete any building whose construction time has elapsed: stamp tier 10
+    /// across its radius on the builder's own cells, mark it active
+    /// (defense_build_complete = 0), and record (center, faction) in
+    /// completed_buildings_buf for the server to broadcast as `building-completed`.
+    /// Indexing by `i` is safe because defense_build_complete stays length-aligned
+    /// with defense_buildings (see the field INVARIANT).
+    fn process_construction(&mut self) {
+        let radius: i32 = BUILDING_RADIUS;
+        for i in 0..self.defense_buildings.len() {
+            let complete = self.defense_build_complete[i];
+            // 0 = already active; > current_tick = still building.
+            if complete == 0 || complete > self.current_tick { continue; }
+
+            let center = self.defense_buildings[i];
+            let btype = self.building_type[i];
+            // Use the tracked owner, not cell_owner(center): a silo whose center was
+            // conquered (but not its whole footprint) still belongs to the builder,
+            // so building-completed must name the right faction for the client lookup.
+            let f = self.building_owner[i] as usize;
+            // Defense towers fortify their radius on completion; silos grant no
+            // zone (their only effect is enabling fire_missile).
+            if btype == BTYPE_DEFENSE {
+                let cr = (center / MAP_WIDTH as u32) as i32;
+                let cc = (center % MAP_WIDTH as u32) as i32;
+                let r_min = (cr - radius).max(0) as usize;
+                let r_max = (cr + radius).min(MAP_HEIGHT as i32 - 1) as usize;
+                let c_min = (cc - radius).max(0) as usize;
+                let c_max = (cc + radius).min(MAP_WIDTH as i32 - 1) as usize;
+                for r in r_min..=r_max {
+                    for c in c_min..=c_max {
+                        let dr = r as i32 - cr;
+                        let dc = c as i32 - cc;
+                        if dr * dr + dc * dc <= radius * radius {
+                            let cell = r * MAP_WIDTH + c;
+                            // Only fortify the builder's own cells (set_cell_defense
+                            // does not touch the owner-delta dirty list, so tier never
+                            // leaks into the snapshot wire format).
+                            if self.cell_owner(cell) as usize == f {
+                                self.set_cell_defense(cell, 10);
+                            }
+                        }
+                    }
+                }
+            }
+            self.defense_build_complete[i] = 0;
+            // (center, faction, type) triplet — the server broadcasts building-completed.
+            self.completed_buildings_buf.push(center);
+            self.completed_buildings_buf.push(f as u32);
+            self.completed_buildings_buf.push(btype as u32);
+        }
+    }
+
     /// True if `cell_idx` lies within the BUILDING_RADIUS influence zone of one of
-    /// faction `f`'s own defense buildings. A live building's center always
-    /// belongs to its builder (conquering any footprint cell destroys it), so
-    /// the center cell's owner identifies the building's faction.
+    /// faction `f`'s own *completed* defense buildings. A live building's center
+    /// always belongs to its builder (conquering any footprint cell destroys it),
+    /// so the center cell's owner identifies the building's faction. Buildings
+    /// still under construction are skipped — they grant no bonus to expansion.
     fn cell_in_own_building_radius(&self, cell_idx: usize, f: usize) -> bool {
         if self.defense_buildings.is_empty() { return false; }
         let radius: i32 = BUILDING_RADIUS;
         let row = (cell_idx / MAP_WIDTH) as i32;
         let col = (cell_idx % MAP_WIDTH) as i32;
-        for &center in self.defense_buildings.iter() {
-            if self.cell_owner(center as usize) as usize != f { continue; }
+        for (i, &center) in self.defense_buildings.iter().enumerate() {
+            if self.building_type[i] != BTYPE_DEFENSE { continue; } // silos grant no zone
+            if self.defense_build_complete[i] > self.current_tick { continue; }
+            if self.building_owner[i] as usize != f { continue; }
             let cr = (center / MAP_WIDTH as u32) as i32;
             let cc = (center % MAP_WIDTH as u32) as i32;
             let dr = row - cr;
@@ -1050,6 +1282,28 @@ impl SimulationState {
             }
         }
         None
+    }
+
+    /// Hand the silo at index `idx` to faction `f` IF `f` now owns every one of its
+    /// 64 footprint cells (the "must conquer all 8×8" rule). No-op if `f` already
+    /// owns it or doesn't yet hold the full footprint. On transfer it records
+    /// (center, f) in transferred_buildings_buf for the server to broadcast.
+    fn try_transfer_silo(&mut self, idx: usize, f: u32) {
+        if self.building_owner[idx] == f { return; }
+        let center = self.defense_buildings[idx];
+        let cr = (center / MAP_WIDTH as u32) as i32;
+        let cc = (center % MAP_WIDTH as u32) as i32;
+        // Footprint is center ± 4 (half-open, exactly the 64 cells) and was
+        // validated in-bounds at placement, so no bounds check is needed here.
+        for dr in -4i32..4 {
+            for dc in -4i32..4 {
+                let cell = (cr + dr) as usize * MAP_WIDTH + (cc + dc) as usize;
+                if self.cell_owner(cell) != f { return; }
+            }
+        }
+        self.building_owner[idx] = f;
+        self.transferred_buildings_buf.push(center);
+        self.transferred_buildings_buf.push(f);
     }
 
     /// Destroys the building at index `idx`: clears BUILDING_MASK on its 8×8
@@ -1093,7 +1347,13 @@ impl SimulationState {
         }
 
         self.destroyed_buildings_buf.push(center);
+        // Keep the parallel vecs index-aligned (see INVARIANT). This also cancels
+        // construction for free if the building was still being built — the client
+        // removes its icon + progress bar on building-destroyed.
         self.defense_buildings.swap_remove(idx);
+        self.defense_build_complete.swap_remove(idx);
+        self.building_type.swap_remove(idx);
+        self.building_owner.swap_remove(idx);
     }
 
     #[wasm_bindgen]
@@ -1111,6 +1371,38 @@ impl SimulationState {
         self.destroyed_buildings_buf.clear();
     }
 
+    /// Number of (center, faction_id, type) triplets in the just-completed buffer.
+    #[wasm_bindgen]
+    pub fn get_completed_buildings_count(&self) -> u32 {
+        (self.completed_buildings_buf.len() / 3) as u32
+    }
+
+    #[wasm_bindgen]
+    pub fn get_completed_buildings_ptr(&self) -> *const u32 {
+        self.completed_buildings_buf.as_ptr()
+    }
+
+    #[wasm_bindgen]
+    pub fn clear_completed_buildings(&mut self) {
+        self.completed_buildings_buf.clear();
+    }
+
+    /// Number of (center, new_owner) pairs in the transferred-silos buffer.
+    #[wasm_bindgen]
+    pub fn get_transferred_buildings_count(&self) -> u32 {
+        (self.transferred_buildings_buf.len() / 2) as u32
+    }
+
+    #[wasm_bindgen]
+    pub fn get_transferred_buildings_ptr(&self) -> *const u32 {
+        self.transferred_buildings_buf.as_ptr()
+    }
+
+    #[wasm_bindgen]
+    pub fn clear_transferred_buildings(&mut self) {
+        self.transferred_buildings_buf.clear();
+    }
+
     /// Number of (center, faction_id) pairs in the bot-placed buildings buffer.
     #[wasm_bindgen]
     pub fn get_placed_buildings_count(&self) -> u32 {
@@ -1125,6 +1417,22 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn clear_placed_buildings(&mut self) {
         self.placed_buildings_buf.clear();
+    }
+
+    /// Number of (row, col, radius) triplets in the fired missiles buffer.
+    #[wasm_bindgen]
+    pub fn get_fired_missiles_count(&self) -> u32 {
+        (self.fired_missiles_buf.len() / 3) as u32
+    }
+
+    #[wasm_bindgen]
+    pub fn get_fired_missiles_ptr(&self) -> *const u32 {
+        self.fired_missiles_buf.as_ptr()
+    }
+
+    #[wasm_bindgen]
+    pub fn clear_fired_missiles(&mut self) {
+        self.fired_missiles_buf.clear();
     }
 
     /// Drive every bot faction one building decision. A bot that can afford a
@@ -1160,7 +1468,117 @@ impl SimulationState {
             let jr = (self.next_rand() % span) as i32 - jitter;
             let jc = (self.next_rand() % span) as i32 - jitter;
 
+            // 20% chance to build a silo if they can afford it
+            if (self.next_rand() % 100) < 20 && self.player_gold[f] >= SILO_BUILDING_COST {
+                let mut can_reach_enemy = false;
+                let tr = crow + jr;
+                let tc = ccol + jc;
+                let r_min = (tr - SILO_RANGE).max(0);
+                let r_max = (tr + SILO_RANGE).min(MAP_HEIGHT as i32 - 1);
+                let c_min = (tc - SILO_RANGE).max(0);
+                let c_max = (tc + SILO_RANGE).min(MAP_WIDTH as i32 - 1);
+                
+                for _ in 0..30 {
+                    let r_diff = (r_max - r_min + 1) as u32;
+                    let c_diff = (c_max - c_min + 1) as u32;
+                    if r_diff == 0 || c_diff == 0 { break; }
+                    let test_r = r_min + (self.next_rand() % r_diff) as i32;
+                    let test_c = c_min + (self.next_rand() % c_diff) as i32;
+                    let dr = test_r - tr;
+                    let dc = test_c - tc;
+                    if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE {
+                        let owner = self.cell_owner((test_r * MAP_WIDTH as i32 + test_c) as usize) as usize;
+                        if owner != 0 && owner != f {
+                            can_reach_enemy = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if can_reach_enemy {
+                    self.place_silo(f as u32, tr, tc);
+                    continue;
+                }
+            }
+            
             self.place_defense_building(f as u32, crow + jr, ccol + jc);
+        }
+    }
+
+    /// Drive every bot faction to optionally fire missiles.
+    #[wasm_bindgen]
+    pub fn bot_fire_missiles(&mut self) {
+        for f in 1..PLAYER_ARRAY_SIZE {
+            if self.player_is_bot[f] != 1 || self.player_is_alive[f] == 0 { continue; }
+            if self.player_gold[f] < MISSILE_COST { continue; }
+
+            // Collect this bot's active silos
+            let mut silo_centers = Vec::new();
+            for i in 0..self.defense_buildings.len() {
+                if self.building_type[i] == BTYPE_SILO 
+                    && self.defense_build_complete[i] <= self.current_tick 
+                    && self.building_owner[i] as usize == f 
+                {
+                    silo_centers.push(self.defense_buildings[i]);
+                }
+            }
+
+            if silo_centers.is_empty() { continue; }
+
+            // Prefer targeting enemy buildings (silos or defense towers)
+            let mut best_target: Option<(i32, i32)> = None;
+            for i in 0..self.defense_buildings.len() {
+                let owner = self.building_owner[i] as usize;
+                if owner != 0 && owner != f {
+                    let center = self.defense_buildings[i];
+                    let r = (center / MAP_WIDTH as u32) as i32;
+                    let c = (center % MAP_WIDTH as u32) as i32;
+                    // Check if in range of any silo
+                    for &sc in &silo_centers {
+                        let sr = (sc / MAP_WIDTH as u32) as i32;
+                        let sc = (sc % MAP_WIDTH as u32) as i32;
+                        let dr = r - sr;
+                        let dc = c - sc;
+                        if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE {
+                            best_target = Some((r, c));
+                            break;
+                        }
+                    }
+                }
+                if best_target.is_some() { break; } // pick the first enemy building found
+            }
+
+            if let Some((r, c)) = best_target {
+                self.fire_missile(f as u32, r, c);
+            } else {
+                // If no building found, sample random cells within range of a random silo
+                let sc_idx = self.next_rand() as usize % silo_centers.len();
+                let sc = silo_centers[sc_idx];
+                let sr = (sc / MAP_WIDTH as u32) as i32;
+                let s_col = (sc % MAP_WIDTH as u32) as i32;
+                let r_min = (sr - SILO_RANGE).max(0);
+                let r_max = (sr + SILO_RANGE).min(MAP_HEIGHT as i32 - 1);
+                let c_min = (s_col - SILO_RANGE).max(0);
+                let c_max = (s_col + SILO_RANGE).min(MAP_WIDTH as i32 - 1);
+
+                let r_diff = (r_max - r_min + 1) as u32;
+                let c_diff = (c_max - c_min + 1) as u32;
+                if r_diff > 0 && c_diff > 0 {
+                    for _ in 0..15 {
+                        let test_r = r_min + (self.next_rand() % r_diff) as i32;
+                        let test_c = c_min + (self.next_rand() % c_diff) as i32;
+                        let dr = test_r - sr;
+                        let dc = test_c - s_col;
+                        if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE {
+                            let owner = self.cell_owner((test_r * MAP_WIDTH as i32 + test_c) as usize) as usize;
+                            if owner != 0 && owner != f {
+                                self.fire_missile(f as u32, test_r, test_c);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

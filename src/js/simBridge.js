@@ -16,9 +16,19 @@ export function registerSim({ memory, cellDataPtr: ptr }) {
   cellDataPtr = ptr;
 }
 
-// Snapshot format (matches server/game/simulationRunner.js):
-//   byte 0      : 0 = sparse delta, 1 = full packed-cell buffer
-//   if delta    : N pairs of (u32 cell_id, u32 owner_id), little-endian
+// Owner faction id (0 = nature) of a cell in the local render cache. Used for the
+// client-side missile target pre-check (can't aim at own/nature land).
+export function getCellOwner(cellId) {
+  if (!wasmMemory || cellDataPtr === null || cellId < 0 || cellId >= TOTAL_CELLS) return -1;
+  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  return cellView[cellId] & CELL_OWNER_MASK;
+}
+
+// Snapshot format (matches server/game/simulationWorker.js):
+//   byte 0      : 0 = sparse delta, 1 = full packed-cell buffer,
+//                 2 = packed-u32 delta
+//   if delta(0) : N pairs of (u32 cell_id, u32 owner_id), little-endian
+//   if delta(2) : N × u32, each = cell_id (21 bits) | owner << 21 (7 bits)
 //   if full     : TOTAL_CELLS * 2 bytes of u16 packed cells
 // Cells are packed (owner/terrain/defense/building) into one u16, so we only
 // merge the OWNER bits and leave the locally-generated terrain bits intact —
@@ -58,6 +68,16 @@ export function applyOwnerSnapshot(ownerDelta) {
       const cellId = payload[i];
       if (cellId < TOTAL_CELLS) {
         cellView[cellId] = (cellView[cellId] & ~CELL_OWNER_MASK) | (payload[i + 1] & CELL_OWNER_MASK);
+      }
+    }
+  } else if (kind === 2) {
+    // Packed-u32 delta: each u32 = cell_id (21 bits) | owner << 21 (7 bits).
+    const payload = new Uint32Array(payloadBytes.buffer, 0, payloadBytes.byteLength >> 2);
+    for (let i = 0; i < payload.length; i++) {
+      const v = payload[i];
+      const cellId = v & 0x1FFFFF;
+      if (cellId < TOTAL_CELLS) {
+        cellView[cellId] = (cellView[cellId] & ~CELL_OWNER_MASK) | ((v >>> 21) & CELL_OWNER_MASK);
       }
     }
   }
@@ -106,10 +126,15 @@ export function removeDefenseBuilding(buildingRow, buildingCol, radius) {
 // same faction don't clobber each other.
 export function resyncBuildingZones(buildings) {
   if (!buildings || buildings.length === 0) return;
+  // Only defense towers stamp a fortification zone. Silos (no zone) and buildings
+  // still under construction (zone not applied until completion) are skipped in
+  // both passes — this mirrors the server's BTYPE_DEFENSE-only fortification.
   for (const b of buildings) {
+    if (b.type === 'silo' || b.constructing) continue;
     removeDefenseBuilding(b.row, b.col, b.radius);
   }
   for (const b of buildings) {
+    if (b.type === 'silo' || b.constructing) continue;
     applyDefenseBuilding(b.row, b.col, b.radius, b.defTier, b.factionId);
   }
 }

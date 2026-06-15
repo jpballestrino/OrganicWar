@@ -4,7 +4,7 @@ import { showToast } from './guildUI.js';
 import { getToken } from './auth.js';
 import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones } from './simBridge.js';
 import { escapeHtml } from './escape.js';
-import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, DIFFICULTY_CAP, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST } from './constants.js';
+import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, DIFFICULTY_CAP, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MISSILE_BLAST_RADIUS } from './constants.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -498,8 +498,25 @@ export function initNetwork() {
   });
 
   socket.on('building-placed', (data) => {
+    // Placement just starts a timer — the tower grants no bonus yet. Mark it
+    // under construction and record the start time for the fill bar; do NOT stamp
+    // the defense tier until `building-completed` arrives.
+    data.constructing = true;
+    data.buildMs = data.buildMs ?? DEFENSE_BUILD_MS;
+    data.builtAt = performance.now();
     state.buildings.push(data);
-    applyDefenseBuilding(data.row, data.col, data.radius, data.defTier, data.factionId);
+  });
+
+  socket.on('building-completed', ({ type, factionId, row, col, radius, defTier }) => {
+    const b = state.buildings.find(b => b.row === row && b.col === col && b.factionId === factionId);
+    if (b) b.constructing = false;
+    // Silos grant no fortification — completion just makes them operational.
+    if (type === 'silo') return;
+    const r = radius ?? BUILDING_RADIUS;
+    const t = defTier ?? 10;
+    if (b) { b.radius = r; b.defTier = t; }
+    // Defense tower: the fortification is now real — stamp the tier locally.
+    applyDefenseBuilding(row, col, r, t, factionId);
   });
 
   socket.on('building-destroyed', ({ row, col }) => {
@@ -507,11 +524,30 @@ export function initNetwork() {
     // falling back to the current constant if the descriptor is missing.
     const b = state.buildings.find(b => b.row === row && b.col === col);
     const radius = b ? b.radius : BUILDING_RADIUS;
+    // Only completed defense towers ever stamped a zone. Silos and still-building
+    // towers stamped nothing, so clearing would wrongly wipe an overlapping
+    // completed fort's tier until the next snapshot resync.
+    const stampedZone = b && !b.constructing && b.type !== 'silo';
     state.buildings = state.buildings.filter(b => !(b.row === row && b.col === col));
-    removeDefenseBuilding(row, col, radius);
+    if (stampedZone) removeDefenseBuilding(row, col, radius);
   });
 
-  socket.on('build-rejected', () => {
-    showToast(`Cannot build here — need ${DEFENSE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`, 'error');
+  socket.on('building-owner-changed', ({ row, col, factionId }) => {
+    // A silo was fully conquered — recolor its icon and update who may fire it.
+    const b = state.buildings.find(b => b.row === row && b.col === col);
+    if (b) b.factionId = factionId;
+  });
+
+  socket.on('missile-explosion', ({ row, col, blastRadius }) => {
+    state.activeExplosions.push({ row, col, blastRadius: blastRadius ?? MISSILE_BLAST_RADIUS, startedAt: performance.now() });
+  });
+
+  socket.on('build-rejected', ({ type } = {}) => {
+    const msg = type === 'fire_missile'
+      ? `Can't fire — target must be within ${SILO_RANGE} cells of one of your completed silos, and a missile costs ${MISSILE_COST.toLocaleString()} gold.`
+      : type === 'build_silo'
+        ? `Can't build a silo here — need ${SILO_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
+        : `Cannot build here — need ${DEFENSE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`;
+    showToast(msg, 'error');
   });
 }

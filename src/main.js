@@ -2,13 +2,13 @@ import './js/initDOM.js';
 import { socket, initNetwork, quitAndReload } from './js/network.js';
 import { initAuthUI } from './js/authUI.js';
 import { initGuildUI, showToast } from './js/guildUI.js';
-import { DEFENSE_BUILDING_COST } from './js/constants.js';
+import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST, MISSILE_COST } from './js/constants.js';
 import { initRankingsUI } from './js/rankingsUI.js';
 import { state } from './js/state.js';
 import initWasm, { SimulationState } from './wasm/simulation_core.js';
 import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
-import { registerSim } from './js/simBridge.js';
+import { registerSim, getCellOwner } from './js/simBridge.js';
 import { generateTerrain } from './js/mapGen.js';
 
 let wasmModule = null;
@@ -500,6 +500,38 @@ async function startSimulationEngine() {
               payload: { targetCell }
             });
             state.activePurchaseMode = null;
+          } else if (state.activePurchaseMode === 'silo') {
+            if (state.playerGold < SILO_BUILDING_COST) {
+              showToast(`Not enough gold — a Missile Silo costs ${SILO_BUILDING_COST.toLocaleString()}.`, 'error');
+              state.activePurchaseMode = null;
+              return;
+            }
+            socket.emit('sim-input', {
+              type: 'build_silo',
+              payload: { targetCell }
+            });
+            state.activePurchaseMode = null;
+          } else if (state.activePurchaseMode === 'missile') {
+            // A missile must always be aimed at an enemy cell. Clicking your own
+            // land or nature is not allowed and shows NO message — just ignore it
+            // and stay in targeting mode. (Order matters: check target before gold.)
+            const targetOwner = getCellOwner(targetCell);
+            const myFaction = parseInt(state.playerFaction);
+            if (targetOwner === 0 || targetOwner === myFaction) {
+              return;
+            }
+            // The server validates that a completed silo is in range; we only
+            // pre-check affordability here (this one does warn).
+            if (state.playerGold < MISSILE_COST) {
+              showToast(`Not enough gold — a missile costs ${MISSILE_COST.toLocaleString()}.`, 'error');
+              state.activePurchaseMode = null;
+              return;
+            }
+            socket.emit('sim-input', {
+              type: 'fire_missile',
+              payload: { targetCell }
+            });
+            state.activePurchaseMode = null;
           } else {
             socket.emit('sim-input', {
               type: 'expand',
@@ -532,6 +564,22 @@ async function startSimulationEngine() {
         state.activePurchaseMode = state.activePurchaseMode === 'defense_building'
           ? null
           : 'defense_building';
+        return;
+      }
+
+      // '4' toggles missile-silo placement mode.
+      if (e.key === '4' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        state.activePurchaseMode = state.activePurchaseMode === 'silo' ? null : 'silo';
+        return;
+      }
+
+      // '2' toggles missile-targeting mode (fires from a completed silo in range).
+      if (e.key === '2' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        state.activePurchaseMode = state.activePurchaseMode === 'missile' ? null : 'missile';
         return;
       }
 
@@ -604,11 +652,17 @@ function gameLoop(time) {
         } else if (state.gameState === 'PLAYING') {
           // Name + total troops drawn at each faction's territory centroid.
           renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
-          // Draw defense building icons.
+          // Draw defense building + silo icons.
           renderer.drawBuildings(ctx, state.buildings);
-          // Draw placement preview when in build mode.
+          // Active missile blasts (expanding flash), pruned when finished.
+          state.activeExplosions = renderer.drawExplosions(ctx, state.activeExplosions);
+          // Placement / targeting previews depending on the active mode.
           if (state.activePurchaseMode === 'defense_building' && state.hoveredCell.r >= 0) {
             renderer.drawBuildingPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
+          } else if (state.activePurchaseMode === 'silo' && state.hoveredCell.r >= 0) {
+            renderer.drawSiloPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
+          } else if (state.activePurchaseMode === 'missile') {
+            renderer.drawMissileTargeting(ctx, state.buildings, parseInt(state.playerFaction), state.hoveredCell.r, state.hoveredCell.c);
           }
         }
       }

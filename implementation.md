@@ -23,6 +23,28 @@ Per-room memory is ~110–130 MB (the `neighbor_graph` alone is ~63 MB).
 - Do **Step 0 first** so every later step has before/after numbers to judge by.
 - Keep a one-line note per step: baseline number → number after → keep/revert.
 
+## ⚠️ Measuring bandwidth: PROFILE `Net KB/s` is *pre-compression*
+
+The server PROFILE line measures `totalPayloadBytes += payload.byteLength` in `simulationWorker._sendSnapshot`
+— i.e. the application buffer **before** it reaches Socket.IO. So it captures the *uncompressed* payload size.
+
+What this means for judging bandwidth steps:
+
+- **Steps that shrink the buffer** (Step 4 packed deltas, Step 6 varint deltas, an RLE full-snapshot via
+  Step 5 Option A) **do** show up in PROFILE `Net KB/s`.
+- **Step 5 Option B (`perMessageDeflate`, already enabled)** compresses on the wire *after* the measurement,
+  so its benefit is **invisible** in PROFILE `Net KB/s`. Don't conclude "it did nothing" from that line.
+- `Dirty/snap` is a **cell count, not bytes** — it never changes for any wire-format step.
+
+To measure the **real over-the-wire egress** (what actually leaves the server):
+
+- **Browser:** DevTools → Network → WS connection → Messages — each frame shows its *compressed* size.
+- **OS-level:** watch the process's network counters (e.g. `Get-NetTCPConnection` + perf counters, `nethogs`,
+  or a `tcpdump`/Wireshark capture on the socket) over a fixed window.
+- **Rule of thumb:** judge format steps (4/6) by PROFILE `Net KB/s`; judge compression (Step 5) and the final
+  "can we afford N clients?" question by real egress. Re-measure real egress after Step 4 before deciding
+  whether Step 6 is worth it — deflate may already be eating most of the remaining delta cost.
+
 ---
 
 ## Step 0 — Instrumentation (do this first) DONE
@@ -126,7 +148,7 @@ owner deltas. Only owner changes belong here.
 
 ---
 
-## Step 4 — 4-byte delta packing (halve the per-cell wire cost)
+## Step 4 — 4-byte delta packing (halve the per-cell wire cost) DONE
 
 **Risk:** medium (wire format, both sides must match) · **Impact:** ~2× smaller deltas · **Scope:** Server JS + Client JS
 
@@ -147,7 +169,7 @@ in one `u32`.
 
 ---
 
-## Step 5 — Compress / RLE the full-snapshot path (defuse the ~4 MB burst)
+## Step 5 — Compress / RLE the full-snapshot path (defuse the ~4 MB burst) DONE (Option B)
 
 **Risk:** medium · **Impact:** kills the 82 MB (4 MB × 20 clients) burst; helps late joiners · **Scope:** Server JS + Client JS
 

@@ -24,6 +24,15 @@ const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
 const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 const FULL_SNAPSHOT_THRESHOLD = Math.floor(TOTAL_CELLS * 0.05);
+// Defense building construction time (ms). Mirrors DEFENSE_BUILD_SECONDS in
+// simulation-core/src/lib.rs (5s) and DEFENSE_BUILD_MS in src/js/constants.js.
+// Sent in building-placed so the client can animate the fill bar; the sim is the
+// authority on when the bonus actually applies (building-completed).
+const DEFENSE_BUILD_MS = 5000;
+// Silo / missile params — mirror the SILO_* / MISSILE_* consts in lib.rs.
+const SILO_BUILD_MS = 10000;
+const SILO_RANGE = 120;
+const MISSILE_BLAST_RADIUS = 15;
 
 const wasmBytes = fs.readFileSync(WASM_PATH);
 const wasmModule = new WebAssembly.Module(wasmBytes);
@@ -131,11 +140,19 @@ class RoomSimWorker {
       if (this.botFactions.length && tick % this.botBuildEveryTicks === 0) {
         this.exports.simulationstate_bot_build_all(this.statePtr);
       }
+      if (this.botFactions.length && tick % (this.tickHz * 2) === 0) {
+        this.exports.simulationstate_bot_fire_missiles(this.statePtr);
+      }
       if (tick % this.snapshotEveryTicks === 0) {
         this._sendSnapshot(tick);
       }
       this._emitDestroyedBuildings();
       this._emitPlacedBuildings();
+      this._emitFiredMissiles();
+      // Owner transfers before completions so a silo that flips owner and completes
+      // on the same tick has its factionId updated before the completion lookup.
+      this._emitTransferredBuildings();
+      this._emitCompletedBuildings();
 
       if (this.env.SIM_PROFILE === '1') {
         const now = Date.now();
@@ -198,10 +215,65 @@ class RoomSimWorker {
       const row = Math.floor(center / MAP_WIDTH);
       const col = center % MAP_WIDTH;
       parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
-        type: 'defense', factionId, row, col, radius: 40, defTier: 10,
+        type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS,
       }});
     }
     this.exports.simulationstate_clear_placed_buildings(this.statePtr);
+  }
+
+  _emitFiredMissiles() {
+    const count = this.exports.simulationstate_get_fired_missiles_count(this.statePtr);
+    if (!count) return;
+    const ptr = this.exports.simulationstate_get_fired_missiles_ptr(this.statePtr);
+    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 3);
+    for (let i = 0; i < count; i++) {
+      const row = buf[i * 3];
+      const col = buf[i * 3 + 1];
+      const blastRadius = buf[i * 3 + 2];
+      parentPort.postMessage({ type: 'emit', event: 'missile-explosion', payload: {
+        row, col, blastRadius
+      }});
+    }
+    this.exports.simulationstate_clear_fired_missiles(this.statePtr);
+  }
+
+  // Poll buildings that finished construction this tick and broadcast
+  // `building-completed` so clients stamp the fortification tier (the bonus only
+  // becomes real now — placement just started a timer).
+  _emitCompletedBuildings() {
+    const count = this.exports.simulationstate_get_completed_buildings_count(this.statePtr);
+    if (!count) return;
+    const ptr = this.exports.simulationstate_get_completed_buildings_ptr(this.statePtr);
+    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 3);
+    for (let i = 0; i < count; i++) {
+      const center = buf[i * 3];
+      const factionId = buf[i * 3 + 1];
+      const btype = buf[i * 3 + 2]; // 0 = defense, 1 = silo
+      const row = Math.floor(center / MAP_WIDTH);
+      const col = center % MAP_WIDTH;
+      const payload = btype === 1
+        ? { type: 'silo', factionId, row, col, range: SILO_RANGE }
+        : { type: 'defense', factionId, row, col, radius: 40, defTier: 10 };
+      parentPort.postMessage({ type: 'emit', event: 'building-completed', payload });
+    }
+    this.exports.simulationstate_clear_completed_buildings(this.statePtr);
+  }
+
+  // Poll silos that changed owner (fully conquered) and broadcast so clients
+  // recolor the icon and update who may fire from it.
+  _emitTransferredBuildings() {
+    const count = this.exports.simulationstate_get_transferred_buildings_count(this.statePtr);
+    if (!count) return;
+    const ptr = this.exports.simulationstate_get_transferred_buildings_ptr(this.statePtr);
+    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 2);
+    for (let i = 0; i < count; i++) {
+      const center = buf[i * 2];
+      const factionId = buf[i * 2 + 1];
+      const row = Math.floor(center / MAP_WIDTH);
+      const col = center % MAP_WIDTH;
+      parentPort.postMessage({ type: 'emit', event: 'building-owner-changed', payload: { row, col, factionId } });
+    }
+    this.exports.simulationstate_clear_transferred_buildings(this.statePtr);
   }
 
   setBotFactions(factionIds) {
@@ -228,11 +300,17 @@ class RoomSimWorker {
       cellView.copy(payload, 1);
       isFull = true;
     } else {
+      // Kind 2: packed-u32 delta. The Rust scratch holds (u32 cell_id, u32 owner)
+      // pairs (8 bytes/change); cell_id needs 21 bits and owner 7, so we fold each
+      // pair into a single u32 (cell_id | owner << 21), halving the wire size.
       const scratchPtr = this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr);
-      const scratchView = Buffer.from(this.exports.memory.buffer, scratchPtr, dirtyPairs * 8);
-      payload = Buffer.allocUnsafe(1 + scratchView.byteLength);
-      payload[0] = 0;
-      scratchView.copy(payload, 1);
+      const pairs = new Uint32Array(this.exports.memory.buffer, scratchPtr, dirtyPairs * 2);
+      payload = Buffer.allocUnsafe(1 + dirtyPairs * 4);
+      payload[0] = 2;
+      for (let i = 0; i < dirtyPairs; i++) {
+        const packed = (pairs[i * 2] & 0x1FFFFF) | ((pairs[i * 2 + 1] & 0x7F) << 21);
+        payload.writeUInt32LE(packed >>> 0, 1 + i * 4);
+      }
     }
 
     this.profileMetrics.snapshotCount++;
@@ -333,11 +411,39 @@ class RoomSimWorker {
         const ok = this.exports.simulationstate_place_defense_building(this.statePtr, factionId, row, col);
         if (ok) {
           parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
-            type: 'defense', factionId, row, col, radius: 40, defTier: 10,
+            type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS,
           }});
         } else {
           parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
         }
+      }
+    } else if (input.type === 'build_silo') {
+      const { targetCell } = input.payload ?? {};
+      if (typeof targetCell === 'number') {
+        const row = Math.floor(targetCell / MAP_WIDTH);
+        const col = targetCell % MAP_WIDTH;
+        const ok = this.exports.simulationstate_place_silo(this.statePtr, factionId, row, col);
+        if (ok) {
+          parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
+            type: 'silo', factionId, row, col, range: SILO_RANGE, buildMs: SILO_BUILD_MS,
+          }});
+        } else {
+          parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
+        }
+      }
+    } else if (input.type === 'fire_missile') {
+      const { targetCell } = input.payload ?? {};
+      if (typeof targetCell === 'number') {
+        const row = Math.floor(targetCell / MAP_WIDTH);
+        const col = targetCell % MAP_WIDTH;
+        // 0 = fired, 1 = reject with message (gold/range), 2 = reject silently
+        // (invalid target: own cell / nature — no message per spec).
+        const status = this.exports.simulationstate_fire_missile(this.statePtr, factionId, row, col);
+        if (status === 1) {
+          parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
+        }
+        // status === 0 (success) is handled by _emitFiredMissiles via the WASM buffer.
+        // status === 2 (silent reject) does nothing.
       }
     }
   }
