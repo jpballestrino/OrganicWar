@@ -17,6 +17,8 @@ export const state = {
   shopCosts: {},
   doctrines: {},
   factionCentroids: {},
+  factionOpacity: null, // Float32Array(21): per-faction density ratio (troops/cell / DIFFICULTY_CAP)
+  buildings: [],        // [{type, factionId, row, col, radius, defTier}] — populated from building-placed events
   activeStructuresList: [],
   camera: { x: 0, y: 0, zoom: 1.0, minZoom: 0.5, maxZoom: 3.0, baseSpeed: 8 },
 
@@ -34,9 +36,10 @@ export const state = {
   teamSize: 0,
   
   // HUD variables
-  attackPercentage: 50,
+  attackPercentage: 20,
   playerTroops: 0,
   playerMaxPop: 0,
+  playerGold: 0,
   
   navalTargetingMode: false,
   selectedSiloCell: null,
@@ -52,6 +55,11 @@ export const state = {
   currentLeaderId: null,
   spawnSelections: {},
   mySpawnSelection: null,
+
+  // Debug fields
+  debug: false,
+  lastApplyMs: 0,
+  avgApplyMs: 0,
 };
 
 export function resetGameState() {
@@ -72,12 +80,15 @@ export function resetGameState() {
   state.isInGameMenuOpen = false;
   state.doctrines = {};
   state.factionCentroids = {};
+  state.factionOpacity = null;
+  state.buildings = [];
   state.activeStructuresList = [];
   state.camera.x = 0;
   state.camera.y = 0;
   state.camera.zoom = 1.0;
   for (let k in state.keysPressed) {delete state.keysPressed[k];}
 
+  state.playerGold = 0;
   state.playerFaction = null;
   state.selectedSlot = null;
   state.selectedDoctrine = 'balanced';
@@ -96,4 +107,6 @@ export function resetGameState() {
   state.currentLeaderId = null;
   state.spawnSelections = {};
   state.mySpawnSelection = null;
+  state.lastApplyMs = 0;
+  state.avgApplyMs = 0;
 }

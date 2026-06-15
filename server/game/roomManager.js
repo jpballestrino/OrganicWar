@@ -6,6 +6,21 @@ import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
 import { terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 
+// Random "adjective + noun" call-sign generator for bot factions.
+const BOT_ADJECTIVES = [
+  'Iron', 'Crimson', 'Shadow', 'Golden', 'Silent', 'Savage', 'Frost', 'Storm',
+  'Obsidian', 'Azure', 'Vermillion', 'Rogue', 'Phantom', 'Ember', 'Granite', 'Onyx',
+];
+const BOT_NOUNS = [
+  'Legion', 'Vanguard', 'Talons', 'Wolves', 'Phantoms', 'Empire', 'Order', 'Reach',
+  'Dominion', 'Sentinels', 'Horde', 'Syndicate', 'Coalition', 'Marauders', 'Wardens', 'Pact',
+];
+function randomBotName() {
+  const a = BOT_ADJECTIVES[Math.floor(Math.random() * BOT_ADJECTIVES.length)];
+  const n = BOT_NOUNS[Math.floor(Math.random() * BOT_NOUNS.length)];
+  return `${a} ${n}`;
+}
+
 // --- Mock Simulation Engine ---
 class MockSimulation {
   constructor(maxFactions = 20) {
@@ -354,15 +369,17 @@ export function startSpawnSelection(room) {
 export function finalizeSpawns(room) {
   room.phase = 'PLAYING';
 
-  // Fill empty slots with bots
-  const androidNames = [
-    'Sentinel', 'Guardian', 'Bastion', 'Aegis', 'Rampart', 'Citadel',
-    'Nexus-1', 'Nova-7', 'Cygnus-X', 'Orion-9', 'Vanguard-2', 'Titan-6'
-  ];
-
+  // Fill empty slots with bots given varied random call-sign names.
+  const usedNames = new Set(
+    Object.values(room.activePlayerSlots).filter(Boolean).map(s => s.nickname)
+  );
   for (let fid = 1; fid <= room.maxPlayers; fid++) {
     if (room.activePlayerSlots[fid] === null) {
-      let botName = androidNames[Math.floor(Math.random() * androidNames.length)] + '-' + fid;
+      let botName = randomBotName();
+      // Avoid duplicate names within the room.
+      let guard = 0;
+      while (usedNames.has(botName) && guard++ < 20) { botName = randomBotName(); }
+      usedNames.add(botName);
       room.activePlayerSlots[fid] = { socketId: null, nickname: botName, isBot: true };
     }
   }
@@ -433,10 +450,20 @@ export function startMatchNow(room) {
   }
 
   try {
-    room.simReal = new RoomSim(room.id, room.maxPlayers, io);
+    room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
+      onGameOver: (winnerId) => handleGameOver(room, winnerId),
+    });
     for (let [fid, pos] of room.spawnSelections.entries()) {
       room.simReal.spawnFaction(fid, pos.row, pos.col);
     }
+    // Hand the sim the list of bot-controlled factions so it drives them.
+    const botFactions = [];
+    for (let fid = 1; fid <= room.maxPlayers; fid++) {
+      if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
+        botFactions.push(fid);
+      }
+    }
+    room.simReal.setBotFactions(botFactions);
   } catch (err) {
     log('error', `[Room ${room.id}] Failed to start server sim`, err.message);
   }

@@ -1,7 +1,8 @@
 import './js/initDOM.js';
 import { socket, initNetwork, quitAndReload } from './js/network.js';
 import { initAuthUI } from './js/authUI.js';
-import { initGuildUI } from './js/guildUI.js';
+import { initGuildUI, showToast } from './js/guildUI.js';
+import { DEFENSE_BUILDING_COST } from './js/constants.js';
 import { initRankingsUI } from './js/rankingsUI.js';
 import { state } from './js/state.js';
 import initWasm, { SimulationState } from './wasm/simulation_core.js';
@@ -425,6 +426,25 @@ initLobbyUI();
 initDevSandboxUI();
 initEscMenu();
 
+// Debug mode check
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.has('debug')) {
+  state.debug = true;
+  const debugDiv = document.createElement('div');
+  debugDiv.id = 'debugUI';
+  debugDiv.style.position = 'absolute';
+  debugDiv.style.top = '10px';
+  debugDiv.style.right = '10px';
+  debugDiv.style.background = 'rgba(0,0,0,0.8)';
+  debugDiv.style.color = '#0f0';
+  debugDiv.style.padding = '5px 10px';
+  debugDiv.style.fontFamily = 'monospace';
+  debugDiv.style.zIndex = '9999';
+  debugDiv.style.pointerEvents = 'none';
+  debugDiv.innerHTML = `FPS: --<br>Apply: -- ms`;
+  document.body.appendChild(debugDiv);
+}
+
 // ------------------------------------------------------------------
 // High-Density Simulation & Renderer Initialization
 // ------------------------------------------------------------------
@@ -435,19 +455,28 @@ async function startSimulationEngine() {
 
     // Local SimulationState is now just a render cache; the server holds
     // authoritative state and pushes owner deltas via sim-snapshot.
-    const terrainPtr = simulation.get_resource_yield_ptr();
-    const ownerPtr = simulation.get_owner_ptr();
+    // Owner + terrain + defense + has_building are bit-packed into one u16 per
+    // cell (cell_data); the renderer unpacks owner/terrain on the GPU.
+    const cellDataPtr = simulation.get_cell_data_ptr();
 
-    // Paint the static North America terrain straight into WASM memory. It never
-    // changes, so this runs once and the renderer uploads it a single time.
-    generateTerrain(wasmModule.memory, terrainPtr);
+    // Paint the static North America terrain into the packed cell buffer's
+    // terrain bits. It never changes, so this runs once at startup.
+    generateTerrain(wasmModule.memory, cellDataPtr);
 
     const canvas = document.getElementById('gameCanvas');
     renderer = new WebGLRenderer(canvas, wasmModule.memory);
-    renderer.setMemoryPointers(ownerPtr, terrainPtr);
-    registerSim({ memory: wasmModule.memory, ownerPointer: ownerPtr });
+    renderer.setMemoryPointers(cellDataPtr);
+    registerSim({ memory: wasmModule.memory, cellDataPtr });
 
     console.log("WASM render cache & WebGL Renderer Started!");
+
+    // Track hovered cell for building placement preview.
+    canvas.addEventListener('mousemove', (e) => {
+      if (state.gameState === 'PLAYING') {
+        const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
+        state.hoveredCell = { r: row, c: col };
+      }
+    });
 
     // Handle game input (clicks)
     canvas.addEventListener('mousedown', (e) => {
@@ -456,17 +485,59 @@ async function startSimulationEngine() {
         socket.emit('select-spawn', { row, col });
       } else if (state.gameState === 'PLAYING') {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
-        // Ensure within bounds
         if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
           const targetCell = row * 1920 + col;
-          socket.emit('sim-input', {
-            type: 'expand',
-            payload: {
-              targetCell: targetCell,
-              attackPercentage: state.attackPercentage
+          if (state.activePurchaseMode === 'defense_building') {
+            // Pre-check gold so we don't send a request the server will reject.
+            // (The server re-verifies and is authoritative.)
+            if (state.playerGold < DEFENSE_BUILDING_COST) {
+              showToast(`Not enough gold — a Defense Tower costs ${DEFENSE_BUILDING_COST.toLocaleString()}.`, 'error');
+              state.activePurchaseMode = null;
+              return;
             }
-          });
+            socket.emit('sim-input', {
+              type: 'build_defense',
+              payload: { targetCell }
+            });
+            state.activePurchaseMode = null;
+          } else {
+            socket.emit('sim-input', {
+              type: 'expand',
+              payload: {
+                targetCell,
+                attackPercentage: state.attackPercentage
+              }
+            });
+          }
         }
+      }
+    });
+
+    // Space cancels an in-progress attack, recalling the attacking troops to defense.
+    // '3' toggles defense building placement mode.
+    window.addEventListener('keydown', (e) => {
+      const active = document.activeElement;
+      const inField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+
+      if (e.code === 'Space' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        socket.emit('sim-input', { type: 'cancel' });
+        return;
+      }
+
+      if (e.key === '3' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        state.activePurchaseMode = state.activePurchaseMode === 'defense_building'
+          ? null
+          : 'defense_building';
+        return;
+      }
+
+      if (e.code === 'Escape' && state.activePurchaseMode) {
+        state.activePurchaseMode = null;
+        return;
       }
     });
 
@@ -487,7 +558,24 @@ async function startSimulationEngine() {
   }
 }
 
+let lastFrameTime = 0;
+let frameCount = 0;
+let fps = 0;
+
 function gameLoop(time) {
+  if (state.debug) {
+    frameCount++;
+    if (time - lastFrameTime >= 1000) {
+      fps = frameCount;
+      frameCount = 0;
+      lastFrameTime = time;
+      const debugDiv = document.getElementById('debugUI');
+      if (debugDiv) {
+        debugDiv.innerHTML = `FPS: ${fps}<br>Apply: ${state.avgApplyMs.toFixed(1)} ms`;
+      }
+    }
+  }
+
   // Only render if game area is active
   const gameArea = document.getElementById('gameArea');
   if (gameArea && gameArea.style.display !== 'none' && renderer) {
@@ -496,7 +584,7 @@ function gameLoop(time) {
       const overlayCanvas = document.getElementById('overlayCanvas');
       const gameCanvas = document.getElementById('gameCanvas');
       
-      if (state.gameState === 'SPAWN_SELECTION') {
+      if (state.gameState === 'SPAWN_SELECTION' || state.activePurchaseMode) {
           if (gameCanvas) gameCanvas.style.cursor = 'crosshair';
       } else {
           if (gameCanvas) gameCanvas.style.cursor = 'default';
@@ -509,10 +597,19 @@ function gameLoop(time) {
         }
         const ctx = overlayCanvas.getContext('2d');
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        
+
         if (state.gameState === 'SPAWN_SELECTION') {
           // SAFE_ZONE_RADIUS = 80 cells
           renderer.drawSpawnOverlay(ctx, state.spawnSelections, parseInt(state.playerFaction), 80);
+        } else if (state.gameState === 'PLAYING') {
+          // Name + total troops drawn at each faction's territory centroid.
+          renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
+          // Draw defense building icons.
+          renderer.drawBuildings(ctx, state.buildings);
+          // Draw placement preview when in build mode.
+          if (state.activePurchaseMode === 'defense_building' && state.hoveredCell.r >= 0) {
+            renderer.drawBuildingPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
+          }
         }
       }
   }

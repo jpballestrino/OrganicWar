@@ -410,7 +410,9 @@ export function setupSocketHandlers(io) {
         if (!room || !room.matchStarted || !room.simReal) { return; }
         const fid = getFactionForSocket(room, socket.id);
         if (!fid) { return; }
-        room.simReal.handleInput(fid, input);
+        room.simReal.handleInput(fid, input, () => {
+          socket.emit('build-rejected', { type: input.type });
+        });
       } catch (err) {
         log('error', `[ERROR] sim-input failed for socket ${socket.id}:`, err.message);
       }
