@@ -165,7 +165,7 @@ export function handlePlayerDisconnect(room, socketId, immediate = false) {
             updateLobbyList();
             checkRoomGC(room);
           }
-        }, 60000);
+        }, 30000);
       }
     }
   }
