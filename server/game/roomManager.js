@@ -91,7 +91,7 @@ class MockSimulation {
 }
 
 export function checkRoomGC(room) {
-  const hasHumans = Object.values(room.activePlayerSlots).some(s => s !== null);
+  const hasHumans = Object.values(room.activePlayerSlots).some(s => s !== null && !s.isBot);
   if (!hasHumans) {
     if (room.gcTimeout) { clearTimeout(room.gcTimeout); }
     if (room.countdownInterval) { clearInterval(room.countdownInterval); }
@@ -113,7 +113,22 @@ export function handlePlayerDisconnect(room, socketId, immediate = false) {
     if (room.activePlayerSlots[f] && room.activePlayerSlots[f].socketId === socketId) {
       if (immediate) {
         if (room.disconnectTimers[f]) { clearTimeout(room.disconnectTimers[f]); }
-        room.activePlayerSlots[f] = null;
+        
+        if (room.matchStarted && room.simReal) {
+          room.activePlayerSlots[f].socketId = null;
+          room.activePlayerSlots[f].isBot = true;
+          const botFactions = [];
+          for (let fid = 1; fid <= room.maxPlayers; fid++) {
+            if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
+              botFactions.push(fid);
+            }
+          }
+          room.simReal.setBotFactions(botFactions);
+          io.to(room.id).emit('slots-update', room.activePlayerSlots);
+        } else {
+          room.activePlayerSlots[f] = null;
+        }
+
         if (room.humanPlayers && room.humanPlayers[f]) {
           room.humanPlayers[f].status = 'abandoned';
         }
@@ -125,7 +140,22 @@ export function handlePlayerDisconnect(room, socketId, immediate = false) {
         room.activePlayerSlots[f].disconnected = true;
         room.disconnectTimers[f] = setTimeout(() => {
           if (room.activePlayerSlots[f] && room.activePlayerSlots[f].disconnected) {
-            room.activePlayerSlots[f] = null;
+            
+            if (room.matchStarted && room.simReal) {
+              room.activePlayerSlots[f].socketId = null;
+              room.activePlayerSlots[f].isBot = true;
+              delete room.activePlayerSlots[f].disconnected;
+              const botFactions = [];
+              for (let fid = 1; fid <= room.maxPlayers; fid++) {
+                if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
+                  botFactions.push(fid);
+                }
+              }
+              room.simReal.setBotFactions(botFactions);
+            } else {
+              room.activePlayerSlots[f] = null;
+            }
+
             io.to(room.id).emit('slots-update', room.activePlayerSlots);
             for (let [t, data] of room.reconnectTokens.entries()) {
               if (data.factionId === parseInt(f)) {
@@ -593,7 +623,7 @@ export function handleGameOver(room, winnerFaction, matchStats = {}) {
     }
   }
 
-  const hasHumans = Object.values(room.activePlayerSlots).some(s => s !== null);
+  const hasHumans = Object.values(room.activePlayerSlots).some(s => s !== null && !s.isBot);
   if (room.isQuickPlay && !hasHumans) {
     delete activeRooms[room.id];
     updateLobbyList();
