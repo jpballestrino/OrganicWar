@@ -4,7 +4,7 @@ import { log } from '../utils/logger.js';
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
-import { terrainAt, TERRAIN } from '../../src/js/mapGen.js';
+import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
 const BOT_ADJECTIVES = [
@@ -202,6 +202,11 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
   const roomId = generateUniqueRoomId();
   const sim = new MockSimulation(maxPlayers);
 
+  // Force random map for Quick Play regardless of passed preset
+  if (isQuickPlay) {
+    preset = randomMapId();
+  }
+
   const room = buildRoomObject({
     roomId, name, sim, maxPlayers, preset, isQuickPlay,
   });
@@ -347,8 +352,10 @@ export function startSpawnSelection(room) {
   room.isOpen = false;
   room.phase = 'SPAWN_SELECTION';
   
-  io.to(room.id).emit('spawn-selection-start', { duration: 5 });
-  log('info', `[Room ${room.id}] Entering spawn selection phase`);
+  // mapId (= room.preset) lets the client repaint the correct terrain before
+  // players pick spawns — this is the first screen that renders the map canvas.
+  io.to(room.id).emit('spawn-selection-start', { duration: 5, mapId: room.preset });
+  log('info', `[Room ${room.id}] Entering spawn selection phase (map: ${room.preset})`);
 
   updateLobbyList();
 
@@ -395,7 +402,7 @@ export function finalizeSpawns(room) {
         row = Math.floor(Math.random() * 1080);
         col = Math.floor(Math.random() * 1920);
         
-        let terrain = terrainAt(col / 1920, row / 1080);
+        let terrain = terrainAt(col / 1920, row / 1080, room.preset);
         if (terrain === TERRAIN.WATER) continue;
         
         // Check safe zones
@@ -451,6 +458,7 @@ export function startMatchNow(room) {
 
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
+      mapId: room.preset,
       onGameOver: (winnerId, stats) => handleGameOver(room, winnerId, stats),
       onReady: () => {
         for (let [fid, pos] of room.spawnSelections.entries()) {
