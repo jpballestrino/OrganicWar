@@ -1,5 +1,6 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
 import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startMatchNow, startSpawnSelection, SAFE_ZONE_RADIUS } from './roomManager.js';
+import { randomMapId } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { io, ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
@@ -209,7 +210,8 @@ export function setupSocketHandlers(io) {
       try {
         let room = Object.values(activeRooms).find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout);
         if (!room) {
-          room = createRoom('Quick Game', 'north_america', 20, true);
+          // Quick Battle rolls a random map from the pool for each new room.
+          room = createRoom('Quick Game', randomMapId(), 20, true);
         }
             
         let availableSlots = [];

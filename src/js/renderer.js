@@ -127,68 +127,85 @@ export class WebGLRenderer {
             // and HUD use — so a faction's territory matches its icon/label color.
             uniform vec3 u_palette[21];
 
+            // Terrain base color for a packed terrain value (bits 7-10).
+            vec3 terrainColor(uint terrainVal) {
+                if (terrainVal == 0u) return vec3(241.0/255.0, 245.0/255.0, 237.0/255.0); // Plains (#f1f5ed)
+                if (terrainVal == 1u) return vec3(230.0/255.0, 223.0/255.0, 210.0/255.0); // Highlands (#e6dfd2)
+                if (terrainVal == 2u) return vec3(215.0/255.0, 215.0/255.0, 215.0/255.0); // Mountains (#d7d7d7)
+                if (terrainVal == 3u) return vec3(120.0/255.0, 190.0/255.0, 220.0/255.0); // Water (#78bedc)
+                return vec3(1.0, 1.0, 0.0); // debug: out-of-range terrain
+            }
+
+            uint ownerAt(ivec2 tc) {
+                return texelFetch(u_cell_tex, tc, 0).r & 127u;
+            }
+
+            // The terrain + owner-heatmap fill color for a single cell (no borders).
+            // Mirrors the per-cell opacity model: difficulty = (density + terrain) * defTier.
+            vec3 fillColorAt(ivec2 tc) {
+                uint packed = texelFetch(u_cell_tex, tc, 0).r;
+                uint ownerVal = packed & 127u;
+                uint terrainVal = (packed >> 7u) & 15u;
+                vec3 baseColor = terrainColor(terrainVal);
+                if (ownerVal > 0u && ownerVal <= 20u) {
+                    vec3 pColor = u_palette[ownerVal];
+                    float terrainCost = (terrainVal == 0u) ? 1.0 : (terrainVal == 1u) ? 3.0 : (terrainVal == 2u) ? 6.0 : 0.0;
+                    uint defTierRaw = (packed >> 11u) & 15u;
+                    float defTier = float(defTierRaw == 0u ? 1u : defTierRaw);
+                    float diffNorm = clamp((u_player_opacity[ownerVal] + terrainCost / 25.0) * defTier, 0.0, 1.0);
+                    float opacity = 0.12 + 0.88 * diffNorm;
+                    baseColor = mix(baseColor, pColor, opacity);
+                }
+                return baseColor;
+            }
+
             void main() {
                 // Calculate map coordinate based on screen UV, camera pos, and zoom
                 vec2 pixelCoord = v_uv * u_resolution;
                 vec2 worldCoord = (pixelCoord / u_zoom) + u_camera_pos;
 
-                // Debug: if out of bounds, draw bright magenta
+                // Debug: if out of bounds, draw a grey backdrop so the map border reads clearly.
                 if (worldCoord.x < 0.0 || worldCoord.x >= u_map_size.x ||
                     worldCoord.y < 0.0 || worldCoord.y >= u_map_size.y) {
-                    outColor = vec4(0.20, 0.20, 0.22, 1.0); // Grey backdrop so the map border reads clearly
+                    outColor = vec4(0.20, 0.20, 0.22, 1.0);
                     return;
                 }
 
-                ivec2 texCoord = ivec2(worldCoord);
-                uint packed = texelFetch(u_cell_tex, texCoord, 0).r;
-                uint ownerVal = packed & 127u;
-                uint terrainVal = (packed >> 7u) & 15u;
+                ivec2 sz = ivec2(u_map_size);
+                ivec2 nearest = ivec2(worldCoord);
+                uint ownerVal = ownerAt(nearest);
 
-                vec3 baseColor;
-                if (terrainVal == 0u) {
-                    baseColor = vec3(241.0/255.0, 245.0/255.0, 237.0/255.0); // Plains (#f1f5ed)
-                } else if (terrainVal == 1u) {
-                    baseColor = vec3(230.0/255.0, 223.0/255.0, 210.0/255.0); // Highlands (#e6dfd2)
-                } else if (terrainVal == 2u) {
-                    baseColor = vec3(215.0/255.0, 215.0/255.0, 215.0/255.0); // Mountains (#d7d7d7)
-                } else if (terrainVal == 3u) {
-                    baseColor = vec3(120.0/255.0, 190.0/255.0, 220.0/255.0); // Water (#78bedc)
-                } else {
-                    // Debug: if terrainVal is wildly out of range, draw bright yellow
-                    baseColor = vec3(1.0, 1.0, 0.0);
-                }
+                // --- High-zoom smoothing ---
+                // Bilinearly blend the 4 cells surrounding the sample point so contiguous
+                // territory no longer reads as hard squares when zoomed in. Only neighbors
+                // that share the nearest cell's owner contribute their own fill; a
+                // differing-owner neighbor falls back to the nearest cell's fill, so
+                // faction boundaries stay crisp (no muddy cross-faction color bleed).
+                vec2 fp = worldCoord - 0.5;
+                ivec2 c0 = ivec2(floor(fp));
+                vec2 frac = fp - vec2(c0);
+                ivec2 c00 = clamp(c0,               ivec2(0), sz - 1);
+                ivec2 c10 = clamp(c0 + ivec2(1, 0), ivec2(0), sz - 1);
+                ivec2 c01 = clamp(c0 + ivec2(0, 1), ivec2(0), sz - 1);
+                ivec2 c11 = clamp(c0 + ivec2(1, 1), ivec2(0), sz - 1);
+                vec3 nearestFill = fillColorAt(nearest);
+                vec3 f00 = (ownerAt(c00) == ownerVal) ? fillColorAt(c00) : nearestFill;
+                vec3 f10 = (ownerAt(c10) == ownerVal) ? fillColorAt(c10) : nearestFill;
+                vec3 f01 = (ownerAt(c01) == ownerVal) ? fillColorAt(c01) : nearestFill;
+                vec3 f11 = (ownerAt(c11) == ownerVal) ? fillColorAt(c11) : nearestFill;
+                vec3 baseColor = mix(mix(f00, f10, frac.x), mix(f01, f11, frac.x), frac.y);
 
+                // --- Crisp faction borders (decided on the nearest cell's owner) ---
                 if (ownerVal > 0u && ownerVal <= 20u) {
-                    vec3 pColor = u_palette[ownerVal];
-
-                    // Per-cell HEATMAP opacity: proportional to that cell's
-                    // difficulty_to_invade = (density + terrain) * defense_tier.
-                    // terrainVal 0=plains(1pt), 1=highlands(3pt), 2=mountains(6pt).
-                    float terrainCost = (terrainVal == 0u) ? 1.0 : (terrainVal == 1u) ? 3.0 : (terrainVal == 2u) ? 6.0 : 0.0;
-                    // Defense tier in bits 11-14; defaults to 1 until buildings raise it.
-                    uint defTierRaw = (packed >> 11u) & 15u;
-                    float defTier = float(defTierRaw == 0u ? 1u : defTierRaw);
-                    // u_player_opacity[owner] = density / DIFFICULTY_CAP. Normalize the
-                    // full per-cell difficulty to 0..1 (its share of DIFFICULTY_CAP).
-                    float diffNorm = clamp((u_player_opacity[ownerVal] + terrainCost / 25.0) * defTier, 0.0, 1.0);
-                    // Linear ramp from a visibility floor: easy cells stay faint but
-                    // visible (0.12), the hardest cells render fully solid (1.0). Using
-                    // a ramp (not a hard clamp) keeps EVERY difficulty step visible, so
-                    // the territory reads as a heatmap instead of flattening at the floor.
-                    float opacity = 0.12 + 0.88 * diffNorm;
-                    baseColor = mix(baseColor, pColor, opacity);
-
-                    // --- Crisp faction borders ---
                     // Sample neighbors at a cell distance that grows as we zoom out, so
                     // the outline stays ~constant width on screen at any zoom (a flat
                     // 1-cell line vanishes when the whole map is fit to the screen).
                     int bw = int(clamp(floor(1.0 / u_zoom + 0.5), 1.0, 6.0));
-                    ivec2 sz = ivec2(u_map_size);
                     // Out-of-bounds counts as the same owner so the map edge isn't outlined.
-                    uint nl = (texCoord.x - bw >= 0)    ? (texelFetch(u_cell_tex, texCoord + ivec2(-bw, 0), 0).r & 127u) : ownerVal;
-                    uint nr = (texCoord.x + bw < sz.x)  ? (texelFetch(u_cell_tex, texCoord + ivec2( bw, 0), 0).r & 127u) : ownerVal;
-                    uint nu = (texCoord.y - bw >= 0)    ? (texelFetch(u_cell_tex, texCoord + ivec2( 0,-bw), 0).r & 127u) : ownerVal;
-                    uint nd = (texCoord.y + bw < sz.y)  ? (texelFetch(u_cell_tex, texCoord + ivec2( 0, bw), 0).r & 127u) : ownerVal;
+                    uint nl = (nearest.x - bw >= 0)    ? ownerAt(nearest + ivec2(-bw, 0)) : ownerVal;
+                    uint nr = (nearest.x + bw < sz.x)  ? ownerAt(nearest + ivec2( bw, 0)) : ownerVal;
+                    uint nu = (nearest.y - bw >= 0)    ? ownerAt(nearest + ivec2( 0,-bw)) : ownerVal;
+                    uint nd = (nearest.y + bw < sz.y)  ? ownerAt(nearest + ivec2( 0, bw)) : ownerVal;
 
                     if (nl != ownerVal || nr != ownerVal || nu != ownerVal || nd != ownerVal) {
                         if (u_my_faction > 0u && ownerVal == u_my_faction) {

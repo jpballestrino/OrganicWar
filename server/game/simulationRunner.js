@@ -27,6 +27,7 @@ export class RoomSim {
       workerData: {
         roomId,
         numPlayers,
+        mapId: opts.mapId || 'north_america',
         opts: {
           startCells: opts.startCells,
           startTroops: opts.startTroops,

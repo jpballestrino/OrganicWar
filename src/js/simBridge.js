@@ -3,6 +3,7 @@
 // network.js calls applyOwnerSnapshot() on sim-snapshot events.
 
 import { TOTAL_CELLS, CELL_OWNER_MASK, COLS, ROWS } from './constants.js';
+import { generateTerrain } from './mapGen.js';
 
 const DEFENSE_SHIFT = 11;
 const DEFENSE_MASK = 0x7800;
@@ -10,10 +11,24 @@ const BUILDING_MASK_JS = 0x8000;
 
 let wasmMemory = null;
 let cellDataPtr = null;
+let paintedMapId = null;
 
 export function registerSim({ memory, cellDataPtr: ptr }) {
   wasmMemory = memory;
   cellDataPtr = ptr;
+}
+
+// Repaint the static terrain for the server-chosen map. The client paints a
+// default map at startup (before it knows which map the room uses), so this is
+// called once the map id arrives (spawn-selection-start / init-config) to make
+// the local render cache match the authoritative terrain. Only terrain bits are
+// touched; owner/defense/building bits are preserved. No-op if the sim isn't
+// registered yet or the map is already painted.
+export function repaintTerrain(mapId) {
+  if (!wasmMemory || cellDataPtr === null || !mapId) return;
+  if (mapId === paintedMapId) return;
+  generateTerrain(wasmMemory, cellDataPtr, mapId);
+  paintedMapId = mapId;
 }
 
 // Owner faction id (0 = nature) of a cell in the local render cache. Used for the

@@ -73,14 +73,15 @@ function instantiate() {
 }
 
 class RoomSimWorker {
-  constructor({ roomId, numPlayers, opts, env }) {
+  constructor({ roomId, numPlayers, mapId, opts, env }) {
     this.roomId = roomId;
+    this.mapId = mapId || 'north_america';
     this.exports = instantiate();
     this.statePtr = this.exports.simulationstate_new();
     this.env = env || {};
 
     const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
-    generateTerrain(this.exports.memory, cellPtr);
+    generateTerrain(this.exports.memory, cellPtr, this.mapId);
 
     this.exports.simulationstate_init_players(
       this.statePtr,

@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import { state } from './state.js';
 import { showToast } from './guildUI.js';
 import { getToken } from './auth.js';
-import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones } from './simBridge.js';
+import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, DIFFICULTY_CAP, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MISSILE_BLAST_RADIUS } from './constants.js';
 
@@ -195,10 +195,14 @@ export function initNetwork() {
     if (waitingOverlay) waitingOverlay.style.display = 'none';
     const spawnOverlay = document.getElementById('spawnOverlay');
     if (spawnOverlay) spawnOverlay.style.display = 'none';
-    
+
+    // Paint the room's map before revealing the canvas, so a reconnecting player
+    // doesn't flash the default map. (init-config, sent on reconnect, sets this.)
+    if (state.currentPreset) repaintTerrain(state.currentPreset);
+
     const gameArea = document.getElementById('gameArea');
     if (gameArea) gameArea.style.display = 'flex';
-    
+
     updateDevDashboard();
   });
 
@@ -218,6 +222,10 @@ export function initNetwork() {
   socket.on('init-config', (config) => {
     state.activePlayerSlots = config.activePlayerSlots;
     state.currentPreset = config.currentPreset;
+    // Repaint terrain to the room's map (covers the reconnect path, where the
+    // client may have painted the default map at startup). Safe pre-match: only
+    // terrain bits change and owner bits are still all-neutral.
+    if (config.currentPreset) repaintTerrain(config.currentPreset);
     state.isQuickPlay = config.isQuickPlay || false;
     state.isRankedMatch = config.isRankedMatch || false;
     state.isGuildWar = config.isGuildWar || false;
@@ -308,7 +316,13 @@ export function initNetwork() {
 
   socket.on('spawn-selection-start', (data) => {
     state.gameState = 'SPAWN_SELECTION';
-    
+
+    // Repaint the local terrain to the room's map before the spawn canvas shows,
+    // so players pick spawns on the correct landmass. Falls back to the preset
+    // received in init-config.
+    const mapId = (data && data.mapId) || state.currentPreset;
+    if (mapId) repaintTerrain(mapId);
+
     const gameArea = document.getElementById('gameArea');
     if (gameArea) gameArea.style.display = 'flex';
     

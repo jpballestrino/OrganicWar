@@ -9,7 +9,7 @@ import initWasm, { SimulationState } from './wasm/simulation_core.js';
 import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
 import { registerSim, getCellOwner } from './js/simBridge.js';
-import { generateTerrain } from './js/mapGen.js';
+import { generateTerrain, warmMapCache } from './js/mapGen.js';
 
 let wasmModule = null;
 let simulation = null;
@@ -369,10 +369,10 @@ function initEscMenu() {
   const btnResume = document.getElementById('btnResumeGame');
   const btnQuit = document.getElementById('btnQuitToMenu');
 
-  // #gameArea is always display:flex (the home overlay just covers it), so gate
-  // the pause menu on match state instead of visibility. SPAWN_SELECTION counts
-  // as in-game: in quick play the map is already on screen during the start
-  // countdown, and Esc should work there too.
+  // #gameArea is hidden until spawn selection (so the map canvas never flashes
+  // during the home/matchmaking screens), then shown. Gate the pause menu on
+  // match state rather than visibility. SPAWN_SELECTION counts as in-game: the
+  // map is on screen during the start countdown, and Esc should work there too.
   const isInGame = () => state.gameState === 'PLAYING' || state.gameState === 'SPAWN_SELECTION';
   const isOpen = () => overlay.style.display !== 'none';
   const closeMenu = () => { overlay.style.display = 'none'; };
@@ -469,6 +469,10 @@ async function startSimulationEngine() {
     registerSim({ memory: wasmModule.memory, cellDataPtr });
 
     console.log("WASM render cache & WebGL Renderer Started!");
+
+    // Pre-warm the bridge cache asynchronously so it doesn't block the UI
+    // when a match starts and the server chooses a different map.
+    setTimeout(warmMapCache, 500);
 
     // Track hovered cell for building placement preview.
     canvas.addEventListener('mousemove', (e) => {
