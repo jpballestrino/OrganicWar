@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { dom } from './dom.js';
+
 import { socket, quitAndReload } from './network.js';
 import { ROWS, COLS } from './constants.js';
 

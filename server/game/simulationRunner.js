@@ -64,7 +64,7 @@ export class RoomSim {
         this.io.to(this.roomId).emit(msg.event, msg.payload);
         break;
 
-      case 'emitToFaction':
+      case 'emitToFaction': {
         // Find the specific faction's socket and emit directly to them
         const room = activeRooms[this.roomId];
         if (room && room.activePlayerSlots[msg.factionId]) {
@@ -74,6 +74,7 @@ export class RoomSim {
           }
         }
         break;
+      }
 
       case 'gameOver':
         if (this.onGameOver) {
@@ -100,7 +101,7 @@ export class RoomSim {
     this.worker.postMessage({ type: 'setBotFactions', factionIds });
   }
 
-  handleInput(factionId, input, onReject) {
+  handleInput(factionId, input) {
     if (this.destroyed) return;
     // Note: onReject cannot be serialized. The worker will handle rejections
     // by posting an 'emitToFaction' message back to us, which we handle above.

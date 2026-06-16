@@ -628,7 +628,7 @@ async function startSimulationEngine() {
     const bindBuildButton = (id, mode) => {
       const btn = document.getElementById(id);
       if (btn) {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', () => {
           if (state.gameState !== 'PLAYING') return;
           if (btn.classList.contains('disabled')) {
             if (mode === 'missile') {

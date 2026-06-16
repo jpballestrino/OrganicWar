@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { recordMatch, updateUserStats, updateUserElo, updateGuildMatchStats, findGuildById } from '../database.js';
 import { log } from '../utils/logger.js';
-import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
+import { activeRooms, guildWarQueue, rankedQueue } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
 import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
@@ -57,11 +57,11 @@ class MockSimulation {
     });
   }
 
-  initSimulation(preset) {
+  initSimulation() {
     // Minimal mock setup
   }
 
-  isNearWater(r, c, dist) {
+  isNearWater() {
     return false;
   }
 
@@ -77,11 +77,11 @@ class MockSimulation {
     return this.factionCentroids[fid] ? [this.factionCentroids[fid].r * this.COLS + this.factionCentroids[fid].c] : [];
   }
 
-  initializeCircularNucleus(r, c, fid, radius) {
+  initializeCircularNucleus(r, c, fid) {
     this.factionCentroids[fid] = { r, c };
   }
 
-  analyzeMapTopologyAndEnclaves(immediate) {
+  analyzeMapTopologyAndEnclaves() {
     // No-op
   }
 
@@ -437,7 +437,7 @@ export function finalizeSpawns(room) {
         
         // Check safe zones
         let tooClose = false;
-        for (let [otherFid, pos] of room.spawnSelections.entries()) {
+        for (let [, pos] of room.spawnSelections.entries()) {
           let distSq = (pos.row - row) ** 2 + (pos.col - col) ** 2;
           if (distSq < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS) {
             tooClose = true;

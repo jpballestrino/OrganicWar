@@ -763,8 +763,7 @@ export class WebGLRenderer {
             const currCol = m.sourceCol + (m.targetCol - m.sourceCol) * t;
             
             // Calculate screen positions
-            const sStart = this.worldToScreen(m.sourceCol, m.sourceRow);
-            const sTarget = this.worldToScreen(m.targetCol, m.targetRow);
+
             const sCurr = this.worldToScreen(currCol, currRow);
             
             // Parabola math: peak at t = 0.5. Height in pixels.

@@ -7,7 +7,6 @@ function getE(id) { return document.getElementById(id); }
 export async function initAuthUI() {
   const stateAuth = getE('homeStateAuth');
   const stateGuest = getE('homeStateGuest');
-  const stateLoggedIn = getE('homeStateLoggedIn');
 
   // --- OAuth callback: detect token/user in URL params ---
   const urlParams = new URLSearchParams(window.location.search);

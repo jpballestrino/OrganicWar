@@ -18,7 +18,6 @@ import authRouter from './routes/authRoutes.js';
 import apiRouter from './routes/apiRoutes.js';
 
 import { log } from './utils/logger.js';
-import { activeRooms } from './game/state.js';
 import { setupSocketHandlers } from './game/socketHandlers.js';
 import { guildWarMatchmakerInterval, rankedMatchmakerInterval, playerCountInterval } from './game/gameLoop.js';
 

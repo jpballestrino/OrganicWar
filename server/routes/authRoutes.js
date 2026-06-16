@@ -113,7 +113,8 @@ authRouter.get('/me', (req, res) => {
     return res.status(404).json({ error: 'User not found.' });
   }
 
-  const { password_hash, ...safeUser } = user;
+  const safeUser = { ...user };
+  delete safeUser.password_hash;
     
   if (safeUser.guild_id) {
     const guild = findGuildById(safeUser.guild_id);
@@ -136,9 +137,7 @@ function generateOAuthUsername(rawName) {
     .substring(0, 12);
   if (base.length < 3) {base = base + '_' + 'usr';}
   let candidate = base;
-  let attempt = 0;
   while (findUserByUsername(candidate)) {
-    attempt++;
     const suffix = String(Math.floor(Math.random() * 900) + 100);
     candidate = base.substring(0, 12) + suffix;
   }

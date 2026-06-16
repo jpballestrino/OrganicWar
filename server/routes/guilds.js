@@ -1,6 +1,6 @@
 import express from 'express';
 import { verifyToken } from '../auth.js';
-import db, { 
+import { 
   createGuild, findGuildById, getGuildMembers, searchGuilds, 
   findUserByUsername, findUserById, findInviteById, respondToGuildInvite, 
   addGuildMember, removeGuildMember, promoteGuildMember, 

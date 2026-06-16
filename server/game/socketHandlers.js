@@ -1,8 +1,8 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
-import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startMatchNow, startSpawnSelection, SAFE_ZONE_RADIUS } from './roomManager.js';
+import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, SAFE_ZONE_RADIUS } from './roomManager.js';
 import { randomMapId } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
-import { io, ipConnectionCounts } from '../server.js';
+import { ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
 import { findUserById, updateLastLogin, getGuildMessages, getUserProfile, findGuildById, findGuildByTag, addGuildMessage } from '../database.js';
 import crypto from 'crypto';

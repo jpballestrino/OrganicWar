@@ -32,7 +32,7 @@ const DEFENSE_BUILD_MS = 5000;
 // Silo / missile params — mirror the SILO_* / MISSILE_* consts in lib.rs.
 const SILO_BUILD_MS = 10000;
 const SILO_RANGE = 240;
-const MISSILE_BLAST_RADIUS = 15;
+
 
 const wasmBytes = fs.readFileSync(WASM_PATH);
 const wasmModule = new WebAssembly.Module(wasmBytes);

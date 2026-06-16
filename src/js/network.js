@@ -4,7 +4,7 @@ import { showToast } from './guildUI.js';
 import { getToken } from './auth.js';
 import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
-import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, DIFFICULTY_CAP, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MISSILE_BLAST_RADIUS } from './constants.js';
+import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST } from './constants.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -183,7 +183,7 @@ export function initNetwork() {
     socket.emit('reconnect-to-game', { token: savedToken });
   }
 
-  socket.on('reconnect-success', ({ factionId, nickname, isQuickPlay }) => {
+  socket.on('reconnect-success', ({ factionId, nickname }) => {
     state.playerFaction = factionId;
     state.playerNickname = nickname;
     state.gameState = 'PLAYING';
@@ -267,12 +267,12 @@ export function initNetwork() {
     }
   });
 
-  socket.on('ranked-match-found', (data) => {
+  socket.on('ranked-match-found', () => {
     const queueView = document.getElementById('homeStateRankedQueue');
     if (queueView) queueView.style.display = 'none';
   });
 
-  socket.on('join-success', ({ factionId, nickname, isQuickPlay, reconnectToken, isRankedMatch }) => {
+  socket.on('join-success', ({ factionId, nickname, reconnectToken }) => {
     if (reconnectToken) {
       sessionStorage.setItem('reconnectToken', reconnectToken);
     }
@@ -291,7 +291,7 @@ export function initNetwork() {
     }, 300);
   });
 
-  socket.on('start-match-now', (data) => {
+  socket.on('start-match-now', () => {
     state.gameState = 'PLAYING';
     
     const gameHUD = document.getElementById('gameHUD');
@@ -455,7 +455,7 @@ export function initNetwork() {
     if (playerTroops && playerMaxPop) {
       const troopsArray = new Float32Array(playerTroops);
       const maxPopArray = new Uint32Array(playerMaxPop);
-      const attackArray = playerAttack ? new Float32Array(playerAttack) : null;
+
 
       // Per-faction troop density ratio sent to the shader as u_player_opacity.
       // The shader multiplies this by the per-cell enclosure ratio (0=border,
