@@ -24,6 +24,7 @@ function formatTroops(n) {
     }
     return Math.floor(v) + units[u];
 }
+window.formatAbbreviation = formatTroops;
 
 // Label font size scales with a faction's territory size (owned cells), using
 // the territory's linear extent (~sqrt of area) so a region twice as wide gets

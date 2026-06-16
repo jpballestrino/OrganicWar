@@ -31,7 +31,7 @@ const FULL_SNAPSHOT_THRESHOLD = Math.floor(TOTAL_CELLS * 0.05);
 const DEFENSE_BUILD_MS = 5000;
 // Silo / missile params — mirror the SILO_* / MISSILE_* consts in lib.rs.
 const SILO_BUILD_MS = 10000;
-const SILO_RANGE = 120;
+const SILO_RANGE = 240;
 const MISSILE_BLAST_RADIUS = 15;
 
 const wasmBytes = fs.readFileSync(WASM_PATH);
@@ -324,6 +324,8 @@ class RoomSimWorker {
     const maxPopPtr = this.exports.simulationstate_get_player_max_population_cap_ptr(this.statePtr);
     const attackPtr = this.exports.simulationstate_get_player_attack_pool_ptr(this.statePtr);
     const goldPtr = this.exports.simulationstate_get_player_gold_ptr(this.statePtr);
+    const killPtr = this.exports.simulationstate_get_player_kill_count_ptr(this.statePtr);
+    const goldSpentPtr = this.exports.simulationstate_get_player_gold_spent_ptr(this.statePtr);
 
     // Copying the buffers since we can't transfer WASM memory safely.
     // They are extremely small (84 bytes each)
@@ -331,6 +333,8 @@ class RoomSimWorker {
     const maxPopBuffer = Buffer.from(Buffer.from(this.exports.memory.buffer, maxPopPtr, 21 * 4));
     const attackBuffer = Buffer.from(Buffer.from(this.exports.memory.buffer, attackPtr, 21 * 4));
     const goldBuffer = Buffer.from(Buffer.from(this.exports.memory.buffer, goldPtr, 21 * 4));
+    const killBuffer = Buffer.from(Buffer.from(this.exports.memory.buffer, killPtr, 21 * 4));
+    const goldSpentBuffer = Buffer.from(Buffer.from(this.exports.memory.buffer, goldSpentPtr, 21 * 4));
 
     const rowSum = new Float32Array(this.exports.memory.buffer, this.exports.simulationstate_get_player_row_sum_ptr(this.statePtr), 21);
     const colSum = new Float32Array(this.exports.memory.buffer, this.exports.simulationstate_get_player_col_sum_ptr(this.statePtr), 21);
@@ -358,6 +362,8 @@ class RoomSimWorker {
         playerMaxPop: maxPopBuffer,
         playerAttack: attackBuffer,
         playerGold: goldBuffer,
+        playerKills: killBuffer,
+        playerGoldSpent: goldSpentBuffer,
         centroids
       }
     });
@@ -387,7 +393,28 @@ class RoomSimWorker {
       if (this.prevAlive.size >= 2 && nowAlive.size <= 1 && !this.gameOverFired) {
         this.gameOverFired = true;
         const winner = nowAlive.size === 1 ? [...nowAlive][0] : null;
-        parentPort.postMessage({ type: 'gameOver', winner });
+
+        // Gather final stats for all players
+        const stats = {};
+        const cellsPtr = this.exports.simulationstate_get_player_owned_cells_ptr(this.statePtr);
+        const cellsView = new Uint32Array(this.exports.memory.buffer, cellsPtr, 21);
+        const goldPtr = this.exports.simulationstate_get_player_gold_ptr(this.statePtr);
+        const goldView = new Float32Array(this.exports.memory.buffer, goldPtr, 21);
+        const killPtr = this.exports.simulationstate_get_player_kill_count_ptr(this.statePtr);
+        const killView = new Float32Array(this.exports.memory.buffer, killPtr, 21);
+        const goldSpentPtr = this.exports.simulationstate_get_player_gold_spent_ptr(this.statePtr);
+        const goldSpentView = new Float32Array(this.exports.memory.buffer, goldSpentPtr, 21);
+
+        for (let fid = 1; fid <= 20; fid++) {
+          stats[fid] = {
+            cells: cellsView[fid] || 0,
+            gold: Math.floor(goldView[fid] || 0),
+            kills: Math.floor(killView[fid] || 0),
+            goldSpent: Math.floor(goldSpentView[fid] || 0)
+          };
+        }
+
+        parentPort.postMessage({ type: 'gameOver', winner, stats });
       }
     }
 

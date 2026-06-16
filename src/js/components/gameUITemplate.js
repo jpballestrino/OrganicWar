@@ -49,11 +49,21 @@ export function gameUITemplate() {
                     <span class="hud-stat-label">Land</span>
                     <span class="hud-stat-value text-gold" id="lblMyCells">0</span>
                 </div>
+                <div class="hud-stat-box">
+                    <span class="hud-stat-label">Kills</span>
+                    <span class="hud-stat-value text-gold" id="lblMyKills">0</span>
+                </div>
             </div>
             <div class="hud-controls">
                 <div class="hud-stat-label">Attack: <span id="lblAttackPct" class="text-gold">20%</span></div>
                 <input type="range" id="sliderAttackPct" class="hud-slider" min="1" max="90" value="20">
             </div>
+        </div>
+
+        <!-- Game Leaderboard Overlay -->
+        <div id="gameLeaderboard" style="display: none; position: absolute; top: 70px; right: 10px; width: 180px; background: rgba(15,15,20,0.85); border: 1px solid #444; border-radius: 6px; padding: 8px; z-index: 1000; pointer-events: none; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
+            <div style="font-size: 12px; font-weight: bold; color: #aaa; text-transform: uppercase; margin-bottom: 6px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 4px;">Leaderboard</div>
+            <div id="leaderboardList" style="display: flex; flex-direction: column; gap: 4px;"></div>
         </div>
 
         <!-- Economy / building HUD (bottom bar) -->

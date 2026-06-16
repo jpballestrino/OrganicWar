@@ -261,6 +261,8 @@ export function initNetwork() {
     
     const gameHUD = document.getElementById('gameHUD');
     if (gameHUD) gameHUD.style.display = 'flex';
+    const gameLeaderboard = document.getElementById('gameLeaderboard');
+    if (gameLeaderboard) gameLeaderboard.style.display = 'block';
     const economyHUD = document.getElementById('gameEconomyHUD');
     if (economyHUD) economyHUD.style.display = 'flex';
 
@@ -373,7 +375,7 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, centroids }) => {
+  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, playerKills, playerGoldSpent, centroids }) => {
     let t0 = 0;
     if (state.debug) t0 = performance.now();
 
@@ -459,6 +461,58 @@ export function initNetwork() {
         const cells = Math.round(maxPop / POP_CAP_PER_CELL);
         const lblCells = document.getElementById('lblMyCells');
         if (lblCells) lblCells.innerText = cells;
+
+        // Player Kills
+        const killArray = playerKills ? new Float32Array(playerKills) : null;
+        const kills = killArray ? Math.floor(killArray[fid]) : 0;
+        state.playerKills = kills;
+        const lblKills = document.getElementById('lblMyKills');
+        if (lblKills) lblKills.innerText = window.formatAbbreviation ? window.formatAbbreviation(kills) : kills;
+
+        // Leaderboard state
+        if (!state.leaderboardData) state.leaderboardData = [];
+        state.leaderboardData.length = 0; // Clear
+        const goldSpentArray = playerGoldSpent ? new Float32Array(playerGoldSpent) : null;
+        
+        for (let i = 1; i <= 20; i++) {
+          const t = Math.floor(troopsArray[i]);
+          const c = Math.round(maxPopArray[i] / POP_CAP_PER_CELL);
+          const k = killArray ? Math.floor(killArray[i]) : 0;
+          const gs = goldSpentArray ? Math.floor(goldSpentArray[i]) : 0;
+          
+          if (c > 0 || t > 0) {
+            const score = gs + k + t + c;
+            state.leaderboardData.push({ fid: i, score });
+          }
+        }
+        // Descending sort
+        state.leaderboardData.sort((a, b) => b.score - a.score);
+        
+        // Render leaderboard (throttled to roughly 2 times a second)
+        const now = performance.now();
+        if (!state.lastLeaderboardRender || now - state.lastLeaderboardRender > 500) {
+          state.lastLeaderboardRender = now;
+          const lbList = document.getElementById('leaderboardList');
+          if (lbList) {
+            lbList.innerHTML = state.leaderboardData.map((lb, index) => {
+              const fColor = factionHexColors[lb.fid] || '#fff';
+              const isMe = lb.fid === fid;
+              const slot = state.activePlayerSlots ? state.activePlayerSlots[lb.fid] : null;
+              const name = isMe ? 'You' : (slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
+              const fmtScore = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : lb.score;
+              return `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${lb.fid === fid ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
+                  <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
+                    <span style="font-size: 10px; color: #888; width: 12px; text-align: right;">${index + 1}.</span>
+                    <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${fColor}; border: 1px solid #000;"></div>
+                    <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px;">${name}</span>
+                  </div>
+                  <span style="font-size: 13px; font-weight: bold; color: #ffc107;">${fmtScore}</span>
+                </div>
+              `;
+            }).join('');
+          }
+        }
 
         // --- Economy / building HUD (bottom bar) ---
         // Gold accumulated, and income rate (scales with territory owned).

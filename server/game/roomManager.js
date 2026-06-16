@@ -451,7 +451,7 @@ export function startMatchNow(room) {
 
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
-      onGameOver: (winnerId) => handleGameOver(room, winnerId),
+      onGameOver: (winnerId, stats) => handleGameOver(room, winnerId, stats),
       onReady: () => {
         for (let [fid, pos] of room.spawnSelections.entries()) {
           room.simReal.spawnFaction(fid, pos.row, pos.col);
@@ -479,7 +479,7 @@ export function updateLobbyList() {
   io.emit('rooms-list-update', buildLobbyList());
 }
 
-export function handleGameOver(room, winnerFaction) {
+export function handleGameOver(room, winnerFaction, matchStats = {}) {
   if (room.gameOverHandled) { return; }
   room.gameOverHandled = true;
 
@@ -548,11 +548,11 @@ export function handleGameOver(room, winnerFaction) {
       player.placement = player.placement || totalHumans;
     }
 
-    // Default simulation statistics for profile ELO updates
+    const playerStats = matchStats[fid] || { cells: 0, gold: 0, kills: 0 };
     let stats = {
-      cells: 45,
-      kills: 12,
-      gold: 500,
+      cells: playerStats.cells,
+      kills: playerStats.kills,
+      gold: playerStats.gold,
       duration: Math.floor((Date.now() - room.createdAt) / 1000),
       isGuildMatch: player.isGuildMatch || false,
       guildId: player.guildId || null,

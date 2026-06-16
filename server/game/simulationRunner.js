@@ -76,7 +76,7 @@ export class RoomSim {
 
       case 'gameOver':
         if (this.onGameOver) {
-          this.onGameOver(msg.winner);
+          this.onGameOver(msg.winner, msg.stats);
         }
         break;
 

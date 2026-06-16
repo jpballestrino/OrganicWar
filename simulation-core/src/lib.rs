@@ -91,7 +91,7 @@ const BTYPE_SILO: u8 = 1;
 // NO fortification bonus. Mirrored in src/js/constants.js.
 const SILO_BUILDING_COST: f32 = 10000.0;
 const SILO_BUILD_SECONDS: f32 = 10.0;
-const SILO_RANGE: i32 = 120;
+const SILO_RANGE: i32 = 240;
 // Missile: fired from a completed silo. Costs MISSILE_COST gold and razes every
 // cell within MISSILE_BLAST_RADIUS of the impact to neutral (nature), destroying
 // troops and any buildings there. Mirrored in src/js/constants.js.
@@ -173,6 +173,8 @@ pub struct SimulationState {
     placed_buildings_buf: Vec<u32>,
     // Successful missile fires by humans and bots, broadcast as (row, col, radius) triplets
     fired_missiles_buf: Vec<u32>,
+    // In-flight missiles pending detonation: [target_row, target_col, faction_id, remaining_ticks]
+    inflight_missiles: Vec<u32>,
 
     // --- Player Data ---
     player_owned_cells: Vec<u32>,
@@ -191,6 +193,8 @@ pub struct SimulationState {
     front_pool: Vec<f32>,
     // Accumulated gold (f32 so fractional per-tick income accrues correctly).
     player_gold: Vec<f32>,
+    player_kill_count: Vec<f32>,
+    player_gold_spent: Vec<f32>,
     player_population_growth_rate: Vec<u32>,
     player_is_alive: Vec<u8>,
     // 1 = server-driven bot (gets a heuristic target each think tick), 0 = human.
@@ -234,6 +238,7 @@ impl SimulationState {
             completed_buildings_buf: Vec::new(),
             placed_buildings_buf: Vec::new(),
             fired_missiles_buf: Vec::new(),
+            inflight_missiles: Vec::new(),
 
             // Player Initializers
             player_owned_cells: vec![0; PLAYER_ARRAY_SIZE],
@@ -241,6 +246,8 @@ impl SimulationState {
             player_attack_pool: vec![0.0; PLAYER_ARRAY_SIZE],
             front_pool: vec![0.0; PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
             player_gold: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_kill_count: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_gold_spent: vec![0.0; PLAYER_ARRAY_SIZE],
             player_population_growth_rate: vec![0; PLAYER_ARRAY_SIZE],
             player_is_alive: vec![0; PLAYER_ARRAY_SIZE],
             player_is_bot: vec![0; PLAYER_ARRAY_SIZE],
@@ -591,6 +598,7 @@ impl SimulationState {
         self.current_tick += 1;
         self.apply_production();
         self.process_war_fronts();
+        self.process_inflight_missiles();
         // Finish any buildings whose construction time has elapsed. MUST run after
         // process_war_fronts: a building conquered the same tick it would complete
         // is swap_removed first and never reaches the completion buffer, so it can
@@ -859,6 +867,7 @@ impl SimulationState {
                             let def_cells = self.player_owned_cells[n_owner].max(1) as f32;
                             let density = self.player_total_troops[n_owner] / def_cells;
                             self.player_total_troops[n_owner] -= density;
+                            self.player_kill_count[f] += density;
                             if self.player_total_troops[n_owner] < 0.0 {
                                 self.player_total_troops[n_owner] = 0.0;
                             }
@@ -968,6 +977,12 @@ impl SimulationState {
 
     #[wasm_bindgen]
     pub fn get_player_gold_ptr(&self) -> *const f32 { self.player_gold.as_ptr() }
+
+    #[wasm_bindgen]
+    pub fn get_player_kill_count_ptr(&self) -> *const f32 { self.player_kill_count.as_ptr() }
+
+    #[wasm_bindgen]
+    pub fn get_player_gold_spent_ptr(&self) -> *const f32 { self.player_gold_spent.as_ptr() }
 
     #[wasm_bindgen]
     pub fn get_player_population_growth_rate_ptr(&self) -> *const u32 { self.player_population_growth_rate.as_ptr() }
@@ -1085,6 +1100,7 @@ impl SimulationState {
 
         // Charge the builder now that the placement has fully succeeded.
         self.player_gold[f] -= cost;
+        self.player_gold_spent[f] += cost;
 
         // Register this building so conquest can look it up, with its type and
         // completion tick (all three vecs kept index-aligned — see the INVARIANTs).
@@ -1149,8 +1165,61 @@ impl SimulationState {
         if !in_range { return 1; }
 
         self.player_gold[f] -= MISSILE_COST;
+        self.player_gold_spent[f] += MISSILE_COST;
 
-        // Raze the blast zone to neutral.
+        // Calculate physical distance to determine flight time in ticks
+        let source_row = (source_center / MAP_WIDTH as u32) as u32;
+        let source_col = (source_center % MAP_WIDTH as u32) as u32;
+        let dr_f = target_row as f32 - source_row as f32;
+        let dc_f = target_col as f32 - source_col as f32;
+        let dist = (dr_f * dr_f + dc_f * dc_f).sqrt();
+        let flight_time_sec = dist / 40.0; // 40 cells/sec matches frontend
+        let remaining_ticks = (flight_time_sec * self.tick_hz as f32).ceil() as u32;
+
+        self.inflight_missiles.push(target_row as u32);
+        self.inflight_missiles.push(target_col as u32);
+        self.inflight_missiles.push(faction_id);
+        self.inflight_missiles.push(remaining_ticks);
+
+        self.fired_missiles_buf.push(source_row);
+        self.fired_missiles_buf.push(source_col);
+        self.fired_missiles_buf.push(target_row as u32);
+        self.fired_missiles_buf.push(target_col as u32);
+        self.fired_missiles_buf.push(faction_id);
+
+        0
+    }
+
+    fn process_inflight_missiles(&mut self) {
+        let mut i = 0;
+        while i < self.inflight_missiles.len() {
+            let ticks = self.inflight_missiles[i + 3];
+            if ticks <= 1 {
+                // Time's up! Detonate.
+                let target_row = self.inflight_missiles[i] as i32;
+                let target_col = self.inflight_missiles[i + 1] as i32;
+                let faction_id = self.inflight_missiles[i + 2];
+                
+                self.detonate_missile(target_row, target_col, faction_id);
+                
+                // Swap-remove the 4 elements by replacing them with the last 4 elements
+                let last_idx = self.inflight_missiles.len() - 4;
+                if i != last_idx {
+                    self.inflight_missiles[i] = self.inflight_missiles[last_idx];
+                    self.inflight_missiles[i+1] = self.inflight_missiles[last_idx+1];
+                    self.inflight_missiles[i+2] = self.inflight_missiles[last_idx+2];
+                    self.inflight_missiles[i+3] = self.inflight_missiles[last_idx+3];
+                }
+                self.inflight_missiles.truncate(last_idx);
+                // Do not increment i, as we need to process the newly swapped-in missile
+            } else {
+                self.inflight_missiles[i + 3] -= 1;
+                i += 4;
+            }
+        }
+    }
+
+    fn detonate_missile(&mut self, target_row: i32, target_col: i32, faction_id: u32) {
         let radius = MISSILE_BLAST_RADIUS;
         let r_min = (target_row - radius).max(0) as usize;
         let r_max = (target_row + radius).min(MAP_HEIGHT as i32 - 1) as usize;
@@ -1168,6 +1237,9 @@ impl SimulationState {
                     let def_cells = self.player_owned_cells[owner].max(1) as f32;
                     let density = self.player_total_troops[owner] / def_cells;
                     self.player_total_troops[owner] -= density;
+                    if faction_id < PLAYER_ARRAY_SIZE as u32 {
+                        self.player_kill_count[faction_id as usize] += density;
+                    }
                     if self.player_total_troops[owner] < 0.0 { self.player_total_troops[owner] = 0.0; }
                     self.player_owned_cells[owner] = self.player_owned_cells[owner].saturating_sub(1);
                     self.player_row_sum[owner] -= r as f32;
@@ -1186,17 +1258,6 @@ impl SimulationState {
                 self.last_modified_tick[cell] = self.current_tick;
             }
         }
-
-        let source_row = (source_center / MAP_WIDTH as u32) as u32;
-        let source_col = (source_center % MAP_WIDTH as u32) as u32;
-
-        self.fired_missiles_buf.push(source_row);
-        self.fired_missiles_buf.push(source_col);
-        self.fired_missiles_buf.push(target_row as u32);
-        self.fired_missiles_buf.push(target_col as u32);
-        self.fired_missiles_buf.push(faction_id);
-
-        0
     }
 
     /// Complete any building whose construction time has elapsed: stamp tier 10

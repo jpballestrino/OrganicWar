@@ -34,7 +34,7 @@ export const DEFENSE_BUILD_MS = 5000;
 // pre-checks, the dashed range/blast previews, and the build-time fill bar.
 export const SILO_BUILDING_COST = 10000;
 export const SILO_BUILD_MS = 10000;
-export const SILO_RANGE = 120;      // missile firing range from a completed silo (cells)
+export const SILO_RANGE = 240;      // missile firing range from a completed silo (cells)
 export const MISSILE_COST = 2000;
 export const MISSILE_BLAST_RADIUS = 15;
 export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill
