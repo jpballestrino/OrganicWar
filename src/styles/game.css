@@ -352,6 +352,47 @@
     color: #6b7a90;
 }
 
+/* ===== KILL / ELIMINATION FEED ===== */
+.kill-feed-entry {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #e2f1f5;
+    background: rgba(15, 15, 20, 0.82);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border-left: 3px solid #f87171;
+    border-radius: 4px;
+    padding: 6px 10px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    animation: killFeedIn 0.25s ease-out;
+}
+
+.kill-feed-entry.fade-out {
+    animation: killFeedOut 0.5s ease-in forwards;
+}
+
+.kill-feed-skull {
+    color: #f87171;
+    font-size: 0.95rem;
+}
+
+.kill-feed-name {
+    font-weight: 900;
+}
+
+@keyframes killFeedIn {
+    from { opacity: 0; transform: translateX(-14px); }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes killFeedOut {
+    to { opacity: 0; transform: translateX(-14px); }
+}
+
 /* Custom Range Slider */
 .hud-slider {
     -webkit-appearance: none;

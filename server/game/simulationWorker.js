@@ -208,15 +208,17 @@ class RoomSimWorker {
     const count = this.exports.simulationstate_get_placed_buildings_count(this.statePtr);
     if (!count) return;
     const ptr = this.exports.simulationstate_get_placed_buildings_ptr(this.statePtr);
-    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 2);
+    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 3);
     for (let i = 0; i < count; i++) {
-      const center = buf[i * 2];
-      const factionId = buf[i * 2 + 1];
+      const center = buf[i * 3];
+      const factionId = buf[i * 3 + 1];
+      const btype = buf[i * 3 + 2]; // 0 = defense, 1 = silo
       const row = Math.floor(center / MAP_WIDTH);
       const col = center % MAP_WIDTH;
-      parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
-        type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS,
-      }});
+      const payload = btype === 1
+        ? { type: 'silo', factionId, row, col, range: SILO_RANGE, buildMs: SILO_BUILD_MS }
+        : { type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS };
+      parentPort.postMessage({ type: 'emit', event: 'building-placed', payload });
     }
     this.exports.simulationstate_clear_placed_buildings(this.statePtr);
   }
@@ -432,6 +434,11 @@ class RoomSimWorker {
       }
     } else if (input.type === 'cancel') {
       this.exports.simulationstate_cancel_expansion(this.statePtr, factionId);
+    } else if (input.type === 'cancel_front') {
+      const { targetFaction } = input.payload ?? {};
+      if (typeof targetFaction === 'number') {
+        this.exports.simulationstate_cancel_front(this.statePtr, factionId, targetFaction);
+      }
     } else if (input.type === 'build_defense') {
       const { targetCell } = input.payload ?? {};
       if (typeof targetCell === 'number') {

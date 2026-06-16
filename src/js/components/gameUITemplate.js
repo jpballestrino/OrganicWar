@@ -17,9 +17,29 @@ export function gameUITemplate() {
         </div>
 
         <!-- Spawn Selection Overlay -->
-        <div id="spawnOverlay" style="display: none; position: absolute; top: 60px; left: 50%; transform: translateX(-50%); z-index: 1000; background: rgba(15,15,20,0.85); border: 2px solid #ffc107; border-radius: 8px; padding: 15px 30px; text-align: center; pointer-events: none; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
-            <div style="font-size: 24px; font-weight: bold; color: #ffc107; text-transform: uppercase; margin-bottom: 5px;">Select Spawn Location</div>
-            <div style="font-size: 14px; color: #fff;">Click anywhere on land. Time remaining: <span id="spawnTimerText" style="font-weight: bold; font-size: 18px; color: #ff4444;">20</span>s</div>
+        <div id="spawnOverlay" style="display: none; position: absolute; top: 40px; left: 50%; transform: translateX(-50%); z-index: 1000; background: linear-gradient(135deg, rgba(15, 20, 25, 0.95) 0%, rgba(10, 12, 15, 0.95) 100%); border: 1px solid rgba(255, 193, 7, 0.2); border-top: 2px solid rgba(255, 193, 7, 0.6); border-radius: 40px; padding: 12px 30px; text-align: center; pointer-events: none; box-shadow: 0 10px 25px rgba(0,0,0,0.6), 0 0 20px rgba(255, 193, 7, 0.15); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; gap: 20px; width: max-content;">
+            
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="display: inline-block; width: 8px; height: 8px; background: #ffc107; border-radius: 50%; box-shadow: 0 0 10px #ffc107; animation: pulse 2s infinite;"></span>
+                <div style="font-family: 'Orbitron', sans-serif; font-size: 20px; font-weight: 800; color: #ffc107; text-transform: uppercase; letter-spacing: 1.5px; text-shadow: 0 0 15px rgba(255, 193, 7, 0.3);">Deployment Phase</div>
+            </div>
+
+            <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1);"></div>
+
+            <div style="font-size: 14px; color: #94a3b8; font-family: 'Inter', sans-serif; font-weight: 500; letter-spacing: 0.5px;">
+                Secure a strategic land cell to establish your headquarters.
+            </div>
+
+            <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1);"></div>
+
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 12px; color: #cbd5e1; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;">Drop In</span>
+                <div style="display: flex; align-items: baseline; gap: 2px;">
+                    <span id="spawnTimerText" style="font-family: 'Orbitron', monospace; font-weight: bold; font-size: 22px; color: #ff4444; text-shadow: 0 0 10px rgba(255, 68, 68, 0.6); line-height: 1;">5</span>
+                    <span style="font-size: 13px; color: #ff4444; font-weight: 700; opacity: 0.8;">s</span>
+                </div>
+            </div>
+            
         </div>
 
         <!-- Game HUD -->
@@ -65,6 +85,9 @@ export function gameUITemplate() {
             <div style="font-size: 12px; font-weight: bold; color: #aaa; text-transform: uppercase; margin-bottom: 6px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 4px;">Leaderboard</div>
             <div id="leaderboardList" style="display: flex; flex-direction: column; gap: 4px;"></div>
         </div>
+
+        <!-- Kill / elimination feed -->
+        <div id="killFeed" style="display: none; position: absolute; top: 70px; left: 10px; width: 240px; z-index: 1000; pointer-events: none; flex-direction: column; gap: 6px;"></div>
 
         <!-- Economy / building HUD (bottom bar) -->
         <div id="gameEconomyHUD" class="game-hud game-hud-bottom" style="display: none;">

@@ -122,37 +122,28 @@ export function modalsTemplate() {
     <div id="tutorialModal"
         style="display: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 600px; max-height: 80vh; z-index: 1100; background: rgba(15,15,20,0.98); border: 2px solid #00e5ff; border-radius: 10px; padding: 25px; box-shadow: 0 0 30px rgba(0, 229, 255, 0.3); overflow-y: auto; color: #fff;">
         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px;">
-            <div style="font-size: 24px; font-weight: bold; color: #00e5ff; font-family: 'Orbitron', sans-serif;">📖 Developer Template Info</div>
+            <div style="font-size: 24px; font-weight: bold; color: #00e5ff; font-family: 'Orbitron', sans-serif;">📖 How to Play OrganicWar.io</div>
             <button id="btnCloseTutorial" style="background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer;">&times;</button>
         </div>
         
         <div style="font-size: 14px; line-height: 1.6; color: #ccc;">
-            <h3 style="color: #00e5ff; margin-top: 0;">🎮 Project Architecture</h3>
-            <p>Welcome to <strong>OrganicWar.io</strong>. This is a blank starter dashboard designed for multiplayer game prototypes. It provides all outer-game mechanics, leaving a clean workspace to build your game logic.</p>
+            <h3 style="color: #00e5ff; margin-top: 0;">🎮 The Basics</h3>
+            <p>Welcome to <strong>OrganicWar.io</strong>, a real-time multiplayer territory-conquest game! Your goal is to expand your empire, build defenses, and eliminate rival factions to dominate the map.</p>
             
-            <h3 style="color: #00e5ff;">✨ Included Features</h3>
+            <h3 style="color: #00e5ff;">⚔️ Conquest & Expansion</h3>
             <ul style="padding-left: 20px; margin-bottom: 20px;">
-                <li><strong>Authentication:</strong> User sign up, login, forgot password resets, guest sessions, and token persistence.</li>
-                <li><strong>Guild System:</strong> Roster management, request system, chat logs with emojis, guild ELO, and guild matchmaking searches.</li>
-                <li><strong>Lobby & Matchmaker:</strong> Create custom lobbies, choose map size presets, and auto-matchmaking queues.</li>
-                <li><strong>Profile ELO System:</strong> Global rankings leaderboard, match history records, and dynamic win-rate tracking.</li>
+                <li><strong>Attack / Expand:</strong> Click on neutral (unowned) land or enemy territory to start an attack front. Your troops will automatically push forward.</li>
+                <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against <em>that specific enemy</em>. Right-click your own or neutral territory to cancel neutral expansion.</li>
+                <li><strong>Cancel All Attacks:</strong> Press the <strong>Space</strong> key to instantly refund and cancel all of your active attacks.</li>
+                <li><strong>Troops & Gold:</strong> Your troop cap, growth rate, and gold income scale with the amount of territory you control. Larger empires produce more!</li>
             </ul>
 
-            <h3 style="color: #00e5ff;">🧪 How to Test</h3>
+            <h3 style="color: #00e5ff;">🛡️ Buildings & Weapons</h3>
             <ul style="padding-left: 20px; margin-bottom: 20px;">
-                <li><strong>1. Open Multiple Sessions:</strong> Open two browser tabs (one in incognito mode).</li>
-                <li><strong>2. Create custom lobby:</strong> Log in on both accounts (or play as Guest) and navigate to the Lobby Browser to create a lobby.</li>
-                <li><strong>3. Claim slot & Start:</strong> Select slots on both screens, then press <strong>Start Now</strong> on the host tab.</li>
-                <li><strong>4. Simulate Win/Loss:</strong> You will see the developer sandbox matching screen. Click <strong>Simulate Victory</strong> or <strong>Simulate Defeat</strong>.</li>
-                <li><strong>5. Verify DB:</strong> Check the Profile Modal or the Rankings Leaderboard to confirm that ELO rating changes and Match History logs were saved to the SQLite database.</li>
-            </ul>
-
-            <h3 style="color: #00e5ff;">⚙️ Customizing the Game Screen</h3>
-            <p>To implement your custom gameplay logic, graphics, and network syncer:</p>
-            <ul style="padding-left: 20px; margin-bottom: 10px;">
-                <li>Add your Canvas drawing scripts or UI loops inside <code>src/js/components/gameUITemplate.js</code>.</li>
-                <li>Write game-state handling in <code>src/js/network.js</code> and client main loops in <code>src/main.js</code>.</li>
-                <li>Extend the room instance in <code>server/game/roomManager.js</code>.</li>
+                <li><strong>Defense Tower (Press '3'):</strong> Costs 2,000 gold. Grants a massive defense bonus to surrounding cells, making them very hard for enemies to conquer. Takes 5s to build.</li>
+                <li><strong>Missile Silo (Press '4'):</strong> Costs 10,000 gold. Required to fire missiles. Takes 10s to build. Silos survive partial conquest and can be captured if an enemy takes the entire 8x8 footprint.</li>
+                <li><strong>Fire Missile (Press '2'):</strong> Costs 2,000 gold. Target any enemy cell within range of your completed silos. Obliterates troops and buildings in a large radius, turning the land back to nature.</li>
+                <li><em>Note: Right-click can also be used to cancel out of any active building or targeting mode.</em></li>
             </ul>
         </div>
     </div>

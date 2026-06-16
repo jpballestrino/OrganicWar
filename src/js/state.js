@@ -61,6 +61,7 @@ export const state = {
   debug: false,
   lastApplyMs: 0,
   avgApplyMs: 0,
+  eliminatedFactions: new Set(),
 };
 
 export function resetGameState() {
@@ -110,4 +111,5 @@ export function resetGameState() {
   state.mySpawnSelection = null;
   state.lastApplyMs = 0;
   state.avgApplyMs = 0;
+  state.eliminatedFactions.clear();
 }

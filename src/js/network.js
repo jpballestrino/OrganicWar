@@ -95,6 +95,33 @@ export function updateDevDashboard() {
   }
 }
 
+// Push an elimination into the kill feed (top-left). Newest on top, capped, each
+// entry auto-fades after a few seconds. Called from the `player-eliminated` event.
+function addKillFeedEntry(factionId) {
+  const feed = document.getElementById('killFeed');
+  if (!feed) return;
+  const slot = state.activePlayerSlots ? state.activePlayerSlots[factionId] : null;
+  const name = slot && slot.nickname ? slot.nickname : `Player ${factionId}`;
+  const color = factionHexColors[factionId] || '#ffffff';
+
+  const entry = document.createElement('div');
+  entry.className = 'kill-feed-entry';
+  entry.innerHTML =
+    `<span class="kill-feed-skull">☠</span>` +
+    `<span class="kill-feed-name" style="color:${color}">${escapeHtml(name)}</span>` +
+    `<span>eliminated</span>`;
+  feed.prepend(entry);
+
+  // Cap the visible feed length.
+  while (feed.children.length > 6) { feed.removeChild(feed.lastChild); }
+
+  // Auto-fade and remove.
+  setTimeout(() => {
+    entry.classList.add('fade-out');
+    setTimeout(() => entry.remove(), 500);
+  }, 6000);
+}
+
 export function triggerEndGame(status) {
   state.gameState = 'END_GAME';
     
@@ -265,6 +292,8 @@ export function initNetwork() {
     if (gameLeaderboard) gameLeaderboard.style.display = 'block';
     const economyHUD = document.getElementById('gameEconomyHUD');
     if (economyHUD) economyHUD.style.display = 'flex';
+    const killFeed = document.getElementById('killFeed');
+    if (killFeed) { killFeed.innerHTML = ''; killFeed.style.display = 'flex'; }
 
     const waitingOverlay = document.getElementById('waitingOverlay');
     if (waitingOverlay) waitingOverlay.style.display = 'none';
@@ -289,6 +318,14 @@ export function initNetwork() {
     const spawnOverlay = document.getElementById('spawnOverlay');
     if (spawnOverlay) {
       spawnOverlay.style.display = 'flex';
+    }
+    // Seed the countdown with the server's real duration so it doesn't flash a
+    // stale placeholder before the first spawn-timer tick arrives.
+    const duration = data && typeof data.duration === 'number' ? data.duration : null;
+    if (duration !== null) {
+      state.spawnTimeLeft = duration;
+      const spawnText = document.getElementById('spawnTimerText');
+      if (spawnText) spawnText.innerText = duration;
     }
   });
 
@@ -321,6 +358,11 @@ export function initNetwork() {
 
   socket.on('notification', ({ message, type }) => {
     showToast(message, type);
+  });
+
+  socket.on('player-eliminated', ({ factionId }) => {
+    addKillFeedEntry(factionId);
+    state.eliminatedFactions.add(factionId);
   });
 
   socket.on('game-over', ({ winner }) => {
@@ -480,9 +522,11 @@ export function initNetwork() {
           const k = killArray ? Math.floor(killArray[i]) : 0;
           const gs = goldSpentArray ? Math.floor(goldSpentArray[i]) : 0;
           
-          if (c > 0 || t > 0) {
+          const isEliminated = state.eliminatedFactions.has(i);
+          
+          if (c > 0 || t > 0 || isEliminated) {
             const score = gs + k + t + c;
-            state.leaderboardData.push({ fid: i, score });
+            state.leaderboardData.push({ fid: i, score, isEliminated });
           }
         }
         // Descending sort
@@ -500,14 +544,15 @@ export function initNetwork() {
               const slot = state.activePlayerSlots ? state.activePlayerSlots[lb.fid] : null;
               const name = isMe ? 'You' : (slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
               const fmtScore = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : lb.score;
+              const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
               return `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${lb.fid === fid ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
                   <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
                     <span style="font-size: 10px; color: #888; width: 12px; text-align: right;">${index + 1}.</span>
                     <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${fColor}; border: 1px solid #000;"></div>
-                    <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px;">${name}</span>
+                    <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>
                   </div>
-                  <span style="font-size: 13px; font-weight: bold; color: #ffc107;">${fmtScore}</span>
+                  <span style="font-size: 13px; font-weight: bold; color: ${lb.isEliminated ? '#888' : '#ffc107'};">${fmtScore}</span>
                 </div>
               `;
             }).join('');

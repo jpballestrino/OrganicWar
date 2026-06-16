@@ -479,7 +479,29 @@ async function startSimulationEngine() {
     });
 
     // Handle game input (clicks)
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+    });
+
     canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2) { // Right click
+        if (state.activePurchaseMode) {
+          state.activePurchaseMode = null;
+        } else if (state.gameState === 'PLAYING') {
+          const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
+          if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
+            const targetCell = row * 1920 + col;
+            let targetOwner = getCellOwner(targetCell);
+            if (targetOwner === parseInt(state.playerFaction)) {
+              // Right-clicking own territory cancels neutral expansion (target 0)
+              targetOwner = 0;
+            }
+            socket.emit('sim-input', { type: 'cancel_front', payload: { targetFaction: targetOwner } });
+          }
+        }
+        return;
+      }
+
       if (state.gameState === 'SPAWN_SELECTION') {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
         socket.emit('select-spawn', { row, col });

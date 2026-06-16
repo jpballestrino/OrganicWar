@@ -46,6 +46,23 @@ const MIN_GROWTH_PER_SEC: f32 = 5.0;
 // (Tune here — there is no flat base, so initial cap = starting cells * this.)
 const POP_CAP_PER_CELL: u32 = 2;
 
+// ── Anti-snowball production throttle ─────────────────────────────────────────
+// A runaway empire out-PRODUCES what it loses (troops/sec scales with cells), so
+// it can keep funding reckless conquests. We throttle PRODUCTION (not capacity)
+// above a per-match "soft cap" = GROWTH_FAIR_SHARE_MULT × a player's fair share
+// of the land (land_cells / num_players, computed once in init_players). Cells
+// beyond the soft cap contribute only GROWTH_OVERSIZE_FACTOR toward troops/sec,
+// so a giant empire's production flattens toward a mid-size empire's.
+//
+// Deliberately leaves max_cap / density LINEAR (cells × POP_CAP_PER_CELL): the
+// combat model and the client's maxPop→cells display both rely on that, and we
+// don't want to also make big empires defensively fragile (that's a separate knob
+// — to couple it, diminish max_cap here too, but then fix the client's
+// `maxPop / POP_CAP_PER_CELL` cell-count derivation). Tune gently: the growth
+// curve is a parabola in p = troops/cap, so throttling bites super-linearly.
+const GROWTH_FAIR_SHARE_MULT: f32 = 2.0;  // full rate up to ~2× your fair share
+const GROWTH_OVERSIZE_FACTOR: f32 = 0.5;  // territory beyond that produces at 50%
+
 // Gold income per owned cell per second; total income scales with territory.
 // Mirrored in src/js/constants.js (GOLD_PER_CELL_PER_SEC) so the HUD can show
 // the income rate without an extra wire field — keep the two in sync.
@@ -212,6 +229,10 @@ pub struct SimulationState {
     // Simulation tick rate (Hz). Per-second rates are divided by this so the
     // sim behaves identically regardless of how fast the server ticks it.
     tick_hz: u32,
+    // Per-player territory size beyond which production is throttled (see the
+    // anti-snowball consts). Set once in init_players from land_cells/num_players;
+    // 0 = no throttle (e.g. before init or on the client render cache).
+    growth_soft_cap: u32,
     // xorshift RNG state — used to randomize the order cells are conquered so
     // expansion grows radially in all directions rather than toward the target.
     rng_state: u32,
@@ -259,6 +280,7 @@ impl SimulationState {
 
             current_tick: 0,
             tick_hz: 60,
+            growth_soft_cap: 0,
             rng_state: 0x9E3779B9,
         };
 
@@ -391,6 +413,17 @@ impl SimulationState {
 
         let actual_players = if num_players as usize > MAX_PLAYERS { MAX_PLAYERS } else { num_players as usize };
 
+        // Anti-snowball: set the production soft cap at GROWTH_FAIR_SHARE_MULT ×
+        // each player's fair share of the land. Terrain is generated (by the
+        // server worker) before init_players, so cell_terrain is valid here.
+        // Water (terrain 3) is never conquerable, so only land counts.
+        let mut land_cells: u32 = 0;
+        for c in 0..TOTAL_CELLS {
+            if self.cell_terrain(c) != 3 { land_cells += 1; }
+        }
+        let fair_share = land_cells as f32 / actual_players.max(1) as f32;
+        self.growth_soft_cap = (fair_share * GROWTH_FAIR_SHARE_MULT).max(1.0) as u32;
+
         // Initialize active players (indices 1 through N)
         for i in 1..=actual_players {
             self.player_is_alive[i] = 1;
@@ -475,6 +508,26 @@ impl SimulationState {
             self.front_pool[fi] = 0.0;
         }
         self.player_attack_pool[f] = 0.0;
+    }
+
+    /// Cancel only a specific attack front.
+    #[wasm_bindgen]
+    pub fn cancel_front(&mut self, faction_id: u32, target_faction: u32) {
+        let f = faction_id as usize;
+        let t = target_faction as usize;
+        if f == 0 || f >= PLAYER_ARRAY_SIZE || t >= PLAYER_ARRAY_SIZE || self.player_is_alive[f] == 0 { return; }
+        
+        let fi = f * PLAYER_ARRAY_SIZE + t;
+        let troops = self.front_pool[fi];
+        
+        if troops > 0.0 {
+            self.player_total_troops[f] += troops;
+            self.front_pool[fi] = 0.0;
+            self.player_attack_pool[f] -= troops;
+            if self.player_attack_pool[f] < 0.0 {
+                self.player_attack_pool[f] = 0.0;
+            }
+        }
     }
 
     /// Mark a faction as a server-driven bot (or clear the flag). Bots get a
@@ -676,14 +729,30 @@ impl SimulationState {
                 // Growth curve (troops/sec): peaks at p = 0.40, zero at p = 1.0,
                 // positive at p = 0 (the recovery floor). See the consts above.
                 let shape = ((1.0 - p) * (p - GROWTH_ROOT2) / GROWTH_SHAPE_PEAK).max(0.0);
+                // Anti-snowball: throttle the shaped production by the oversize
+                // factor (≤ 1 only past the soft cap). The recovery floor is left
+                // unscaled so a near-dead faction always claws back, but for a huge
+                // empire MIN_GROWTH is negligible against its size.
+                let base_growth = max_cap_f * PEAK_GROWTH_FRACTION * shape;
                 let growth_per_sec =
-                    (max_cap_f * PEAK_GROWTH_FRACTION * shape).max(MIN_GROWTH_PER_SEC);
+                    (base_growth * self.oversize_growth_scale(cells)).max(MIN_GROWTH_PER_SEC);
 
                 let new_troops = troops + growth_per_sec / tick_hz;
                 // Never exceed the cap (this also enforces "zero growth at 100%").
                 self.player_total_troops[i] = new_troops.min(max_cap_f);
             }
         }
+    }
+
+    /// Anti-snowball production multiplier (≤ 1.0) for an empire of `cells` cells.
+    /// 1.0 up to the soft cap; beyond it, the excess territory only counts
+    /// GROWTH_OVERSIZE_FACTOR toward production, so the scale = effective/actual
+    /// shrinks as the empire grows — flattening a runaway leader's troops/sec.
+    fn oversize_growth_scale(&self, cells: u32) -> f32 {
+        let soft = self.growth_soft_cap;
+        if soft == 0 || cells <= soft { return 1.0; }
+        let effective = soft as f32 + (cells - soft) as f32 * GROWTH_OVERSIZE_FACTOR;
+        effective / cells as f32
     }
 
     /// How many of a cell's 8 neighbors are owned by faction `f` (0..8).
@@ -1112,10 +1181,13 @@ impl SimulationState {
         self.building_owner.push(faction_id);
 
         // Bot builds are broadcast by the server polling placed_buildings_buf
-        // each tick; human builds are broadcast directly from handleInput.
+        // each tick; human builds are broadcast directly from handleInput. The
+        // type MUST travel too, or a bot silo is mislabeled as a defense tower on
+        // the client (wrong icon + a phantom defense aura).
         if self.player_is_bot[f] == 1 {
             self.placed_buildings_buf.push(center);
             self.placed_buildings_buf.push(faction_id);
+            self.placed_buildings_buf.push(btype as u32);
         }
         true
     }
@@ -1473,10 +1545,10 @@ impl SimulationState {
         self.transferred_buildings_buf.clear();
     }
 
-    /// Number of (center, faction_id) pairs in the bot-placed buildings buffer.
+    /// Number of (center, faction_id, type) triplets in the bot-placed buffer.
     #[wasm_bindgen]
     pub fn get_placed_buildings_count(&self) -> u32 {
-        (self.placed_buildings_buf.len() / 2) as u32
+        (self.placed_buildings_buf.len() / 3) as u32
     }
 
     #[wasm_bindgen]

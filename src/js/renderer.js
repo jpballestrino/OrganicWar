@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { factionHexColors, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS } from './constants.js';
+import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS } from './constants.js';
 
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
@@ -118,30 +118,14 @@ export class WebGLRenderer {
             // mountains in a dense empire render fully solid; plains in a weak one stay faint.
             uniform float u_player_opacity[21];
 
-            // Palette for 20 players (Index 0 is Neutral)
-            const vec3 playerColors[21] = vec3[](
-                vec3(0.0, 0.0, 0.0),       // 0: Neutral (Unused directly in blend)
-                vec3(0.9, 0.3, 0.3),       // 1: Red
-                vec3(0.3, 0.5, 0.9),       // 2: Blue
-                vec3(0.3, 0.8, 0.4),       // 3: Green
-                vec3(0.9, 0.8, 0.2),       // 4: Yellow
-                vec3(0.8, 0.3, 0.9),       // 5: Purple
-                vec3(0.9, 0.5, 0.2),       // 6: Orange
-                vec3(0.2, 0.8, 0.8),       // 7: Cyan
-                vec3(0.9, 0.4, 0.7),       // 8: Pink
-                vec3(0.5, 0.3, 0.1),       // 9: Brown
-                vec3(0.5, 0.9, 0.6),       // 10: Mint
-                vec3(0.6, 0.6, 0.9),       // 11: Periwinkle
-                vec3(0.8, 0.9, 0.3),       // 12: Lime
-                vec3(0.9, 0.6, 0.5),       // 13: Salmon
-                vec3(0.4, 0.2, 0.6),       // 14: Deep Purple
-                vec3(0.2, 0.5, 0.4),       // 15: Teal
-                vec3(0.7, 0.2, 0.3),       // 16: Maroon
-                vec3(0.6, 0.5, 0.2),       // 17: Olive
-                vec3(0.3, 0.3, 0.6),       // 18: Navy
-                vec3(0.9, 0.3, 0.5),       // 19: Magenta
-                vec3(0.5, 0.5, 0.5)        // 20: Grey
-            );
+            // The local player's faction id (0 when spectating/pre-game). Their own
+            // frontier is drawn as a bright highlight; all other borders are dark.
+            uniform uint u_my_faction;
+
+            // Per-faction territory color (index 0 = neutral, unused). Uploaded once
+            // from factionRGB in constants.js — the SAME source the building icons
+            // and HUD use — so a faction's territory matches its icon/label color.
+            uniform vec3 u_palette[21];
 
             void main() {
                 // Calculate map coordinate based on screen UV, camera pos, and zoom
@@ -175,18 +159,7 @@ export class WebGLRenderer {
                 }
 
                 if (ownerVal > 0u && ownerVal <= 20u) {
-                    vec3 pColor = playerColors[ownerVal];
-                    ivec2 sz = ivec2(u_map_size);
-                    bool inL = texCoord.x > 0;
-                    bool inR = texCoord.x < sz.x - 1;
-                    bool inU = texCoord.y > 0;
-                    bool inD = texCoord.y < sz.y - 1;
-
-                    // Cardinal neighbors for border outline detection.
-                    uint nl = inL ? (texelFetch(u_cell_tex, texCoord + ivec2(-1, 0), 0).r & 127u) : ownerVal;
-                    uint nr = inR ? (texelFetch(u_cell_tex, texCoord + ivec2( 1, 0), 0).r & 127u) : ownerVal;
-                    uint nu = inU ? (texelFetch(u_cell_tex, texCoord + ivec2( 0,-1), 0).r & 127u) : ownerVal;
-                    uint nd = inD ? (texelFetch(u_cell_tex, texCoord + ivec2( 0, 1), 0).r & 127u) : ownerVal;
+                    vec3 pColor = u_palette[ownerVal];
 
                     // Per-cell HEATMAP opacity: proportional to that cell's
                     // difficulty_to_invade = (density + terrain) * defense_tier.
@@ -205,9 +178,27 @@ export class WebGLRenderer {
                     float opacity = 0.12 + 0.88 * diffNorm;
                     baseColor = mix(baseColor, pColor, opacity);
 
-                    // Border outline: darken cells where any cardinal neighbor differs.
+                    // --- Crisp faction borders ---
+                    // Sample neighbors at a cell distance that grows as we zoom out, so
+                    // the outline stays ~constant width on screen at any zoom (a flat
+                    // 1-cell line vanishes when the whole map is fit to the screen).
+                    int bw = int(clamp(floor(1.0 / u_zoom + 0.5), 1.0, 6.0));
+                    ivec2 sz = ivec2(u_map_size);
+                    // Out-of-bounds counts as the same owner so the map edge isn't outlined.
+                    uint nl = (texCoord.x - bw >= 0)    ? (texelFetch(u_cell_tex, texCoord + ivec2(-bw, 0), 0).r & 127u) : ownerVal;
+                    uint nr = (texCoord.x + bw < sz.x)  ? (texelFetch(u_cell_tex, texCoord + ivec2( bw, 0), 0).r & 127u) : ownerVal;
+                    uint nu = (texCoord.y - bw >= 0)    ? (texelFetch(u_cell_tex, texCoord + ivec2( 0,-bw), 0).r & 127u) : ownerVal;
+                    uint nd = (texCoord.y + bw < sz.y)  ? (texelFetch(u_cell_tex, texCoord + ivec2( 0, bw), 0).r & 127u) : ownerVal;
+
                     if (nl != ownerVal || nr != ownerVal || nu != ownerVal || nd != ownerVal) {
-                        baseColor *= 0.45;
+                        if (u_my_faction > 0u && ownerVal == u_my_faction) {
+                            // The player's own frontier: bright gold so you instantly
+                            // see the edge of your empire.
+                            baseColor = mix(baseColor, vec3(1.0, 0.92, 0.45), 0.85);
+                        } else {
+                            // Every other border: a crisp near-black outline.
+                            baseColor = mix(baseColor, vec3(0.04, 0.04, 0.06), 0.72);
+                        }
                     }
                 } else if (ownerVal > 20u) {
                     baseColor = vec3(1.0, 0.0, 0.0); // debug: out-of-range owner
@@ -237,11 +228,25 @@ export class WebGLRenderer {
             zoom: this.gl.getUniformLocation(this.program, 'u_zoom'),
             mapSize: this.gl.getUniformLocation(this.program, 'u_map_size'),
             cellTex: this.gl.getUniformLocation(this.program, 'u_cell_tex'),
-            playerOpacity: this.gl.getUniformLocation(this.program, 'u_player_opacity')
+            playerOpacity: this.gl.getUniformLocation(this.program, 'u_player_opacity'),
+            myFaction: this.gl.getUniformLocation(this.program, 'u_my_faction'),
+            palette: this.gl.getUniformLocation(this.program, 'u_palette')
         };
 
         this.gl.uniform2f(this.uniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
         this.gl.uniform1i(this.uniforms.cellTex, 0); // Texture unit 0
+
+        // Upload the faction palette once (it's static). Built from factionRGB so
+        // territory fill matches the building icons / HUD; index 0 (neutral) stays
+        // black and is never sampled (only owners 1..20 read u_palette).
+        const palette = new Float32Array(21 * 3);
+        for (let i = 1; i <= 20; i++) {
+            const rgb = factionRGB[i] || [128, 128, 128];
+            palette[i * 3]     = rgb[0] / 255;
+            palette[i * 3 + 1] = rgb[1] / 255;
+            palette[i * 3 + 2] = rgb[2] / 255;
+        }
+        this.gl.uniform3fv(this.uniforms.palette, palette);
     }
 
     compileShader(type, source) {
@@ -413,6 +418,9 @@ export class WebGLRenderer {
         this.gl.uniform2f(this.uniforms.resolution, this.canvas.width, this.canvas.height);
         this.gl.uniform2f(this.uniforms.cameraPos, this.camera.x, this.camera.y);
         this.gl.uniform1f(this.uniforms.zoom, this.camera.zoom);
+        // Highlight the local player's own frontier (0 = none, e.g. spectating).
+        const myFaction = parseInt(state.playerFaction);
+        this.gl.uniform1ui(this.uniforms.myFaction, Number.isFinite(myFaction) ? myFaction : 0);
 
         // Territory opacity per faction (from difficulty_to_invade). Pull the
         // latest values the network layer computed from the last snapshot.
