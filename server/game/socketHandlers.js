@@ -63,10 +63,10 @@ export function setupSocketHandlers(io) {
       expand:        { lastMs: 0, minIntervalMs: 33   },  // ~30/s max
       cancel:        { lastMs: 0, minIntervalMs: 50   },
       cancel_front:  { lastMs: 0, minIntervalMs: 50   },
-      build_defense: { lastMs: 0, minIntervalMs: 1000 },
-      build_silo:    { lastMs: 0, minIntervalMs: 1000 },
-      build_mine:    { lastMs: 0, minIntervalMs: 1000 },
-      build_antiair: { lastMs: 0, minIntervalMs: 1000 },
+      build_defense: { lastMs: 0, minIntervalMs: 200 },
+      build_silo:    { lastMs: 0, minIntervalMs: 200 },
+      build_mine:    { lastMs: 0, minIntervalMs: 200 },
+      build_antiair: { lastMs: 0, minIntervalMs: 200 },
       fire_missile:  { lastMs: 0, minIntervalMs: 2000 },
     };
     
