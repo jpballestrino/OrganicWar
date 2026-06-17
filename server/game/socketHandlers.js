@@ -52,11 +52,23 @@ export function setupSocketHandlers(io) {
     const ip = socket.handshake.address;
     const count = (ipConnectionCounts.get(ip) || 0) + 1;
     ipConnectionCounts.set(ip, count);
-    if (count > 100) {
-      log('warn', `[RateLimit] Disconnected ${ip} (too many connections)`);
+    if (count > 20) {
+      log('warn', `[RateLimit] Disconnected ${ip} (connection rate exceeded: ${count})`);
       socket.disconnect(true);
       return;
     }
+
+    // Per-connection input rate-limit state (shared across the connection lifetime).
+    const inputRateLimits = {
+      expand:        { lastMs: 0, minIntervalMs: 33   },  // ~30/s max
+      cancel:        { lastMs: 0, minIntervalMs: 50   },
+      cancel_front:  { lastMs: 0, minIntervalMs: 50   },
+      build_defense: { lastMs: 0, minIntervalMs: 1000 },
+      build_silo:    { lastMs: 0, minIntervalMs: 1000 },
+      build_mine:    { lastMs: 0, minIntervalMs: 1000 },
+      build_antiair: { lastMs: 0, minIntervalMs: 1000 },
+      fire_missile:  { lastMs: 0, minIntervalMs: 2000 },
+    };
     
     let playerToken = socket.handshake.auth.token;
     let userId = null;
@@ -150,10 +162,14 @@ export function setupSocketHandlers(io) {
         const freshGuild = getFreshGuildInfo();
         const effectiveNickname = cleanNickname(socket.displayName || nickname, 'Host');
         let room = createRoom(safeName, preset || 'north_america', parseInt(maxPlayers) || 5, false);
+        if (!room) {
+          socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+          return;
+        }
         room.hostSocketId = socket.id;
         socket.roomId = room.id;
         socket.join(room.id);
-            
+
         let fid = 1;
         room.activePlayerSlots[fid] = {
           socketId: socket.id,
@@ -161,7 +177,8 @@ export function setupSocketHandlers(io) {
           guildTag: freshGuild.guildTag,
         };
         room.humanPlayers[fid] = { userId: socket.userId || null, isGuest: !socket.userId, status: 'playing' };
-            
+        socket.assignedFaction = fid;
+
         sendInitConfig(socket, room);
             
         const token = crypto.randomUUID();
@@ -210,8 +227,11 @@ export function setupSocketHandlers(io) {
       try {
         let room = Object.values(activeRooms).find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout);
         if (!room) {
-          // Quick Battle rolls a random map from the pool for each new room.
           room = createRoom('Quick Game', randomMapId(), 20, true);
+          if (!room) {
+            socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+            return;
+          }
         }
             
         let availableSlots = [];
@@ -242,6 +262,7 @@ export function setupSocketHandlers(io) {
         socket.join(room.id);
         sendInitConfig(socket, room);
             
+        socket.assignedFaction = chosenFid;
         const token = crypto.randomUUID();
         room.reconnectTokens.set(token, { roomId: room.id, factionId: chosenFid, nickname: room.activePlayerSlots[chosenFid].nickname });
         socket.emit('join-success', { factionId: chosenFid, nickname: room.activePlayerSlots[chosenFid].nickname, isQuickPlay: room.isQuickPlay, reconnectToken: token });
@@ -342,6 +363,7 @@ export function setupSocketHandlers(io) {
         room.humanPlayers[fid] = { userId: socket.userId || null, isGuest: !socket.userId, status: 'playing' };
         sim.doctrines[fid] = doctrine || 'balanced';
 
+        socket.assignedFaction = fid;
         const token = crypto.randomUUID();
         room.reconnectTokens.set(token, { roomId: room.id, factionId: fid, nickname: room.activePlayerSlots[fid].nickname });
         socket.emit('join-success', { factionId: fid, nickname: room.activePlayerSlots[fid].nickname, isQuickPlay: room.isQuickPlay, reconnectToken: token });
@@ -408,9 +430,20 @@ export function setupSocketHandlers(io) {
     // ---------- SIM INPUT (server-authoritative simulation) ----------
     socket.on('sim-input', (input) => {
       try {
+        if (!input || typeof input.type !== 'string') { return; }
+
+        // Drop excess messages silently — burst protection without disconnecting
+        const limit = inputRateLimits[input.type];
+        if (limit) {
+          const now = Date.now();
+          if (now - limit.lastMs < limit.minIntervalMs) { return; }
+          limit.lastMs = now;
+        }
+
         const room = activeRooms[socket.roomId];
         if (!room || !room.matchStarted || !room.simReal) { return; }
-        const fid = getFactionForSocket(room, socket.id);
+        // Use server-stored faction; never trust a client-supplied factionId.
+        const fid = socket.assignedFaction || getFactionForSocket(room, socket.id);
         if (!fid) { return; }
         room.simReal.handleInput(fid, input, () => {
           socket.emit('build-rejected', { type: input.type });
@@ -661,6 +694,7 @@ export function setupSocketHandlers(io) {
         if (!room) { return; }
         handlePlayerDisconnect(room, socket.id, true);
         io.to(room.id).emit('slots-update', room.activePlayerSlots);
+        socket.assignedFaction = null;
         socket.roomId = null;
       } catch (err) {
         log('error', '[quit-game] handler failed:', err.message);
@@ -688,7 +722,8 @@ export function setupSocketHandlers(io) {
                         
               room.activePlayerSlots[fid].socketId = socket.id;
               room.activePlayerSlots[fid].disconnected = false;
-                        
+              socket.assignedFaction = fid;
+
               socket.roomId = room.id;
               socket.join(room.id);
                         

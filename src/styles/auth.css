@@ -256,6 +256,17 @@
     border-color: rgba(41, 128, 212, 0.6);
 }
 
+.home-btn-ranked {
+    background: linear-gradient(135deg, #7a5500 0%, #c48800 50%, #a87200 100%);
+    border-color: rgba(255, 193, 7, 0.35);
+    box-shadow: 0 4px 20px rgba(255, 180, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.home-btn-ranked:hover {
+    box-shadow: 0 6px 30px rgba(255, 180, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 193, 7, 0.65);
+}
+
 /* Footer */
 .home-footer {
     font-size: 11px;

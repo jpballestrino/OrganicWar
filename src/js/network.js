@@ -1,10 +1,10 @@
 import { io } from 'socket.io-client';
 import { state } from './state.js';
-import { showToast } from './guildUI.js';
+import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken } from './auth.js';
 import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
-import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST } from './constants.js';
+import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST } from './constants.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -176,6 +176,58 @@ export function triggerEndGame(status) {
   container.appendChild(overlay);
 }
 
+// ── Reconnection overlay helpers ─────────────────────────────────────────────
+function showReconnecting(attempt = 0) {
+  const el = document.getElementById('reconnectingOverlay');
+  if (!el) return;
+  el.style.display = 'flex';
+  const txt = document.getElementById('reconnectAttemptText');
+  if (txt) txt.innerText = attempt > 0 ? `Attempt ${attempt}…` : 'Attempting to restore your session';
+}
+
+function hideReconnecting() {
+  const el = document.getElementById('reconnectingOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function showServerError(title = 'Connection Lost', msg = 'Unable to reach the game server. Your progress has been saved.') {
+  hideReconnecting();
+  const overlay = document.getElementById('serverErrorOverlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  const t = document.getElementById('serverErrorTitle');
+  if (t) t.innerText = title;
+  const m = document.getElementById('serverErrorMsg');
+  if (m) m.innerText = msg;
+  const btn = document.getElementById('btnServerErrorReturn');
+  if (btn) btn.onclick = () => quitAndReload();
+}
+
+// Transport-level reconnection events (Socket.IO engine layer)
+socket.on('disconnect', (reason) => {
+  // Only show overlay if the player is mid-game, not if they intentionally quit
+  if (state.gameState === 'PLAYING' && reason !== 'io client disconnect') {
+    showReconnecting();
+  }
+});
+
+socket.io.on('reconnect', () => {
+  hideReconnecting();
+  // Re-send the game reconnect token so the server reclaims the faction slot
+  const savedToken = sessionStorage.getItem('reconnectToken');
+  if (savedToken && state.gameState === 'PLAYING') {
+    socket.emit('reconnect-to-game', { token: savedToken });
+  }
+});
+
+socket.io.on('reconnect_attempt', (attempt) => {
+  showReconnecting(attempt);
+});
+
+socket.io.on('reconnect_failed', () => {
+  showServerError('Server Unreachable', 'Could not reconnect after multiple attempts. Please return to the menu and try again.');
+});
+
 export function initNetwork() {
   const savedToken = sessionStorage.getItem('reconnectToken');
   if (savedToken) {
@@ -187,7 +239,8 @@ export function initNetwork() {
     state.playerFaction = factionId;
     state.playerNickname = nickname;
     state.gameState = 'PLAYING';
-    
+    hideReconnecting();
+
     document.getElementById('homeScreen').style.display = 'none';
     const bgCanvas2 = document.getElementById('homeBgCanvas');
     if (bgCanvas2) bgCanvas2.style.display = 'none';
@@ -209,7 +262,15 @@ export function initNetwork() {
   socket.on('reconnect-failed', () => {
     sessionStorage.removeItem('reconnectToken');
     state.gameState = 'SETUP';
+    hideReconnecting();
     document.getElementById('homeScreen').style.display = 'flex';
+  });
+
+  // Simulation crash — room was terminated server-side (Tier 1 onError callback)
+  socket.on('server-error', ({ message } = {}) => {
+    sessionStorage.removeItem('reconnectToken');
+    state.gameState = 'SETUP';
+    showServerError('Game Error', message || 'The game server encountered an error. Please return to the menu.');
   });
 
   socket.on('player-count-update', (count) => {
@@ -279,6 +340,8 @@ export function initNetwork() {
     state.playerFaction = factionId;
     state.playerNickname = nickname;
     
+    toggleInGameIndicator(true);
+    
     const homeScreen = document.getElementById('homeScreen');
     if (homeScreen) homeScreen.style.opacity = '0';
     
@@ -293,6 +356,16 @@ export function initNetwork() {
 
   socket.on('start-match-now', () => {
     state.gameState = 'PLAYING';
+    
+    if (window.renderer && state.spawnSelections && state.spawnSelections[state.playerFaction]) {
+      const spawn = state.spawnSelections[state.playerFaction];
+      const targetZoom = 2.5;
+      window.renderer.camera.zoom = targetZoom;
+      const viewW = window.renderer.canvas.width / targetZoom;
+      const viewH = window.renderer.canvas.height / targetZoom;
+      window.renderer.camera.x = spawn.col - (viewW / 2);
+      window.renderer.camera.y = spawn.row - (viewH / 2);
+    }
     
     const gameHUD = document.getElementById('gameHUD');
     if (gameHUD) gameHUD.style.display = 'flex';
@@ -481,15 +554,9 @@ export function initNetwork() {
 
       const fid = parseInt(state.playerFaction);
       if (fid >= 1 && fid <= 20) {
-        const troops = troopsArray[fid];
+        const troops = troopsArray[fid];   // home reserve
         const maxPop = maxPopArray[fid];
-        state.playerTroops = Math.floor(troops);
         state.playerMaxPop = maxPop;
-
-        const lblTroops = document.getElementById('lblMyTroops');
-        const lblMax = document.getElementById('lblMyMaxPop');
-        if (lblTroops) lblTroops.innerText = state.playerTroops;
-        if (lblMax) lblMax.innerText = state.playerMaxPop;
 
         // Troops currently committed to an active expansion (attack pool).
         const attacking = attackArray ? Math.floor(attackArray[fid]) : 0;
@@ -499,14 +566,23 @@ export function initNetwork() {
           lblAttacking.style.color = attacking > 0 ? '#ff9800' : '#aaa';
         }
 
-        // Population fill ratio (drives the growth curve + its color).
-        const fill = maxPop > 0 ? troops / maxPop : 0;
+        // Total troops = home reserve + deployed on fronts (both share the cap).
+        const totalTroops = Math.floor(troops) + attacking;
+        state.playerTroops = totalTroops;
+
+        const lblTroops = document.getElementById('lblMyTroops');
+        const lblMax = document.getElementById('lblMyMaxPop');
+        if (lblTroops) lblTroops.innerText = totalTroops;
+        if (lblMax) lblMax.innerText = maxPop;
+
+        // Fill and growth both use the total pool so they match the Rust formula.
+        const fill = maxPop > 0 ? totalTroops / maxPop : 0;
         const lblFill = document.getElementById('lblMyFill');
         if (lblFill) lblFill.innerText = `${Math.round(fill * 100)}%`;
 
         // Growth rate (troops/sec): green while still accelerating (below the
         // peak fill), red once past the peak and slowing toward the cap.
-        const growth = troopGrowthPerSec(troops, maxPop);
+        const growth = troopGrowthPerSec(totalTroops, maxPop);
         const lblGrowth = document.getElementById('lblMyGrowth');
         if (lblGrowth) {
           lblGrowth.innerText = `+${Math.round(growth)}/s`;
@@ -581,12 +657,13 @@ export function initNetwork() {
         const lblGold = document.getElementById('lblMyGold');
         if (lblGold) lblGold.innerText = gold.toLocaleString();
 
-        const goldRate = Math.round(cells * GOLD_PER_CELL_PER_SEC);
-        const lblGoldRate = document.getElementById('lblMyGoldRate');
-        if (lblGoldRate) lblGoldRate.innerText = `+${goldRate}/s`;
-
         // Count of this player's own placed buildings.
         const myBuildings = state.buildings.filter(b => b.factionId === fid);
+
+        const mineCount = myBuildings.filter(b => b.type === 'mine' && !b.constructing).length;
+        const goldRate = Math.round(cells * GOLD_PER_CELL_PER_SEC * (1 + mineCount * 0.10));
+        const lblGoldRate = document.getElementById('lblMyGoldRate');
+        if (lblGoldRate) lblGoldRate.innerText = mineCount > 0 ? `+${goldRate}/s ×${(1 + mineCount * 0.10).toFixed(1)}` : `+${goldRate}/s`;
         
         const lblTowers = document.getElementById('lblMyTowers');
         if (lblTowers) {
@@ -608,6 +685,12 @@ export function initNetwork() {
 
         const btnMissile = document.getElementById('btnFireMissile');
         if (btnMissile) btnMissile.classList.toggle('disabled', gold < MISSILE_COST || siloCount === 0);
+
+        const btnMine = document.getElementById('btnBuildMine');
+        if (btnMine) btnMine.classList.toggle('disabled', gold < MINE_BUILDING_COST);
+
+        const btnAntiAir = document.getElementById('btnBuildAntiAir');
+        if (btnAntiAir) btnAntiAir.classList.toggle('disabled', gold < ANTIAIR_BUILDING_COST);
       }
     }
   });
@@ -635,18 +718,20 @@ export function initNetwork() {
     data.constructing = true;
     data.buildMs = data.buildMs ?? DEFENSE_BUILD_MS;
     data.builtAt = performance.now();
+    if (data.type === 'antiair') {
+      data.charges = 3;
+    }
     state.buildings.push(data);
   });
 
   socket.on('building-completed', ({ type, factionId, row, col, radius, defTier }) => {
     const b = state.buildings.find(b => b.row === row && b.col === col && b.factionId === factionId);
     if (b) b.constructing = false;
-    // Silos grant no fortification — completion just makes them operational.
-    if (type === 'silo') return;
+    // Only defense towers fortify their zone on completion.
+    if (type !== 'defense') return;
     const r = radius ?? BUILDING_RADIUS;
     const t = defTier ?? 10;
     if (b) { b.radius = r; b.defTier = t; }
-    // Defense tower: the fortification is now real — stamp the tier locally.
     applyDefenseBuilding(row, col, r, t, factionId);
   });
 
@@ -665,30 +750,81 @@ export function initNetwork() {
 
   socket.on('building-owner-changed', ({ row, col, factionId }) => {
     // A silo was fully conquered — recolor its icon and update who may fire it.
-    const b = state.buildings.find(b => b.row === row && b.col === col);
+        const b = state.buildings.find(b => b.row === row && b.col === col);
     if (b) b.factionId = factionId;
   });
 
   socket.on('missile-fired', ({ sourceRow, sourceCol, targetRow, targetCol, factionId }) => {
-    // Distance from source to target determines flight time
-    const dr = targetRow - sourceRow;
-    const dc = targetCol - sourceCol;
-    const dist = Math.sqrt(dr * dr + dc * dc);
-    const speed = 40; // cells per second (adjust to taste)
-    const flightTimeMs = (dist / speed) * 1000;
-
+    // Determine the distance to calculate flight time
+    const dist = Math.sqrt((targetRow - sourceRow)**2 + (targetCol - sourceCol)**2);
+    // Use the exact same speed as the server (40 cells/sec)
+    const flightTimeMs = (dist / 40) * 1000;
+    
     state.activeMissiles.push({
       sourceRow, sourceCol, targetRow, targetCol, factionId,
       startedAt: performance.now(),
-      flightTimeMs
+      flightTimeMs,
+      intercepted: false
     });
+
+    const silo = state.buildings.find(b => b.type === 'silo' && b.row === sourceRow && b.col === sourceCol);
+    if (silo) {
+      silo.lastFiredAt = performance.now();
+      silo.cooldownMs = 2000;
+    }
+  });
+
+  socket.on('missile-intercepted', ({ sourceRow, sourceCol, targetRow, targetCol, batteryRow, batteryCol, interceptRow, interceptCol }) => {
+    // Find the missile in activeMissiles and mark it intercepted
+    const missile = state.activeMissiles.find(m => 
+      m.sourceRow === sourceRow && m.sourceCol === sourceCol && 
+      m.targetRow === targetRow && m.targetCol === targetCol && !m.intercepted
+    );
+    if (missile) {
+      const now = performance.now();
+      const timeRemainingMs = missile.flightTimeMs - (now - missile.startedAt);
+      const interceptorFlightTime = Math.max(0, Math.min(400, timeRemainingMs));
+      
+      const tHit = (now - missile.startedAt + interceptorFlightTime) / missile.flightTimeMs;
+      const hitRow = missile.sourceRow + (missile.targetRow - missile.sourceRow) * tHit;
+      const hitCol = missile.sourceCol + (missile.targetCol - missile.sourceCol) * tHit;
+
+      missile.intercepted = true;
+      missile.interceptRow = hitRow;
+      missile.interceptCol = hitCol;
+      missile.interceptorArrivesAt = now + interceptorFlightTime;
+
+      if (batteryRow !== undefined && batteryCol !== undefined) {
+        state.activeInterceptors.push({
+          sourceRow: batteryRow,
+          sourceCol: batteryCol,
+          targetRow: hitRow,
+          targetCol: hitCol,
+          startedAt: now,
+          durationMs: interceptorFlightTime,
+          targetAltitude: 150 * Math.sin(tHit * Math.PI)
+        });
+      }
+    }
+
+    // Decrement battery charges
+    if (batteryRow !== undefined && batteryCol !== undefined) {
+      const battery = state.buildings.find(b => b.row === batteryRow && b.col === batteryCol && b.type === 'antiair');
+      if (battery) {
+        battery.charges = Math.max(0, (battery.charges || 3) - 1);
+      }
+    }
   });
 
   socket.on('build-rejected', ({ type } = {}) => {
     const msg = type === 'fire_missile'
-      ? `Can't fire — target must be within ${SILO_RANGE} cells of one of your completed silos, and a missile costs ${MISSILE_COST.toLocaleString()} gold.`
+      ? `Can't fire — target must be within ${SILO_RANGE} cells of an available silo (2s cooldown), and costs ${MISSILE_COST.toLocaleString()} gold.`
       : type === 'build_silo'
         ? `Can't build a silo here — need ${SILO_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
+      : type === 'build_mine'
+        ? `Can't build a gold mine here — need ${MINE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
+      : type === 'build_antiair'
+        ? `Can't build an Anti-Air battery here — need ${ANTIAIR_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
         : `Cannot build here — need ${DEFENSE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`;
     showToast(msg, 'error');
   });

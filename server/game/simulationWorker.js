@@ -23,6 +23,11 @@ const WASM_PATH = path.join(__dirname, '..', 'wasm', 'simulation_core_bg.wasm');
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
 const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
+
+// --- Input validators (gate every WASM call to prevent out-of-bounds panics) ---
+const validFaction = (f) => Number.isInteger(f) && f >= 1 && f <= 20;
+const validCell    = (c) => Number.isInteger(c) && c >= 0 && c < TOTAL_CELLS;
+const validPct     = (p) => typeof p === 'number' && p >= 1 && p <= 90;
 const FULL_SNAPSHOT_THRESHOLD = Math.floor(TOTAL_CELLS * 0.05);
 // Defense building construction time (ms). Mirrors DEFENSE_BUILD_SECONDS in
 // simulation-core/src/lib.rs (5s) and DEFENSE_BUILD_MS in src/js/constants.js.
@@ -86,8 +91,6 @@ class RoomSimWorker {
     this.exports.simulationstate_init_players(
       this.statePtr,
       Math.max(1, Math.min(20, numPlayers)),
-      opts.startCells ?? 10,
-      opts.startTroops ?? 20,
       opts.startGold ?? 500,
       opts.startGrowthRate ?? 50,
       opts.startMaxCap ?? 5000,
@@ -118,6 +121,15 @@ class RoomSimWorker {
     };
 
     this.tickInterval = setInterval(() => this._safeTick(), Math.floor(1000 / this.tickHz));
+
+    // Report worker RSS to the main thread every 30 s for /healthz memory tracking
+    this.memReportInterval = setInterval(() => {
+      if (!this.destroyed) {
+        const rssMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        parentPort.postMessage({ type: 'mem-report', rssMB });
+      }
+    }, 30000);
+
     logInfo(`[Sim ${roomId}] Worker started: ${numPlayers} players, ${this.tickHz} Hz`);
     parentPort.postMessage({ type: 'ready' });
   }
@@ -150,6 +162,7 @@ class RoomSimWorker {
       this._emitDestroyedBuildings();
       this._emitPlacedBuildings();
       this._emitFiredMissiles();
+      this._emitInterceptedMissiles();
       // Owner transfers before completions so a silo that flips owner and completes
       // on the same tick has its factionId updated before the completion lookup.
       this._emitTransferredBuildings();
@@ -163,6 +176,7 @@ class RoomSimWorker {
       }
     } catch (err) {
       logError(`[Sim ${this.roomId}] tick failed: ${err.message}`);
+      parentPort.postMessage({ type: 'room-error', message: err.message });
       this.destroy();
     }
   }
@@ -213,12 +227,14 @@ class RoomSimWorker {
     for (let i = 0; i < count; i++) {
       const center = buf[i * 3];
       const factionId = buf[i * 3 + 1];
-      const btype = buf[i * 3 + 2]; // 0 = defense, 1 = silo
+      const btype = buf[i * 3 + 2]; // 0=defense, 1=silo, 2=mine, 3=antiair
       const row = Math.floor(center / MAP_WIDTH);
       const col = center % MAP_WIDTH;
-      const payload = btype === 1
-        ? { type: 'silo', factionId, row, col, range: SILO_RANGE, buildMs: SILO_BUILD_MS }
-        : { type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS };
+      let payload;
+      if      (btype === 1) payload = { type: 'silo',    factionId, row, col, range: SILO_RANGE, buildMs: SILO_BUILD_MS };
+      else if (btype === 2) payload = { type: 'mine',    factionId, row, col, buildMs: 10000 };
+      else if (btype === 3) payload = { type: 'antiair', factionId, row, col, buildMs: 10000 };
+      else                  payload = { type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS };
       parentPort.postMessage({ type: 'emit', event: 'building-placed', payload });
     }
     this.exports.simulationstate_clear_placed_buildings(this.statePtr);
@@ -242,6 +258,27 @@ class RoomSimWorker {
     this.exports.simulationstate_clear_fired_missiles(this.statePtr);
   }
 
+  _emitInterceptedMissiles() {
+    const count = this.exports.simulationstate_get_intercepted_missiles_count(this.statePtr);
+    if (!count) return;
+    const ptr = this.exports.simulationstate_get_intercepted_missiles_ptr(this.statePtr);
+    const buf = new Uint32Array(this.exports.memory.buffer, ptr, count * 8);
+    for (let i = 0; i < count; i++) {
+      const sourceRow = buf[i * 8];
+      const sourceCol = buf[i * 8 + 1];
+      const targetRow = buf[i * 8 + 2];
+      const targetCol = buf[i * 8 + 3];
+      const batteryRow = buf[i * 8 + 4];
+      const batteryCol = buf[i * 8 + 5];
+      const interceptRow = buf[i * 8 + 6];
+      const interceptCol = buf[i * 8 + 7];
+      parentPort.postMessage({ type: 'emit', event: 'missile-intercepted', payload: {
+        sourceRow, sourceCol, targetRow, targetCol, batteryRow, batteryCol, interceptRow, interceptCol
+      }});
+    }
+    this.exports.simulationstate_clear_intercepted_missiles(this.statePtr);
+  }
+
   // Poll buildings that finished construction this tick and broadcast
   // `building-completed` so clients stamp the fortification tier (the bonus only
   // becomes real now — placement just started a timer).
@@ -253,12 +290,14 @@ class RoomSimWorker {
     for (let i = 0; i < count; i++) {
       const center = buf[i * 3];
       const factionId = buf[i * 3 + 1];
-      const btype = buf[i * 3 + 2]; // 0 = defense, 1 = silo
+      const btype = buf[i * 3 + 2]; // 0=defense, 1=silo, 2=mine, 3=antiair
       const row = Math.floor(center / MAP_WIDTH);
       const col = center % MAP_WIDTH;
-      const payload = btype === 1
-        ? { type: 'silo', factionId, row, col, range: SILO_RANGE }
-        : { type: 'defense', factionId, row, col, radius: 40, defTier: 10 };
+      let payload;
+      if      (btype === 1) payload = { type: 'silo',    factionId, row, col, range: SILO_RANGE };
+      else if (btype === 2) payload = { type: 'mine',    factionId, row, col };
+      else if (btype === 3) payload = { type: 'antiair', factionId, row, col };
+      else                  payload = { type: 'defense', factionId, row, col, radius: 40, defTier: 10 };
       parentPort.postMessage({ type: 'emit', event: 'building-completed', payload });
     }
     this.exports.simulationstate_clear_completed_buildings(this.statePtr);
@@ -427,22 +466,23 @@ class RoomSimWorker {
   handleInput(factionId, input) {
     if (this.destroyed) return;
     if (!input || typeof input.type !== 'string') return;
+    if (!validFaction(factionId)) return;
 
     if (input.type === 'expand') {
-      const { targetCell, attackPercentage } = input.payload;
-      if (typeof targetCell === 'number' && typeof attackPercentage === 'number') {
+      const { targetCell, attackPercentage } = input.payload ?? {};
+      if (validCell(targetCell) && validPct(attackPercentage)) {
         this.exports.simulationstate_execute_expansion(this.statePtr, factionId, targetCell, attackPercentage);
       }
     } else if (input.type === 'cancel') {
       this.exports.simulationstate_cancel_expansion(this.statePtr, factionId);
     } else if (input.type === 'cancel_front') {
       const { targetFaction } = input.payload ?? {};
-      if (typeof targetFaction === 'number') {
+      if (validFaction(targetFaction)) {
         this.exports.simulationstate_cancel_front(this.statePtr, factionId, targetFaction);
       }
     } else if (input.type === 'build_defense') {
       const { targetCell } = input.payload ?? {};
-      if (typeof targetCell === 'number') {
+      if (validCell(targetCell)) {
         const row = Math.floor(targetCell / MAP_WIDTH);
         const col = targetCell % MAP_WIDTH;
         const ok = this.exports.simulationstate_place_defense_building(this.statePtr, factionId, row, col);
@@ -456,7 +496,7 @@ class RoomSimWorker {
       }
     } else if (input.type === 'build_silo') {
       const { targetCell } = input.payload ?? {};
-      if (typeof targetCell === 'number') {
+      if (validCell(targetCell)) {
         const row = Math.floor(targetCell / MAP_WIDTH);
         const col = targetCell % MAP_WIDTH;
         const ok = this.exports.simulationstate_place_silo(this.statePtr, factionId, row, col);
@@ -470,7 +510,7 @@ class RoomSimWorker {
       }
     } else if (input.type === 'fire_missile') {
       const { targetCell } = input.payload ?? {};
-      if (typeof targetCell === 'number') {
+      if (validCell(targetCell)) {
         const row = Math.floor(targetCell / MAP_WIDTH);
         const col = targetCell % MAP_WIDTH;
         // 0 = fired, 1 = reject with message (gold/range), 2 = reject silently
@@ -479,8 +519,34 @@ class RoomSimWorker {
         if (status === 1) {
           parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
         }
-        // status === 0 (success) is handled by _emitFiredMissiles via the WASM buffer.
-        // status === 2 (silent reject) does nothing.
+      }
+    } else if (input.type === 'build_mine') {
+      const { targetCell } = input.payload ?? {};
+      if (validCell(targetCell)) {
+        const row = Math.floor(targetCell / MAP_WIDTH);
+        const col = targetCell % MAP_WIDTH;
+        const ok = this.exports.simulationstate_place_mine(this.statePtr, factionId, row, col);
+        if (ok) {
+          parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
+            type: 'mine', factionId, row, col, buildMs: 10000,
+          }});
+        } else {
+          parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
+        }
+      }
+    } else if (input.type === 'build_antiair') {
+      const { targetCell } = input.payload ?? {};
+      if (validCell(targetCell)) {
+        const row = Math.floor(targetCell / MAP_WIDTH);
+        const col = targetCell % MAP_WIDTH;
+        const ok = this.exports.simulationstate_place_antiair(this.statePtr, factionId, row, col);
+        if (ok) {
+          parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
+            type: 'antiair', factionId, row, col, buildMs: 10000,
+          }});
+        } else {
+          parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
+        }
       }
     }
   }
@@ -497,6 +563,10 @@ class RoomSimWorker {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+    if (this.memReportInterval) {
+      clearInterval(this.memReportInterval);
+      this.memReportInterval = null;
+    }
     if (this.exports && this.statePtr) {
       try {
         this.exports.__wbg_simulationstate_free(this.statePtr, 1);
@@ -508,6 +578,22 @@ class RoomSimWorker {
     logInfo(`[Sim ${this.roomId}] Worker destroyed`);
   }
 }
+
+// Final-safety-net handlers — catch anything that escapes the _safeTick try/catch
+// (e.g. errors in buildImports stubs, out-of-thread promise rejections).
+process.on('uncaughtException', (err) => {
+  if (parentPort) {
+    parentPort.postMessage({ type: 'room-error', message: `Worker uncaught exception: ${err.message}` });
+  }
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  if (parentPort) {
+    parentPort.postMessage({ type: 'room-error', message: `Worker unhandled rejection: ${String(reason)}` });
+  }
+  process.exit(1);
+});
 
 // Ensure the worker is only created if we are actually in a thread
 if (parentPort && workerData) {

@@ -8,6 +8,7 @@ export const state = {
   cellCounts: {},
   activeExplosions: [],
   activeMissiles: [],
+  activeInterceptors: [],
   activeAttacks: [],
   missilesFired: {},
   factionStructures: {},
@@ -56,6 +57,9 @@ export const state = {
   currentLeaderId: null,
   spawnSelections: {},
   mySpawnSelection: null,
+
+  // Graphics / performance
+  lowGraphics: false, // persisted via localStorage; disables shadowBlur glow effects
 
   // Debug fields
   debug: false,

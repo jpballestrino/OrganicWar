@@ -127,7 +127,7 @@ export function homeTemplate() {
                         </div>
                     </div>
                     <div id="regError" class="auth-error"></div>
-                    <button id="btnRegSubmit" class="home-btn home-btn-play" style="margin-top: 15px;">
+                    <button id="btnRegSubmit" class="home-btn home-btn-play" style="margin-top: 15px; width: 100%;">
                         <span class="home-btn-icon">📝</span>
                         <span class="home-btn-text">Create Account</span>
                     </button>
@@ -178,7 +178,7 @@ export function homeTemplate() {
                         <span class="home-btn-icon">⚔️</span>
                         <span class="home-btn-text">Quick Battle</span>
                     </button>
-                    <button id="btn-ranked-play" class="home-btn home-btn-play" style="background: rgba(255, 193, 7, 0.2); border-color: #ffc107;">
+                    <button id="btn-ranked-play" class="home-btn home-btn-ranked">
                         <span class="home-btn-icon">🌟</span>
                         <span class="home-btn-text">Ranked Match</span>
                     </button>
@@ -222,7 +222,7 @@ export function homeTemplate() {
                 <span class="home-footer-dot">•</span>
                 <span id="homePlayersOnline">Players Online: —</span>
                 <span class="home-footer-dot">•</span>
-                <a href="#" id="linkTutorial" style="color: #4ade80; text-decoration: none; font-weight: bold;">📖 Template Info</a>
+                <a href="#" id="linkTutorial" style="color: #4ade80; text-decoration: none; font-weight: bold;">📖 How to Play</a>
                 <span class="home-footer-dot auth-footer-links" style="display:none;">•</span>
                 <a href="#" id="linkProfile" class="auth-footer-links"
                     style="display:none; color: #ccc; text-decoration: none;">Profile</a>

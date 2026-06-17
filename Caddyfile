@@ -1,0 +1,21 @@
+# Caddyfile — TLS-terminating reverse proxy for OrganicWar.io
+#
+# Caddy auto-obtains and renews Let's Encrypt certificates with zero config.
+# WebSocket upgrades (Socket.IO) are handled transparently by reverse_proxy.
+#
+# Setup:
+#   1. Install Caddy: https://caddyserver.com/docs/install
+#   2. Replace "your-domain.com" with your actual domain (must have DNS pointing here).
+#   3. Make sure port 80 and 443 are open in your firewall.
+#   4. Run:  caddy run --config Caddyfile
+#      Or as a service: caddy start --config Caddyfile
+#
+# The Node server must be running on localhost:3000 (npm start).
+# Update CORS_ORIGIN in .env to match your domain once SSL is active.
+
+your-domain.com {
+    # Brotli first, gzip fallback — compresses WASM from ~1 MB to ~250 KB
+    encode zstd br gzip
+
+    reverse_proxy localhost:3000
+}

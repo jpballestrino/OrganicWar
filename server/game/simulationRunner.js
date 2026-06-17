@@ -15,6 +15,7 @@ export class RoomSim {
     this.io = io;
     this.onGameOver = opts.onGameOver || null;
     this.onReady = opts.onReady || null;
+    this.onError = opts.onError || null;
     this.destroyed = false;
 
     // Serialize environment variables needed by the worker
@@ -86,6 +87,18 @@ export class RoomSim {
         if (this.onReady) {
           this.onReady();
         }
+        break;
+
+      case 'mem-report':
+        this._workerRssMB = msg.rssMB;
+        break;
+
+      case 'room-error':
+        log('error', `[Sim ${this.roomId}] Room crashed: ${msg.message}`);
+        if (this.onError) {
+          this.onError(msg.message);
+        }
+        this.destroy();
         break;
 
       case 'log':

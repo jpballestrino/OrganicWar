@@ -1,48 +1,47 @@
 export function modalsTemplate() {
   return `
     <!-- Incoming Guild War Challenge Modal -->
-    <div id="incomingWarModal"
-        style="display: none; position: fixed; left: 50%; top: 20%; transform: translate(-50%, -50%); border: 2px solid #ff6b6b; z-index: 1050; box-shadow: 0 0 30px rgba(220, 53, 69, 0.6); width: 350px; background: rgba(15,15,20,0.95); border-radius: 10px; padding: 20px;">
-        <div
-            style="font-size: 20px; font-weight: bold; color: #ff6b6b; margin-bottom: 15px; text-align: center; text-transform: uppercase;">
-            ⚔️ Guild War Challenge!</div>
-        <div style="text-align: center; margin-bottom: 20px; color: #fff;">
-            Guild <span id="challengerGuildName" style="color: #ffc107; font-weight: bold;">[TAG]</span> has challenged
-            your guild to a <span id="challengerTeamSize" style="color:#4ade80; font-weight:bold;">5v5</span> battle!
+    <div id="incomingWarModal" class="modal-float" style="display: none; z-index: 1050;">
+        <div class="modal-card" style="width: 360px;">
+            <div class="modal-header">
+                <span class="modal-title">⚔️ War Challenge</span>
+            </div>
+            <div style="text-align: center; margin-bottom: 20px; color: #ccc; font-size: 14px; line-height: 1.7;">
+                Guild <span id="challengerGuildName" style="color: #ffc107; font-weight: bold;">[TAG]</span> has challenged
+                your guild to a <span id="challengerTeamSize" style="color: #4ade80; font-weight: bold;">5v5</span> battle!
+            </div>
+            <div class="modal-actions">
+                <button id="btnAcceptWar" class="modal-btn modal-btn-primary">Accept War</button>
+                <button id="btnDeclineWar" class="modal-btn modal-btn-danger">Decline</button>
+            </div>
+            <div style="text-align: center; margin-top: 12px; font-size: 11px; color: #555;">
+                Auto-declines in <span id="warChallengeTimer">60</span>s
+            </div>
         </div>
-        <div style="display: flex; gap: 10px;">
-            <button id="btnAcceptWar" class="shop-btn"
-                style="flex: 1; text-align: center; background: rgba(40, 167, 69, 0.8); border: 1px solid #28a745; color: white;">Accept
-                War</button>
-            <button id="btnDeclineWar" class="shop-btn"
-                style="flex: 1; text-align: center; background: rgba(220, 53, 69, 0.8); border: 1px solid #dc3545; color: white;">Decline</button>
-        </div>
-        <div style="text-align: center; margin-top: 10px; font-size: 11px; color: #888;">Auto-declines in <span
-            id="warChallengeTimer">60</span>s</div>
     </div>
 
     <!-- Match Found Prompt (For all members) -->
-    <div id="warMatchFoundModal"
-        style="display: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 1055; width: 500px; text-align: center; background: rgba(15, 10, 10, 0.95); border: 2px solid #ffc107; border-radius: 10px; padding: 30px; box-shadow: 0 0 50px rgba(255, 193, 7, 0.5); pointer-events: auto;">
-        <h1
-            style="color: #ffc107; font-size: 40px; margin-top: 0; margin-bottom: 10px; font-family: 'Orbitron', sans-serif;">
-            WAR FOUND!</h1>
-        <h3 style="color: #fff; margin-bottom: 30px; font-weight: normal;">Your Guild vs <span id="matchedGuildTag"
-                style="color: #ff6b6b; font-weight: bold;">[ENEMY]</span></h3>
-        <p style="color: #aaa; margin-bottom: 25px; font-size: 14px;">The lobby is ready. Join now to claim your faction
-            slot. First come, first served for the <span id="matchedTeamSize">5</span> available slots!</p>
-        <button id="btnJoinWarLobby" class="home-btn"
-            style="padding: 15px 40px; font-size: 20px; background: #28a745; color: white; font-weight: bold; text-transform: uppercase; border-radius: 30px; box-shadow: 0 0 20px rgba(40, 167, 69, 0.6); border: 2px solid #3bd95d; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: auto; margin: 0 auto;">JOIN
-            BATTLE</button>
+    <div id="warMatchFoundModal" class="modal-float" style="display: none; z-index: 1055;">
+        <div class="modal-card" style="width: 480px; text-align: center;">
+            <div style="font-family: 'Orbitron', sans-serif; font-size: 34px; font-weight: 900; color: #ffc107; margin-bottom: 10px; text-shadow: 0 0 20px rgba(255,193,7,0.35); letter-spacing: 2px;">WAR FOUND!</div>
+            <div style="color: #ccc; font-size: 16px; margin-bottom: 10px;">
+                Your Guild vs <span id="matchedGuildTag" style="color: #ff6b6b; font-weight: bold;">[ENEMY]</span>
+            </div>
+            <div style="color: #888; margin-bottom: 28px; font-size: 13px; line-height: 1.6;">
+                The lobby is ready. Join now to claim your faction slot. First come, first served for the
+                <span id="matchedTeamSize">5</span> available slots!
+            </div>
+            <button id="btnJoinWarLobby" class="modal-btn modal-btn-primary" style="width: 100%; padding: 16px; font-size: 15px;">JOIN BATTLE</button>
+        </div>
     </div>
 
     <!-- Profile Modal -->
     <div id="profileModal" class="game-overlay"
-        style="display: none; pointer-events: auto; justify-content: center; z-index: 1060; background-color: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
+        style="display: none; pointer-events: auto; justify-content: center; z-index: 1060;">
         <div class="setup-container profile-container" style="width: 450px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px;">
-                <div style="font-size: 14px; font-weight: bold; color: #888; text-transform: uppercase; letter-spacing: 1px;">Commander Profile</div>
-                <button id="btn-close-profile" style="background: transparent; border: none; color: #aaa; font-size: 24px; cursor: pointer; transition: color 0.2s; padding: 0; line-height: 1;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#aaa'">&times;</button>
+            <div class="modal-header">
+                <span class="modal-title" style="font-size: 13px;">Commander Profile</span>
+                <button id="btn-close-profile" class="modal-close">&times;</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
                 <div>
@@ -80,8 +79,7 @@ export function modalsTemplate() {
             </div>
 
             <div style="margin-bottom: 20px;">
-                <div
-                    style="display: flex; justify-content: space-between; font-size: 12px; color: #ccc; margin-bottom: 4px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px; color: #ccc; margin-bottom: 4px;">
                     <span>Win Rate</span>
                     <span id="profileWinRateText">0%</span>
                 </div>
@@ -93,16 +91,13 @@ export function modalsTemplate() {
             </div>
 
             <div style="margin-bottom: 20px;">
-                <h3
-                    style="font-size: 14px; color: #ccc; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; margin-bottom: 10px;">
+                <h3 style="font-size: 14px; color: #ccc; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; margin-bottom: 10px;">
                     Recent Matches</h3>
                 <div id="profileHistoryList"
                     style="max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                    <div style="text-align: center; color: #666; font-size: 13px; padding: 10px;">No recent matches
-                        found.</div>
+                    <div style="text-align: center; color: #666; font-size: 13px; padding: 10px;">No recent matches found.</div>
                 </div>
             </div>
-
         </div>
     </div>
 
@@ -118,52 +113,54 @@ export function modalsTemplate() {
         <button id="btnRejectAlliance"></button>
     </div>
 
-    <!-- Tutorial / Template Info Modal -->
-    <div id="tutorialModal"
-        style="display: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 600px; max-height: 80vh; z-index: 1100; background: rgba(15,15,20,0.98); border: 2px solid #00e5ff; border-radius: 10px; padding: 25px; box-shadow: 0 0 30px rgba(0, 229, 255, 0.3); overflow-y: auto; color: #fff;">
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px;">
-            <div style="font-size: 24px; font-weight: bold; color: #00e5ff; font-family: 'Orbitron', sans-serif;">📖 How to Play OrganicWar.io</div>
-            <button id="btnCloseTutorial" style="background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer;">&times;</button>
-        </div>
-        
-        <div style="font-size: 14px; line-height: 1.6; color: #ccc;">
-            <h3 style="color: #00e5ff; margin-top: 0;">🎮 The Basics</h3>
-            <p>Welcome to <strong>OrganicWar.io</strong>, a real-time multiplayer territory-conquest game! Your goal is to expand your empire, build defenses, and eliminate rival factions to dominate the map.</p>
-            
-            <h3 style="color: #00e5ff;">⚔️ Conquest & Expansion</h3>
-            <ul style="padding-left: 20px; margin-bottom: 20px;">
-                <li><strong>Attack / Expand:</strong> Click on neutral (unowned) land or enemy territory to start an attack front. Your troops will automatically push forward.</li>
-                <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against <em>that specific enemy</em>. Right-click your own or neutral territory to cancel neutral expansion.</li>
-                <li><strong>Cancel All Attacks:</strong> Press the <strong>Space</strong> key to instantly refund and cancel all of your active attacks.</li>
-                <li><strong>Troops & Gold:</strong> Your troop cap, growth rate, and gold income scale with the amount of territory you control. Larger empires produce more!</li>
-            </ul>
+    <!-- How to Play Modal -->
+    <div id="tutorialModal" class="modal-float" style="display: none; z-index: 1100;">
+        <div class="modal-card" style="width: 620px; max-height: 82vh;">
+            <div class="modal-header">
+                <span class="modal-title">📖 How to Play OrganicWar.io</span>
+                <button id="btnCloseTutorial" class="modal-close">&times;</button>
+            </div>
 
-            <h3 style="color: #00e5ff;">🛡️ Buildings & Weapons</h3>
-            <ul style="padding-left: 20px; margin-bottom: 20px;">
-                <li><strong>Defense Tower (Press '3'):</strong> Costs 2,000 gold. Grants a massive defense bonus to surrounding cells, making them very hard for enemies to conquer. Takes 5s to build.</li>
-                <li><strong>Missile Silo (Press '4'):</strong> Costs 10,000 gold. Required to fire missiles. Takes 10s to build. Silos survive partial conquest and can be captured if an enemy takes the entire 8x8 footprint.</li>
-                <li><strong>Fire Missile (Press '2'):</strong> Costs 2,000 gold. Target any enemy cell within range of your completed silos. Obliterates troops and buildings in a large radius, turning the land back to nature.</li>
-                <li><em>Note: Right-click can also be used to cancel out of any active building or targeting mode.</em></li>
-            </ul>
+            <div style="font-size: 14px; line-height: 1.7; color: #ccc;">
+                <h3 style="color: #ffc107; margin-top: 0; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🎮 The Basics</h3>
+                <p>Welcome to <strong>OrganicWar.io</strong>, a real-time multiplayer territory-conquest game! Your goal is to expand your empire, build defenses, and eliminate rival factions to dominate the map.</p>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">⚔️ Conquest &amp; Expansion</h3>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Attack / Expand:</strong> Click on neutral land or enemy territory to start an attack front. Your troops push forward automatically.</li>
+                    <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against that specific enemy.</li>
+                    <li><strong>Cancel All Attacks:</strong> Press <strong>Space</strong> to instantly refund and cancel all active attacks.</li>
+                    <li><strong>Troops &amp; Gold:</strong> Troop cap, growth rate, and gold income all scale with territory owned.</li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🛡️ Buildings &amp; Weapons</h3>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Defense Tower (Press '3'):</strong> Costs 2,000 gold. Grants a massive defense bonus to surrounding cells. Takes 5s to build.</li>
+                    <li><strong>Missile Silo (Press '4'):</strong> Costs 10,000 gold. Required to fire missiles. Takes 10s to build. Survives partial conquest.</li>
+                    <li><strong>Fire Missile (Press '2'):</strong> Costs 2,000 gold. Target any enemy cell within silo range. Obliterates troops and buildings in a large radius.</li>
+                    <li><strong>Gold Mine (Press '5'):</strong> Costs 3,000 gold. Boosts your global gold production by 10%.</li>
+                    <li><strong>Anti-Air Battery (Press '6'):</strong> Costs 4,000 gold. Intercepts incoming missiles. Holds 3 charges.</li>
+                    <li><em>Right-click cancels any active building or targeting mode.</em></li>
+                </ul>
+            </div>
         </div>
     </div>
 
     <!-- Rankings Modal -->
     <div id="rankingsModal" class="game-overlay"
-        style="display: none; pointer-events: auto; justify-content: center; z-index: 1045; background-color: rgba(10, 10, 10, 0.95); backdrop-filter: blur(10px); transition: opacity 0.3s ease;">
+        style="display: none; pointer-events: auto; justify-content: center; z-index: 1045;">
         <div class="setup-container profile-container" style="width: 600px; max-height: 80vh; display: flex; flex-direction: column;">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 15px; margin-bottom: 20px;">
-                <div style="font-size: 24px; font-weight: bold; color: #ffc107; font-family: 'Orbitron', sans-serif;">🏆 Global Rankings</div>
-                <button id="btnCloseRankings" style="background: transparent; border: none; color: #fff; font-size: 24px; cursor: pointer;">&times;</button>
+            <div class="modal-header">
+                <span class="modal-title">🏆 Global Rankings</span>
+                <button id="btnCloseRankings" class="modal-close">&times;</button>
             </div>
-            
+
             <div class="auth-tabs" style="margin-bottom: 15px; justify-content: center; gap: 20px;">
                 <button class="auth-tab active" id="tabRankingsPlayers" style="flex: none; padding: 10px 30px;">Players</button>
                 <button class="auth-tab" id="tabRankingsGuilds" style="flex: none; padding: 10px 30px;">Guilds</button>
             </div>
 
             <div style="flex: 1; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); padding: 10px;">
-                <!-- Header Row -->
                 <div id="rankingsHeader" style="display: flex; padding: 10px; font-weight: bold; font-size: 12px; color: #888; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 5px;">
                     <div style="width: 50px; text-align: center;">Rank</div>
                     <div style="flex: 1;">Player</div>
@@ -171,8 +168,6 @@ export function modalsTemplate() {
                     <div style="width: 100px; text-align: center;">Win Rate</div>
                     <div style="width: 80px; text-align: right;">Elo</div>
                 </div>
-                
-                <!-- List Content -->
                 <div id="rankingsList" style="display: flex; flex-direction: column; gap: 5px;">
                     <div style="text-align:center; padding: 20px; color:#888;">Loading...</div>
                 </div>

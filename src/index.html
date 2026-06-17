@@ -4,21 +4,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description"
-        content="OrganicWar.io — Blank multiplayer lobby and matchmaking starter boilerplate.">
-    <title>OrganicWar.io — Blank Multiplayer Starter</title>
+    <meta name="description" content="OrganicWar.io — Real-time multiplayer territory conquest. Expand your empire, build defenses, and obliterate rivals in this browser-based strategy war game.">
+
+    <!-- Open Graph / Facebook / Discord -->
+    <meta property="og:type"        content="website">
+    <meta property="og:url"         content="https://organicwar.io/">
+    <meta property="og:title"       content="OrganicWar.io — Conquer the Map">
+    <meta property="og:description" content="Real-time multiplayer territory conquest. Expand your empire, build defenses, and obliterate rivals.">
+    <meta property="og:image"       content="https://organicwar.io/preview.png">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card"        content="summary_large_image">
+    <meta name="twitter:url"         content="https://organicwar.io/">
+    <meta name="twitter:title"       content="OrganicWar.io — Conquer the Map">
+    <meta name="twitter:description" content="Real-time multiplayer territory conquest. Expand your empire, build defenses, and obliterate rivals.">
+    <meta name="twitter:image"       content="https://organicwar.io/preview.png">
+
+    <title>OrganicWar.io — Conquer the Map</title>
+
+    <!-- Favicon — place a 512×512 favicon.png in src/public/ -->
+    <link rel="icon" type="image/png" href="/favicon.png">
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@500;700;900&display=swap"
-        rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/style.css">
 </head>
 
 <body>
+    <!-- Mobile / touch device rejection banner -->
+    <div id="mobileBlock">
+        <div class="mobile-icon">🖥️</div>
+        <h1>Desktop Only</h1>
+        <p>OrganicWar.io requires a keyboard and mouse. Please open the game on a desktop or laptop computer.</p>
+    </div>
+
     <div id="notificationContainer"></div>
     <canvas id="homeBgCanvas"></canvas>
-    
+
     <div id="app"></div>
 
     <script type="module" src="./main.js"></script>

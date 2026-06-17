@@ -35,6 +35,16 @@ export const DEFENSE_BUILD_MS = 5000;
 export const SILO_BUILDING_COST = 10000;
 export const SILO_BUILD_MS = 10000;
 export const SILO_RANGE = 240;      // missile firing range from a completed silo (cells)
+
+// Gold Mine building
+export const MINE_BUILDING_COST = 3000;
+export const MINE_BUILD_MS = 10000;
+
+// Anti-Air Battery building
+export const ANTIAIR_BUILDING_COST = 5000;
+export const ANTIAIR_BUILD_MS = 10000;
+export const ANTIAIR_RADIUS = 400;
+export const ANTIAIR_MAX_CHARGES = 3;
 export const MISSILE_COST = 2000;
 export const MISSILE_BLAST_RADIUS = 15;
 export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill

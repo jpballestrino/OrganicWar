@@ -145,11 +145,11 @@ export function resyncBuildingZones(buildings) {
   // still under construction (zone not applied until completion) are skipped in
   // both passes — this mirrors the server's BTYPE_DEFENSE-only fortification.
   for (const b of buildings) {
-    if (b.type === 'silo' || b.constructing) continue;
+    if (b.type !== 'defense' || b.constructing) continue;
     removeDefenseBuilding(b.row, b.col, b.radius);
   }
   for (const b of buildings) {
-    if (b.type === 'silo' || b.constructing) continue;
+    if (b.type !== 'defense' || b.constructing) continue;
     applyDefenseBuilding(b.row, b.col, b.radius, b.defTier, b.factionId);
   }
 }

@@ -2,7 +2,7 @@ import './js/initDOM.js';
 import { socket, initNetwork, quitAndReload } from './js/network.js';
 import { initAuthUI } from './js/authUI.js';
 import { initGuildUI, showToast } from './js/guildUI.js';
-import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST, MISSILE_COST } from './js/constants.js';
+import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST } from './js/constants.js';
 import { initRankingsUI } from './js/rankingsUI.js';
 import { state } from './js/state.js';
 import initWasm, { SimulationState } from './wasm/simulation_core.js';
@@ -415,16 +415,32 @@ function initEscMenu() {
   if (btnQuit) { btnQuit.onclick = () => quitAndReload(); }
   // Clicking the dimmed backdrop (outside the menu box) also resumes.
   overlay.addEventListener('click', (e) => { if (e.target === overlay) { closeMenu(); } });
+
+  // Low-graphics toggle — persisted in localStorage, never reset between games
+  const toggleLowGraphics = document.getElementById('toggleLowGraphics');
+  if (toggleLowGraphics) {
+    try { if (localStorage.getItem('lowGraphics') === '1') { state.lowGraphics = true; toggleLowGraphics.checked = true; } } catch (_) {}
+    toggleLowGraphics.onchange = (e) => {
+      state.lowGraphics = e.target.checked;
+      try { localStorage.setItem('lowGraphics', e.target.checked ? '1' : '0'); } catch (_) {}
+    };
+  }
 }
 
-// Bootstrapping
-initNetwork();
-initAuthUI();
-initGuildUI();
-initRankingsUI();
-initLobbyUI();
-initDevSandboxUI();
-initEscMenu();
+// Mobile device guard — game requires keyboard + mouse; no touch support
+const _isMobile = window.matchMedia('(pointer: coarse) and (hover: none)').matches;
+if (_isMobile) {
+  const mb = document.getElementById('mobileBlock');
+  if (mb) mb.style.display = 'flex';
+} else {
+  initNetwork();
+  initAuthUI();
+  initGuildUI();
+  initRankingsUI();
+  initLobbyUI();
+  initDevSandboxUI();
+  initEscMenu();
+}
 
 // Debug mode check
 const urlParams = new URLSearchParams(window.location.search);
@@ -465,6 +481,7 @@ async function startSimulationEngine() {
 
     const canvas = document.getElementById('gameCanvas');
     renderer = new WebGLRenderer(canvas, wasmModule.memory);
+    window.renderer = renderer; // Expose globally for network events
     renderer.setMemoryPointers(cellDataPtr);
     registerSim({ memory: wasmModule.memory, cellDataPtr });
 
@@ -537,6 +554,28 @@ async function startSimulationEngine() {
               payload: { targetCell }
             });
             state.activePurchaseMode = null;
+          } else if (state.activePurchaseMode === 'mine') {
+            if (state.playerGold < MINE_BUILDING_COST) {
+              showToast(`Not enough gold — a Gold Mine costs ${MINE_BUILDING_COST.toLocaleString()}.`, 'error');
+              state.activePurchaseMode = null;
+              return;
+            }
+            socket.emit('sim-input', {
+              type: 'build_mine',
+              payload: { targetCell }
+            });
+            state.activePurchaseMode = null;
+          } else if (state.activePurchaseMode === 'antiair') {
+            if (state.playerGold < ANTIAIR_BUILDING_COST) {
+              showToast(`Not enough gold — an Anti-Air Battery costs ${ANTIAIR_BUILDING_COST.toLocaleString()}.`, 'error');
+              state.activePurchaseMode = null;
+              return;
+            }
+            socket.emit('sim-input', {
+              type: 'build_antiair',
+              payload: { targetCell }
+            });
+            state.activePurchaseMode = null;
           } else if (state.activePurchaseMode === 'missile') {
             // A missile must always be aimed at an enemy cell. Clicking your own
             // land or nature is not allowed and shows NO message — just ignore it
@@ -601,6 +640,22 @@ async function startSimulationEngine() {
         return;
       }
 
+      // '5' toggles gold mine placement mode.
+      if (e.key === '5' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        state.activePurchaseMode = state.activePurchaseMode === 'mine' ? null : 'mine';
+        return;
+      }
+
+      // '6' toggles anti-air battery placement mode.
+      if (e.key === '6' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        state.activePurchaseMode = state.activePurchaseMode === 'antiair' ? null : 'antiair';
+        return;
+      }
+
       // '2' toggles missile-targeting mode (fires from a completed silo in range).
       if (e.key === '2' && state.gameState === 'PLAYING') {
         if (inField) return;
@@ -652,6 +707,8 @@ async function startSimulationEngine() {
     bindBuildButton('btnBuildTower', 'defense_building');
     bindBuildButton('btnBuildSilo', 'silo');
     bindBuildButton('btnFireMissile', 'missile');
+    bindBuildButton('btnBuildMine', 'mine');
+    bindBuildButton('btnBuildAntiAir', 'antiair');
 
     requestAnimationFrame(gameLoop);
   } catch (err) {
@@ -706,10 +763,14 @@ function gameLoop(time) {
       const btnTower = document.getElementById('btnBuildTower');
       const btnSilo = document.getElementById('btnBuildSilo');
       const btnMissile = document.getElementById('btnFireMissile');
+      const btnMine = document.getElementById('btnBuildMine');
+      const btnAntiAir = document.getElementById('btnBuildAntiAir');
       
       if (btnTower) btnTower.classList.toggle('active', state.activePurchaseMode === 'defense_building');
       if (btnSilo) btnSilo.classList.toggle('active', state.activePurchaseMode === 'silo');
       if (btnMissile) btnMissile.classList.toggle('active', state.activePurchaseMode === 'missile');
+      if (btnMine) btnMine.classList.toggle('active', state.activePurchaseMode === 'mine');
+      if (btnAntiAir) btnAntiAir.classList.toggle('active', state.activePurchaseMode === 'antiair');
 
       if (overlayCanvas) {
         if (overlayCanvas.width !== window.innerWidth || overlayCanvas.height !== window.innerHeight) {
@@ -731,11 +792,16 @@ function gameLoop(time) {
           state.activeMissiles = renderer.drawMissiles(ctx, state.activeMissiles, state.activeExplosions);
           // Active missile blasts (expanding flash), pruned when finished.
           state.activeExplosions = renderer.drawExplosions(ctx, state.activeExplosions);
-          // Placement / targeting previews depending on the active mode.
+          // Active AA interceptor missiles
+          state.activeInterceptors = renderer.drawInterceptors(ctx, state.activeInterceptors);
           if (state.activePurchaseMode === 'defense_building' && state.hoveredCell.r >= 0) {
             renderer.drawBuildingPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
           } else if (state.activePurchaseMode === 'silo' && state.hoveredCell.r >= 0) {
             renderer.drawSiloPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
+          } else if (state.activePurchaseMode === 'mine' && state.hoveredCell.r >= 0) {
+            renderer.drawMinePlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
+          } else if (state.activePurchaseMode === 'antiair' && state.hoveredCell.r >= 0) {
+            renderer.drawAntiAirPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
           } else if (state.activePurchaseMode === 'missile') {
             renderer.drawMissileTargeting(ctx, state.buildings, parseInt(state.playerFaction), state.hoveredCell.r, state.hoveredCell.c);
           }
@@ -745,6 +811,5 @@ function gameLoop(time) {
   requestAnimationFrame(gameLoop);
 }
 
-// Start the engine when the app loads. It will run silently in the background
-// until the #gameArea is shown via the Quick Play flow.
-startSimulationEngine();
+// Start the engine only on desktop (mobile shows the rejection banner instead)
+if (!_isMobile) { startSimulationEngine(); }

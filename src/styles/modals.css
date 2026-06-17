@@ -1,0 +1,253 @@
+/* ── Shared Modal Design System ─────────────────────────────────────────── */
+
+/* Full-screen dimmer that centers a floating card */
+.modal-float {
+    display: none; /* JS overrides to 'flex' */
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5, 5, 12, 0.78);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    pointer-events: auto;
+}
+
+/* The glass card */
+.modal-card {
+    background: rgba(12, 14, 24, 0.97);
+    border: 1px solid rgba(255, 200, 60, 0.16);
+    border-radius: 14px;
+    box-shadow:
+        0 0 60px rgba(255, 180, 0, 0.07),
+        0 24px 80px rgba(0, 0, 0, 0.65),
+        inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    padding: 28px 32px;
+    position: relative;
+    max-height: 90vh;
+    overflow-y: auto;
+    max-width: 92vw;
+}
+
+/* Header row */
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding-bottom: 14px;
+    margin-bottom: 20px;
+    gap: 12px;
+}
+
+.modal-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffc107;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    line-height: 1.2;
+}
+
+/* × close button */
+.modal-close {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+    flex-shrink: 0;
+}
+.modal-close:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.07);
+}
+
+/* Button row */
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+}
+
+/* Base button */
+.modal-btn {
+    flex: 1;
+    padding: 12px 18px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: box-shadow 0.2s, border-color 0.2s, transform 0.15s;
+    text-align: center;
+    color: #fff;
+}
+.modal-btn:active { transform: scale(0.97); }
+
+.modal-btn-primary {
+    background: linear-gradient(135deg, #1a8a3e 0%, #28c756 100%);
+    border-color: rgba(40, 199, 86, 0.35);
+    box-shadow: 0 4px 16px rgba(40, 199, 86, 0.18);
+}
+.modal-btn-primary:hover {
+    box-shadow: 0 4px 24px rgba(40, 199, 86, 0.4);
+    border-color: rgba(40, 199, 86, 0.65);
+}
+
+.modal-btn-danger {
+    background: linear-gradient(135deg, #8a1a1a 0%, #c72828 100%);
+    border-color: rgba(199, 40, 40, 0.35);
+    box-shadow: 0 4px 16px rgba(199, 40, 40, 0.14);
+}
+.modal-btn-danger:hover {
+    box-shadow: 0 4px 24px rgba(199, 40, 40, 0.4);
+    border-color: rgba(199, 40, 40, 0.65);
+}
+
+.modal-btn-gold {
+    background: linear-gradient(135deg, #7a5000 0%, #c88000 100%);
+    border-color: rgba(255, 193, 7, 0.35);
+    box-shadow: 0 4px 16px rgba(255, 180, 0, 0.14);
+}
+.modal-btn-gold:hover {
+    box-shadow: 0 4px 24px rgba(255, 180, 0, 0.4);
+    border-color: rgba(255, 193, 7, 0.65);
+}
+
+.modal-btn-neutral {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: #bbb;
+}
+.modal-btn-neutral:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+/* ── ESC menu settings rows ─────────────────────────────────────────────── */
+.settings-divider {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    margin: 16px 0;
+}
+
+.toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    gap: 12px;
+}
+
+.toggle-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    color: #ccc;
+    line-height: 1.2;
+}
+
+.toggle-sub {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: #555;
+    margin-top: 2px;
+}
+
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 24px;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    height: 18px;
+    width: 18px;
+    left: 2px;
+    top: 2px;
+    background: #666;
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+}
+.toggle-switch input:checked + .toggle-slider {
+    background: rgba(255, 193, 7, 0.25);
+    border-color: rgba(255, 193, 7, 0.4);
+}
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(20px);
+    background: #ffc107;
+}
+
+/* ── Mobile rejection banner ─────────────────────────────────────────────── */
+#mobileBlock {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    background: linear-gradient(135deg, #05050f 0%, #0c0e18 100%);
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 24px;
+    text-align: center;
+    padding: 40px 28px;
+    pointer-events: auto;
+}
+
+#mobileBlock .mobile-icon {
+    font-size: 64px;
+    line-height: 1;
+}
+
+#mobileBlock h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 22px;
+    font-weight: 900;
+    color: #ffc107;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    margin: 0;
+    text-shadow: 0 0 20px rgba(255, 193, 7, 0.4);
+}
+
+#mobileBlock p {
+    font-family: 'Inter', sans-serif;
+    font-size: 15px;
+    color: rgba(255, 255, 255, 0.5);
+    max-width: 320px;
+    line-height: 1.7;
+    margin: 0;
+}
+
+/* CSS-level guard: primary pointer is coarse (finger) + no hover = phone/tablet */
+@media (pointer: coarse) and (hover: none) {
+    #mobileBlock { display: flex; }
+}

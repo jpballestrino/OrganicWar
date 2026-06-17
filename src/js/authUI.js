@@ -159,7 +159,7 @@ export async function initAuthUI() {
   getE('linkTutorial').addEventListener('click', (e) => {
     e.preventDefault();
     const tModal = getE('tutorialModal');
-    if (tModal) {tModal.style.display = 'block';}
+    if (tModal) {tModal.style.display = 'flex';}
   });
 
   const btnCloseTutorial = getE('btnCloseTutorial');

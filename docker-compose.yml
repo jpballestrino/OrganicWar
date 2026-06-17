@@ -1,0 +1,22 @@
+services:
+  game:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - db_data:/data         # SQLite DB + hourly backups
+      - ./logs:/app/logs      # PM2 / app logs on host for easy tailing
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - MAX_CONCURRENT_ROOMS=${MAX_CONCURRENT_ROOMS:-10}
+      - MAX_CONNECTIONS_PER_IP=${MAX_CONNECTIONS_PER_IP:-5}
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+    env_file:
+      - .env
+
+volumes:
+  db_data:

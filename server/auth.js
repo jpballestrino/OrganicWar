@@ -5,8 +5,12 @@ import crypto from 'crypto';
 // Placeholder value stored in password_hash for OAuth-only users (no real password)
 export const OAUTH_PLACEHOLDER = 'OAUTH_NO_PASSWORD';
 
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('FATAL: JWT_SECRET must be set via environment variable in production. Refusing to start.');
+}
+
 const JWT_SECRET = process.env.JWT_SECRET || (() => {
-  console.warn('[WARNING] JWT_SECRET is not set in environment variables. Using a temporary random secret. Sessions will be invalidated on server restart.');
+  console.warn('[WARNING] JWT_SECRET not set — using a random secret. Sessions will be lost on restart.');
   return crypto.randomBytes(64).toString('hex');
 })();
 

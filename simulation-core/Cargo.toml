@@ -9,7 +9,18 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = "0.2"
 
-# Optimize for size and speed in WebAssembly
+# Maximum optimization for WebAssembly release builds.
+# opt-level = 3 → full speed optimizations (wasm-opt -O3 applied by wasm-pack on top).
+# lto = true → link-time optimization removes dead code across crates.
+# codegen-units = 1 → single compilation unit, lets LLVM see the whole program.
+# panic = "abort" → removes unwinding infrastructure (~10-20% size reduction).
+# strip = "symbols" → removes debug symbols from the WASM binary.
 [profile.release]
 opt-level = 3
 lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

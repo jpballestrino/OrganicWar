@@ -229,6 +229,13 @@ export function buildLobbyList() {
 }
 
 export function createRoom(name = 'Game', preset = 'north_america', maxPlayers = 20, isQuickPlay = false) {
+  const MAX_CONCURRENT_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
+  const currentRoomCount = Object.keys(activeRooms).length;
+  if (currentRoomCount >= MAX_CONCURRENT_ROOMS) {
+    log('warn', `[Room] Refused to create room: at cap (${currentRoomCount}/${MAX_CONCURRENT_ROOMS})`);
+    return null;
+  }
+
   const roomId = generateUniqueRoomId();
   const sim = new MockSimulation(maxPlayers);
 
@@ -264,6 +271,15 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
 }
 
 export function createRankedRoom(players) {
+  const MAX_CONCURRENT_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
+  if (Object.keys(activeRooms).length >= MAX_CONCURRENT_ROOMS) {
+    log('warn', `[Room] Refused ranked room: at cap (${Object.keys(activeRooms).length}/${MAX_CONCURRENT_ROOMS})`);
+    for (const p of players) {
+      p.socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+    }
+    return null;
+  }
+
   const roomId = generateUniqueRoomId();
   const maxPlayers = players.length;
   const sim = new MockSimulation(maxPlayers);
@@ -321,6 +337,7 @@ export function matchmakeRanked(force = false) {
   while (rankedQueue.length >= REQUIRED_PLAYERS && rankedQueue.length > 0) {
     let matchPlayers = rankedQueue.splice(0, REQUIRED_PLAYERS);
     let room = createRankedRoom(matchPlayers);
+    if (!room) { break; }
     log('info', `Ranked Match created with ${REQUIRED_PLAYERS} players. Room: ${room.id}`);
 
     for (let p of rankedQueue) {
@@ -330,6 +347,14 @@ export function matchmakeRanked(force = false) {
 }
 
 export function createGuildWarRoom(guildA, guildB, teamSize) {
+  const MAX_CONCURRENT_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
+  if (Object.keys(activeRooms).length >= MAX_CONCURRENT_ROOMS) {
+    log('warn', `[Room] Refused guild war room: at cap (${Object.keys(activeRooms).length}/${MAX_CONCURRENT_ROOMS})`);
+    io.to(`guild:${guildA.id}`).emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+    io.to(`guild:${guildB.id}`).emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+    return null;
+  }
+
   const roomId = generateUniqueRoomId();
   const maxPlayers = teamSize * 2;
   const sim = new MockSimulation(maxPlayers);
@@ -490,6 +515,11 @@ export function startMatchNow(room) {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
       mapId: room.preset,
       onGameOver: (winnerId, stats) => handleGameOver(room, winnerId, stats),
+      onError: (message) => {
+        log('error', `[Room ${room.id}] Simulation crashed: ${message}`);
+        io.to(room.id).emit('server-error', { message: 'The game simulation crashed. Please return to the main menu.' });
+        delete activeRooms[room.id];
+      },
       onReady: () => {
         for (let [fid, pos] of room.spawnSelections.entries()) {
           room.simReal.spawnFaction(fid, pos.row, pos.col);

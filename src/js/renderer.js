@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS } from './constants.js';
+import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS } from './constants.js';
 
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
@@ -533,111 +533,382 @@ export class WebGLRenderer {
         ctx.textBaseline = 'alphabetic';
     }
 
-    // Draw a shield icon at each placed defense building.
     drawBuildings(ctx, buildings) {
         if (!buildings || buildings.length === 0) return;
-
         const now = performance.now();
 
         for (const b of buildings) {
             const pos = this.worldToScreen(b.col, b.row);
+            if (pos.x < -80 || pos.x > this.canvas.width + 80 ||
+                pos.y < -80 || pos.y > this.canvas.height + 80) continue;
 
-            // Cull off-screen buildings.
-            if (pos.x < -50 || pos.x > this.canvas.width + 50 ||
-                pos.y < -50 || pos.y > this.canvas.height + 50) continue;
-
-            const iconSize = Math.max(5, 10 * this.camera.zoom);
+            const z = this.camera.zoom;
+            const iconSize = Math.max(6, 11 * z);
             const color = factionHexColors[b.factionId] || '#888888';
-
-            // Construction progress (0..1), clamped so a wall-clock bar can't
-            // overshoot before the authoritative `building-completed` arrives.
+            const rgb = factionRGB[b.factionId] || [136, 136, 136];
             const constructing = !!b.constructing;
             const progress = constructing
                 ? Math.min(1, Math.max(0, (now - (b.builtAt || now)) / (b.buildMs || 5000)))
                 : 1;
+            const isSilo    = b.type === 'silo';
+            const isMine    = b.type === 'mine';
+            const isAntiAir = b.type === 'antiair';
+            const [r, g, bl] = rgb;
 
-            // Dark backdrop circle.
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, iconSize * 1.4, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(8, 8, 18, 0.78)';
-            ctx.fill();
+            const pulse = constructing ? 1 : 1 + 0.05 * Math.sin(now * 0.0028 + b.row * 0.6);
 
-            const isSilo = b.type === 'silo';
-
-            // Icon silhouette (dimmed while still under construction).
             ctx.save();
             ctx.translate(pos.x, pos.y);
-            if (constructing) ctx.globalAlpha = 0.5;
-            const sw = iconSize * 0.8;
-            const sh = iconSize;
-            ctx.beginPath();
-            if (isSilo) {
-                // Upward rocket: nose cone, body, fins.
-                ctx.moveTo(0, -sh);
-                ctx.lineTo(sw * 0.7, -sh * 0.1);
-                ctx.lineTo(sw * 0.7, sh * 0.55);
-                ctx.lineTo(sw, sh);             // right fin
-                ctx.lineTo(sw * 0.35, sh * 0.7);
-                ctx.lineTo(-sw * 0.35, sh * 0.7);
-                ctx.lineTo(-sw, sh);            // left fin
-                ctx.lineTo(-sw * 0.7, sh * 0.55);
-                ctx.lineTo(-sw * 0.7, -sh * 0.1);
-            } else {
-                // Defense shield.
-                ctx.moveTo(0, -sh);
-                ctx.lineTo(sw, -sh * 0.35);
-                ctx.lineTo(sw, sh * 0.2);
-                ctx.lineTo(0, sh);
-                ctx.lineTo(-sw, sh * 0.2);
-                ctx.lineTo(-sw, -sh * 0.35);
-            }
-            ctx.closePath();
-            ctx.fillStyle = color;
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-            ctx.lineWidth = Math.max(1, 1.5 * this.camera.zoom);
-            ctx.stroke();
 
-            // Glyph inside the icon (only when large enough to read).
-            if (iconSize > 7 && !isSilo) {
-                ctx.fillStyle = '#fff';
-                ctx.font = `bold ${Math.floor(iconSize * 0.9)}px monospace`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText('⛌', 0, sh * 0.05); // ⛌ castle-tower glyph
+            // ── Hex frame with neon glow ──
+            const hexR = iconSize * 1.62 * pulse;
+            const drawHex = (size, rot = Math.PI / 6) => {
+                ctx.beginPath();
+                for (let i = 0; i < 6; i++) {
+                    const a = (Math.PI / 3) * i + rot;
+                    if (i === 0) ctx.moveTo(Math.cos(a) * size, Math.sin(a) * size);
+                    else         ctx.lineTo(Math.cos(a) * size, Math.sin(a) * size);
+                }
+                ctx.closePath();
+            };
+
+            const hexColor = isMine ? '#f59e0b' : color;
+            const hexRgb   = isMine ? [245, 158, 11] : rgb;
+
+            drawHex(hexR);
+            ctx.fillStyle = 'rgba(3, 5, 12, 0.92)';
+            ctx.fill();
+
+            if (!constructing && !state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = iconSize * 2; }
+            drawHex(hexR);
+            ctx.strokeStyle = constructing ? 'rgba(255,255,255,0.18)' : hexColor;
+            ctx.lineWidth = Math.max(1, 1.6 * z);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Dim inner hex ring — circuit frame detail
+            if (!constructing) {
+                drawHex(hexR * 0.76);
+                ctx.strokeStyle = `rgba(${hexRgb[0]},${hexRgb[1]},${hexRgb[2]},0.22)`;
+                ctx.lineWidth = Math.max(0.4, 0.5 * z);
+                ctx.stroke();
             }
+
+            if (constructing) ctx.globalAlpha = 0.55;
+            const s = iconSize * pulse;
+
+            if (isSilo) {
+                // ── SILO: hypersonic angular missile ──
+                const mh = s * 1.75, mw = s * 0.48;
+
+                // Energy spine behind body
+                ctx.beginPath();
+                ctx.moveTo(0, -mh * 0.88); ctx.lineTo(0, mh * 0.56);
+                ctx.strokeStyle = `rgba(${r},${g},${bl},0.6)`;
+                ctx.lineWidth = Math.max(0.7, z * 0.8);
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = s * 0.35; }
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // Angular missile body (no bezier — hard edges)
+                ctx.beginPath();
+                ctx.moveTo(0,        -mh);
+                ctx.lineTo( mw*0.48, -mh*0.52);
+                ctx.lineTo( mw,       mh*0.38);
+                ctx.lineTo( mw,       mh*0.62);
+                ctx.lineTo( mw*1.88,  mh);
+                ctx.lineTo( mw*0.78,  mh*0.74);
+                ctx.lineTo(-mw*0.78,  mh*0.74);
+                ctx.lineTo(-mw*1.88,  mh);
+                ctx.lineTo(-mw,       mh*0.62);
+                ctx.lineTo(-mw,       mh*0.38);
+                ctx.lineTo(-mw*0.48, -mh*0.52);
+                ctx.closePath();
+                const mGrad = ctx.createLinearGradient(-mw, -mh, mw, mh);
+                mGrad.addColorStop(0,    '#e8f4ff');
+                mGrad.addColorStop(0.15, hexColor);
+                mGrad.addColorStop(0.65, `rgba(${Math.floor(r*0.38)},${Math.floor(g*0.38)},${Math.floor(bl*0.38)},1)`);
+                mGrad.addColorStop(1,    '#010306');
+                ctx.fillStyle = mGrad;
+                ctx.fill();
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = s * 0.55; }
+                ctx.strokeStyle = constructing ? 'rgba(255,255,255,0.25)' : `rgba(${r},${g},${bl},0.8)`;
+                ctx.lineWidth = Math.max(0.5, z * 0.65);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // Nose tip dot
+                if (s > 7) {
+                    ctx.beginPath();
+                    ctx.arc(0, -mh * 0.96, mw * 0.2, 0, Math.PI * 2);
+                    ctx.fillStyle = '#eef8ff';
+                    ctx.fill();
+                }
+
+                // Cooldown "filling bullet" indicator above the silo
+                if (!constructing && b.lastFiredAt) {
+                    const age = now - b.lastFiredAt;
+                    const cd = b.cooldownMs || 2000;
+                    if (age < cd) {
+                        const progress = age / cd;
+                        const bx = 0;
+                        const by = -mh * 1.4;
+                        const bw = s * 0.25;
+                        const bh = s * 0.6;
+                        
+                        // Empty bullet background
+                        ctx.fillStyle = 'rgba(10, 10, 15, 0.8)';
+                        ctx.fillRect(bx - bw/2, by - bh, bw, bh);
+                        ctx.strokeStyle = `rgba(${r},${g},${bl},0.5)`;
+                        ctx.lineWidth = Math.max(0.5, z * 0.5);
+                        ctx.strokeRect(bx - bw/2, by - bh, bw, bh);
+
+                        // Filled progress
+                        const fillH = bh * progress;
+                        ctx.fillStyle = hexColor;
+                        if (!state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = s * 0.3; }
+                        ctx.fillRect(bx - bw/2, by - fillH, bw, fillH);
+                        ctx.shadowBlur = 0;
+                    }
+                }
+                // Chevron detail lines
+                if (s > 9) {
+                    ctx.strokeStyle = `rgba(${r},${g},${bl},0.45)`;
+                    ctx.lineWidth = Math.max(0.3, z * 0.4);
+                    for (const yOff of [-mh * 0.12, mh * 0.12]) {
+                        ctx.beginPath();
+                        ctx.moveTo(-mw * 0.32, yOff + mh * 0.1);
+                        ctx.lineTo(0,           yOff - mh * 0.04);
+                        ctx.lineTo( mw * 0.32,  yOff + mh * 0.1);
+                        ctx.stroke();
+                    }
+                }
+
+            } else if (isMine) {
+                // ── GOLD MINE: octagonal power core with rotating energy ring ──
+                const gr = s * 1.08;
+                // Octagon
+                const oct = gr * 0.88, cut = oct * 0.38;
+                ctx.beginPath();
+                ctx.moveTo(-oct + cut, -oct); ctx.lineTo( oct - cut, -oct);
+                ctx.lineTo( oct,  -oct + cut); ctx.lineTo( oct,  oct - cut);
+                ctx.lineTo( oct - cut,  oct); ctx.lineTo(-oct + cut,  oct);
+                ctx.lineTo(-oct,  oct - cut); ctx.lineTo(-oct, -oct + cut);
+                ctx.closePath();
+                const cGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, gr);
+                cGrad.addColorStop(0,    '#fff5c0');
+                cGrad.addColorStop(0.28, '#fbbf24');
+                cGrad.addColorStop(0.68, '#b45309');
+                cGrad.addColorStop(1,    '#0c0700');
+                ctx.fillStyle = cGrad;
+                ctx.fill();
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = '#f59e0b'; ctx.shadowBlur = s * 1.4; }
+                ctx.strokeStyle = constructing ? 'rgba(245,158,11,0.28)' : '#f59e0b';
+                ctx.lineWidth = Math.max(0.8, z * 1.0);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // Rotating dashed energy ring
+                if (!constructing) {
+                    ctx.save();
+                    ctx.rotate((now * 0.001) % (Math.PI * 2));
+                    ctx.setLineDash([s * 0.27, s * 0.21]);
+                    ctx.beginPath(); ctx.arc(0, 0, gr * 0.55, 0, Math.PI * 2);
+                    ctx.strokeStyle = 'rgba(255, 220, 70, 0.65)';
+                    ctx.lineWidth = Math.max(0.8, z * 0.9);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.restore();
+                }
+                // Inner hex
+                drawHex(gr * 0.36);
+                ctx.strokeStyle = 'rgba(255,240,140,0.45)';
+                ctx.lineWidth = Math.max(0.4, z * 0.45);
+                ctx.stroke();
+
+                if (s > 7) {
+                    ctx.fillStyle = '#fff8d6';
+                    ctx.font = `bold ${Math.floor(s * 0.88)}px 'Orbitron', monospace`;
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillText('$', 0, 0);
+                }
+
+            } else if (isAntiAir) {
+                // ── ANTI-AIR: rotating targeting reticle + angular base + twin barrels ──
+                const baseGrad = ctx.createLinearGradient(0, s * 0.08, 0, s * 0.72);
+                baseGrad.addColorStop(0, `rgba(${r},${g},${bl},0.88)`);
+                baseGrad.addColorStop(1, 'rgba(3, 5, 12, 0.96)');
+                ctx.beginPath();
+                ctx.moveTo(-s*0.78, s*0.72); ctx.lineTo(-s*0.48, s*0.08);
+                ctx.lineTo( s*0.48, s*0.08); ctx.lineTo( s*0.78, s*0.72);
+                ctx.closePath();
+                ctx.fillStyle = baseGrad; ctx.fill();
+                ctx.strokeStyle = `rgba(${r},${g},${bl},0.55)`;
+                ctx.lineWidth = Math.max(0.4, z * 0.6); ctx.stroke();
+
+                // Rotating targeting reticle
+                const reticleAngle = (now * 0.0016) % (Math.PI * 2);
+                ctx.save();
+                ctx.rotate(reticleAngle);
+                const rr = s * 0.92;
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = s * 0.75; }
+                ctx.beginPath(); ctx.arc(0, 0, rr, 0, Math.PI * 2);
+                ctx.strokeStyle = hexColor;
+                ctx.lineWidth = Math.max(0.8, z * 1.0); ctx.stroke();
+                // Crosshair arms with gap
+                const gap = rr * 0.36;
+                for (let i = 0; i < 4; i++) {
+                    const a = (Math.PI / 2) * i;
+                    ctx.beginPath();
+                    ctx.moveTo(Math.cos(a)*gap, Math.sin(a)*gap);
+                    ctx.lineTo(Math.cos(a)*rr,  Math.sin(a)*rr);
+                    ctx.stroke();
+                }
+                ctx.shadowBlur = 0;
+                // Tick marks
+                ctx.lineWidth = Math.max(0.35, z * 0.45);
+                ctx.strokeStyle = `rgba(${r},${g},${bl},0.45)`;
+                for (let i = 0; i < 8; i++) {
+                    const a = (Math.PI / 4) * i + Math.PI / 8;
+                    ctx.beginPath();
+                    ctx.moveTo(Math.cos(a)*rr*0.77, Math.sin(a)*rr*0.77);
+                    ctx.lineTo(Math.cos(a)*rr,      Math.sin(a)*rr);
+                    ctx.stroke();
+                }
+                ctx.restore();
+
+                // Twin barrels with muzzle highlight
+                const charges = b.charges ?? 3;
+                const barFill = charges > 0 ? hexColor : '#2a2a2a';
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = barFill; ctx.shadowBlur = s * 0.4; }
+                for (const bx of [-s*0.32, s*0.32]) {
+                    ctx.fillStyle = barFill;
+                    ctx.fillRect(bx - s*0.09, -s*0.55, s*0.18, s*0.64);
+                    if (!constructing && charges > 0) {
+                        ctx.fillStyle = '#d0eeff';
+                        ctx.fillRect(bx - s*0.09, -s*0.55, s*0.18, s*0.1);
+                    }
+                }
+                ctx.shadowBlur = 0;
+
+            } else {
+                // ── DEFENSE TOWER: cyberpunk fortress with power conduits ──
+                const tw = s * 1.05, th = s * 1.68;
+                const tGrad = ctx.createLinearGradient(-tw, -th*0.45, tw*0.55, th*0.5);
+                tGrad.addColorStop(0,    `rgba(${r},${g},${bl},0.9)`);
+                tGrad.addColorStop(0.5,  `rgba(${Math.floor(r*0.38)},${Math.floor(g*0.38)},${Math.floor(bl*0.38)},0.9)`);
+                tGrad.addColorStop(1,    'rgba(3,5,12,0.95)');
+                ctx.beginPath();
+                ctx.rect(-tw*0.58, -th*0.44, tw*1.16, th*0.94);
+                ctx.fillStyle = tGrad; ctx.fill();
+
+                // Angular battlements (notched tops)
+                const mw = tw*0.3, mh = th*0.22, mTop = -th*0.44 - mh;
+                ctx.fillStyle = `rgba(${r},${g},${bl},0.93)`;
+                for (const mx of [-tw*0.5, 0, tw*0.5]) {
+                    ctx.beginPath();
+                    ctx.moveTo(mx - mw/2,    mTop + mh);
+                    ctx.lineTo(mx - mw/2,    mTop + mh*0.28);
+                    ctx.lineTo(mx - mw*0.14, mTop);
+                    ctx.lineTo(mx + mw*0.14, mTop);
+                    ctx.lineTo(mx + mw/2,    mTop + mh*0.28);
+                    ctx.lineTo(mx + mw/2,    mTop + mh);
+                    ctx.closePath(); ctx.fill();
+                }
+
+                // Neon outline
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = s * 0.85; }
+                ctx.strokeStyle = `rgba(${r},${g},${bl},0.78)`;
+                ctx.lineWidth = Math.max(0.5, z * 0.75);
+                ctx.strokeRect(-tw*0.58, -th*0.44, tw*1.16, th*0.94);
+                ctx.shadowBlur = 0;
+
+                // Power conduit lines
+                ctx.strokeStyle = `rgba(${r},${g},${bl},0.4)`;
+                ctx.lineWidth = Math.max(0.35, z * 0.45);
+                ctx.beginPath(); ctx.moveTo(0, -th*0.3);  ctx.lineTo(0, th*0.46);  ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(-tw*0.46, th*0.05); ctx.lineTo(tw*0.46, th*0.05); ctx.stroke();
+
+                // Central target node
+                if (s > 7) {
+                    ctx.beginPath();
+                    ctx.arc(0, th*0.05, s*0.18, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(${r},${g},${bl},0.35)`; ctx.fill();
+                    if (!constructing && !state.lowGraphics) { ctx.shadowColor = hexColor; ctx.shadowBlur = s * 0.5; }
+                    ctx.strokeStyle = hexColor;
+                    ctx.lineWidth = Math.max(0.5, z * 0.65); ctx.stroke();
+                    ctx.shadowBlur = 0;
+                    ctx.beginPath(); ctx.arc(0, th*0.05, s*0.07, 0, Math.PI * 2);
+                    ctx.fillStyle = hexColor; ctx.fill();
+                }
+
+                // Corner tech brackets
+                if (s > 10) {
+                    const bLen = tw * 0.24;
+                    ctx.strokeStyle = `rgba(${r},${g},${bl},0.55)`;
+                    ctx.lineWidth = Math.max(0.5, z * 0.55);
+                    for (const [cx, cy, dx, dy] of [
+                        [-tw*0.58, -th*0.44,  1,  1],
+                        [ tw*0.58, -th*0.44, -1,  1],
+                        [-tw*0.58,  th*0.5,   1, -1],
+                        [ tw*0.58,  th*0.5,  -1, -1],
+                    ]) {
+                        ctx.beginPath();
+                        ctx.moveTo(cx + dx*bLen, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + dy*bLen);
+                        ctx.stroke();
+                    }
+                }
+            }
+
             ctx.restore();
 
-            // Construction progress bar under the icon — fills left→right over the
-            // build time, then disappears once `building-completed` clears the flag.
-            if (constructing) {
-                const barW = iconSize * 3;
-                const barH = Math.max(3, iconSize * 0.45);
-                const barX = pos.x - barW / 2;
-                const barY = pos.y + iconSize * 1.8;
-                // Track.
-                ctx.fillStyle = 'rgba(8, 8, 18, 0.85)';
-                ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
-                // Fill.
-                ctx.fillStyle = color;
-                ctx.fillRect(barX, barY, barW * progress, barH);
-                // Border.
-                ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-                ctx.lineWidth = 1;
-                ctx.strokeRect(barX - 1, barY - 1, barW + 2, barH + 2);
+            // ── Anti-Air charge dot indicators ──
+            if (isAntiAir && !constructing) {
+                const charges = b.charges ?? 3;
+                if (charges > 0 && iconSize > 8) {
+                    const dotR = Math.max(2, iconSize * 0.2);
+                    const spacing = dotR * 2.9;
+                    const dotY = pos.y - iconSize * 2.5;
+                    if (!state.lowGraphics) { ctx.shadowColor = '#ff2020'; ctx.shadowBlur = dotR * 3; }
+                    ctx.fillStyle = '#ff4040';
+                    for (let i = 0; i < charges; i++) {
+                        ctx.beginPath();
+                        ctx.arc(pos.x - ((charges-1)*spacing)/2 + i*spacing, dotY, dotR, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                    ctx.shadowBlur = 0;
+                }
             }
 
-            // Dashed influence ring — defense towers only (silos have no zone and
-            // carry `range`, not `radius`), and only when zoomed in enough to be useful.
-            if (!isSilo && this.camera.zoom > 1.2) {
+            // ── Construction progress bar ──
+            if (constructing) {
+                const barW = iconSize * 3.5, barH = Math.max(3, iconSize * 0.4);
+                const bx = pos.x - barW / 2, by = pos.y + iconSize * 2.35;
+                const rad = barH / 2;
+                const barAccent = isMine ? '#f59e0b' : color;
+                const barRgb   = isMine ? '245,158,11' : `${rgb[0]},${rgb[1]},${rgb[2]}`;
+                ctx.fillStyle = 'rgba(3, 5, 12, 0.95)';
+                ctx.beginPath(); ctx.roundRect(bx-2, by-2, barW+4, barH+4, rad+2); ctx.fill();
+                if (progress > 0.01) {
+                    const fillW = Math.max(barH, barW * progress);
+                    const fGrad = ctx.createLinearGradient(bx, 0, bx+fillW, 0);
+                    fGrad.addColorStop(0, barAccent); fGrad.addColorStop(0.75, '#ffffff'); fGrad.addColorStop(1, '#ffffff');
+                    ctx.fillStyle = fGrad;
+                    if (!state.lowGraphics) { ctx.shadowColor = barAccent; ctx.shadowBlur = barH * 2; }
+                    ctx.beginPath(); ctx.roundRect(bx, by, fillW, barH, rad); ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+                ctx.strokeStyle = `rgba(${barRgb},0.4)`;
+                ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.roundRect(bx-2, by-2, barW+4, barH+4, rad+2); ctx.stroke();
+            }
+
+            // ── Defense zone ring ──
+            if (!isSilo && !isMine && !isAntiAir && this.camera.zoom > 1.2) {
                 const screenRadius = b.radius * this.camera.zoom;
-                ctx.beginPath();
-                ctx.arc(pos.x, pos.y, screenRadius, 0, Math.PI * 2);
+                ctx.beginPath(); ctx.arc(pos.x, pos.y, screenRadius, 0, Math.PI * 2);
                 ctx.strokeStyle = 'rgba(255, 200, 50, 0.28)';
-                ctx.lineWidth = 1.5;
-                ctx.setLineDash([5, 7]);
-                ctx.stroke();
-                ctx.setLineDash([]);
+                ctx.lineWidth = 1.5; ctx.setLineDash([5, 7]); ctx.stroke(); ctx.setLineDash([]);
             }
         }
     }
@@ -710,6 +981,54 @@ export class WebGLRenderer {
         ctx.fillText('Missile Silo (click to place)', center.x, topLeft.y - 4);
     }
 
+    drawMinePlacementPreview(ctx, hoverRow, hoverCol) {
+        const topLeft = this.worldToScreen(hoverCol - 4, hoverRow - 4);
+        const bottomRight = this.worldToScreen(hoverCol + 4, hoverRow + 4);
+        const w = bottomRight.x - topLeft.x;
+        const h = bottomRight.y - topLeft.y;
+        const center = this.worldToScreen(hoverCol, hoverRow);
+
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.18)';
+        ctx.fillRect(topLeft.x, topLeft.y, w, h);
+        ctx.strokeStyle = 'rgba(255, 215, 0, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(topLeft.x, topLeft.y, w, h);
+
+        ctx.font = "12px 'Orbitron', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.95)';
+        ctx.fillText('Gold Mine (click to place)', center.x, topLeft.y - 4);
+    }
+
+    drawAntiAirPlacementPreview(ctx, hoverRow, hoverCol) {
+        const topLeft = this.worldToScreen(hoverCol - 4, hoverRow - 4);
+        const bottomRight = this.worldToScreen(hoverCol + 4, hoverRow + 4);
+        const w = bottomRight.x - topLeft.x;
+        const h = bottomRight.y - topLeft.y;
+        const center = this.worldToScreen(hoverCol, hoverRow);
+
+        ctx.fillStyle = 'rgba(120, 255, 120, 0.18)';
+        ctx.fillRect(topLeft.x, topLeft.y, w, h);
+        ctx.strokeStyle = 'rgba(120, 255, 120, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(topLeft.x, topLeft.y, w, h);
+
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, ANTIAIR_RADIUS * this.camera.zoom, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(120, 255, 120, 0.4)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 7]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.font = "12px 'Orbitron', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(120, 255, 120, 0.95)';
+        ctx.fillText('Anti-Air Battery (click to place)', center.x, topLeft.y - 4);
+    }
+
     // Missile-targeting overlay: dashed firing-range rings around the player's own
     // completed silos, plus a blast-radius preview at the hovered cell.
     drawMissileTargeting(ctx, buildings, myFaction, hoverRow, hoverCol) {
@@ -750,9 +1069,21 @@ export class WebGLRenderer {
         for (const m of missiles) {
             const t = (now - m.startedAt) / m.flightTimeMs;
             
-            if (t >= 1.0) {
-                // Missile landed! Trigger explosion.
-                explosions.push({ row: m.targetRow, col: m.targetCol, blastRadius: MISSILE_BLAST_RADIUS, startedAt: now });
+            if (t >= 1.0 || (m.intercepted && now >= m.interceptorArrivesAt)) {
+                // Missile landed or intercepted! Trigger explosion.
+                if (m.intercepted) {
+                    const sCurr = this.worldToScreen(m.interceptCol, m.interceptRow);
+                    const arcHeight = 150 * Math.sin(t * Math.PI);
+                    explosions.push({ 
+                        x: sCurr.x, 
+                        y: sCurr.y - arcHeight, 
+                        blastRadius: MISSILE_BLAST_RADIUS * 0.5, 
+                        startedAt: now, 
+                        type: 'intercepted_sky' 
+                    });
+                } else {
+                    explosions.push({ row: m.targetRow, col: m.targetCol, blastRadius: MISSILE_BLAST_RADIUS, startedAt: now, type: 'normal' });
+                }
                 continue; 
             }
             
@@ -775,31 +1106,111 @@ export class WebGLRenderer {
             
             const factionColor = factionHexColors[m.factionId] || '#fff';
             
-            // Draw a tiny trailing line (from slightly earlier t)
+            // Tapered energy trail
             const tOld = Math.max(0, t - 0.05);
             const oldRow = m.sourceRow + (m.targetRow - m.sourceRow) * tOld;
             const oldCol = m.sourceCol + (m.targetCol - m.sourceCol) * tOld;
             const sOld = this.worldToScreen(oldCol, oldRow);
             const oldArc = 150 * Math.sin(tOld * Math.PI);
+            const oldX = sOld.x;
+            const oldY = sOld.y - oldArc;
+
+            const angle = Math.atan2(drawY - oldY, drawX - oldX);
+
+            // Draw the energy trail with gradient
+            const gradient = ctx.createLinearGradient(oldX, oldY, drawX, drawY);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 0)');
+            gradient.addColorStop(1, factionColor);
             
             ctx.beginPath();
-            ctx.moveTo(sOld.x, sOld.y - oldArc);
+            ctx.moveTo(oldX, oldY);
             ctx.lineTo(drawX, drawY);
-            ctx.strokeStyle = factionColor;
-            ctx.lineWidth = 3;
+            ctx.strokeStyle = gradient;
+            ctx.lineWidth = 4;
+            ctx.lineCap = 'round';
+            if (!state.lowGraphics) { ctx.shadowColor = factionColor; ctx.shadowBlur = 8; }
             ctx.stroke();
-            
-            // Draw the glowing missile head
+            ctx.shadowBlur = 0;
+
+            // Draw the futuristic missile body
+            ctx.save();
+            ctx.translate(drawX, drawY);
+            ctx.rotate(angle);
+
+            // Missile main body (aerodynamic dart)
             ctx.beginPath();
-            ctx.arc(drawX, drawY, 4, 0, Math.PI * 2);
-            ctx.fillStyle = '#fff';
+            ctx.moveTo(12 * this.camera.zoom, 0); // Nose cone
+            ctx.lineTo(-4 * this.camera.zoom, 5 * this.camera.zoom); // Right wing trailing edge
+            ctx.lineTo(-2 * this.camera.zoom, 0); // Center rear
+            ctx.lineTo(-4 * this.camera.zoom, -5 * this.camera.zoom); // Left wing trailing edge
+            ctx.closePath();
+            ctx.fillStyle = '#e2e8f0';
             ctx.fill();
-            ctx.shadowColor = factionColor;
-            ctx.shadowBlur = 10;
+
+            // Wing accents (colored by faction)
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(-6 * this.camera.zoom, 7 * this.camera.zoom);
+            ctx.lineTo(-3 * this.camera.zoom, 0);
+            ctx.lineTo(-6 * this.camera.zoom, -7 * this.camera.zoom);
+            ctx.closePath();
+            ctx.fillStyle = factionColor;
             ctx.fill();
+
+            // Engine thrust/exhaust
+            const thrustPulse = 4 + Math.random() * 4; // Flickering effect
+            ctx.beginPath();
+            ctx.moveTo(-2 * this.camera.zoom, 0);
+            ctx.lineTo((-2 - thrustPulse) * this.camera.zoom, 2 * this.camera.zoom);
+            ctx.lineTo((-4 - thrustPulse) * this.camera.zoom, 0);
+            ctx.lineTo((-2 - thrustPulse) * this.camera.zoom, -2 * this.camera.zoom);
+            ctx.closePath();
+            ctx.fillStyle = '#ffffff';
+            if (!state.lowGraphics) { ctx.shadowColor = factionColor; ctx.shadowBlur = 12; }
+            ctx.fill();
+
+            ctx.restore();
             ctx.shadowBlur = 0; // reset
         }
         
+        return surviving;
+    }
+
+    // Draw AA interceptor missiles
+    drawInterceptors(ctx, interceptors) {
+        if (!interceptors || interceptors.length === 0) return interceptors || [];
+        const now = performance.now();
+        const surviving = [];
+        for (const int of interceptors) {
+            const progress = (now - int.startedAt) / int.durationMs;
+            if (progress >= 1.0) continue;
+            surviving.push(int);
+
+            const start = this.worldToScreen(int.sourceCol, int.sourceRow);
+            const end = this.worldToScreen(int.targetCol, int.targetRow);
+            
+            const currX = start.x + (end.x - start.x) * progress;
+            const currY = start.y + (end.y - start.y) * progress;
+            
+            const currAltitude = int.targetAltitude * progress; 
+            
+            const drawX = currX;
+            const drawY = currY - currAltitude;
+
+            // Draw tiny interceptor rocket
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff4444'; 
+            ctx.fill();
+            
+            // Draw exhaust trail
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y - 10);
+            ctx.lineTo(drawX, drawY);
+            ctx.strokeStyle = `rgba(255, 200, 100, ${1.0 - progress})`;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
         return surviving;
     }
 
@@ -808,23 +1219,76 @@ export class WebGLRenderer {
     drawExplosions(ctx, explosions) {
         if (!explosions || explosions.length === 0) return explosions || [];
         const now = performance.now();
-        const DURATION = 700; // ms
         const surviving = [];
-        for (const ex of explosions) {
-            const t = (now - ex.startedAt) / DURATION;
-            if (t >= 1) continue; // finished — drop it
-            surviving.push(ex);
-            const c = this.worldToScreen(ex.col, ex.row);
-            const maxR = ex.blastRadius * this.camera.zoom;
-            // Shockwave ring expands outward; bright core fades.
-            const ringR = maxR * Math.min(1, t * 1.3);
+        for (const exp of explosions) {
+            const durationMs = 800; // Increased duration
+            const ageMs = now - exp.startedAt;
+            if (ageMs > durationMs) continue; 
+            surviving.push(exp);
+
+            let c;
+            if (exp.x !== undefined && exp.y !== undefined) {
+                c = { x: exp.x, y: exp.y };
+            } else {
+                c = this.worldToScreen(exp.col, exp.row);
+            }
+            
+            const t = ageMs / durationMs;
+            const maxR = exp.blastRadius * this.camera.zoom;
+            // Easing function for explosive expansion (fast start, slow end)
+            const easeOutQuad = 1 - (1 - t) * (1 - t);
+            
+            const isFlak = (exp.type === 'intercepted' || exp.type === 'intercepted_sky');
+            const coreColor = isFlak ? '200, 230, 255' : '255, 255, 200';
+            const midColor = isFlak ? '100, 180, 255' : '255, 120, 0';
+            const edgeColor = isFlak ? '50, 100, 200' : '255, 40, 0';
+
+            // 1. Bright white core that disappears quickly
+            if (t < 0.3) {
+                const coreAlpha = 1 - (t / 0.3);
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, maxR * 0.4 * easeOutQuad, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${coreAlpha})`;
+                if (!state.lowGraphics) { ctx.shadowColor = `rgb(${coreColor})`; ctx.shadowBlur = 20; }
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            // 2. Radial gradient shockwave/fireball
+            const shockRadius = maxR * easeOutQuad;
+            if (shockRadius > 0) {
+                const gradient = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, shockRadius);
+                gradient.addColorStop(0, `rgba(${coreColor}, ${0.8 * (1 - t)})`);
+                gradient.addColorStop(0.5, `rgba(${midColor}, ${0.5 * (1 - t)})`);
+                gradient.addColorStop(1, `rgba(${edgeColor}, 0)`);
+                
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, shockRadius, 0, Math.PI * 2);
+                ctx.fillStyle = gradient;
+                ctx.fill();
+            }
+
+            // 3. Expanding hard shockwave ring
             ctx.beginPath();
-            ctx.arc(c.x, c.y, ringR, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(255, ${Math.floor(180 * (1 - t))}, 40, ${0.55 * (1 - t)})`;
-            ctx.fill();
-            ctx.strokeStyle = `rgba(255, 240, 180, ${0.9 * (1 - t)})`;
-            ctx.lineWidth = 2;
+            ctx.arc(c.x, c.y, shockRadius * 1.1, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(${midColor}, ${1.0 * (1 - t)})`;
+            ctx.lineWidth = 3 * (1 - t);
             ctx.stroke();
+
+            // 4. Debris/Sparks
+            if (!state.lowGraphics && t < 0.6) {
+                const sparkAlpha = 1 - (t / 0.6);
+                ctx.fillStyle = `rgba(${coreColor}, ${sparkAlpha})`;
+                for (let i = 0; i < 8; i++) {
+                    const angle = (exp.startedAt + i * 1.345) % (Math.PI * 2);
+                    const sparkDist = shockRadius * 1.3 * (0.4 + 0.6 * ((exp.startedAt + i) % 1));
+                    const sx = c.x + Math.cos(angle) * sparkDist;
+                    const sy = c.y + Math.sin(angle) * sparkDist;
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, 2 * this.camera.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
         }
         return surviving;
     }

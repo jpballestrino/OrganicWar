@@ -102,6 +102,8 @@ const DEFENSE_BUILD_SECONDS: f32 = 5.0;
 // Building type tags, stored in `building_type` parallel to `defense_buildings`.
 const BTYPE_DEFENSE: u8 = 0;
 const BTYPE_SILO: u8 = 1;
+const BTYPE_MINE: u8 = 2;
+const BTYPE_ANTIAIR: u8 = 3;
 
 // Missile silo: a building that can fire missiles at targets within SILO_RANGE
 // cells. Costs more and takes longer to build than a defense tower, and grants
@@ -114,6 +116,14 @@ const SILO_RANGE: i32 = 240;
 // troops and any buildings there. Mirrored in src/js/constants.js.
 const MISSILE_COST: f32 = 2000.0;
 const MISSILE_BLAST_RADIUS: i32 = 15;
+
+const MINE_BUILDING_COST: f32 = 3000.0;
+const MINE_BUILD_SECONDS: f32 = 10.0;
+
+const ANTIAIR_BUILDING_COST: f32 = 5000.0;
+const ANTIAIR_BUILD_SECONDS: f32 = 10.0;
+const ANTIAIR_RADIUS: i32 = 400;
+const ANTIAIR_MAX_CHARGES: u8 = 3;
 
 // Upper bound for per-cell difficulty_to_invade (troops-per-cell × enclosure).
 // The client uses this same value to normalize density to 0..1 for the shader,
@@ -173,6 +183,10 @@ pub struct SimulationState {
     // building_type / building_owner share one length, pushed together in
     // place_building_internal and swap_remove'd together in destroy_building.
     building_owner: Vec<u32>,
+    // Tracks charges for AA batteries.
+    building_charges: Vec<u8>,
+    // Tracks when the building can perform its next action (e.g., when a silo can fire again). 0 means ready.
+    building_cooldown: Vec<u32>,
     // Silos that changed owner since the last clear, as (center, new_owner) u32
     // pairs. Broadcast as `building-owner-changed` so clients recolor the icon
     // and update who may fire from it. (A broadcast buffer, NOT a parallel vec.)
@@ -190,6 +204,8 @@ pub struct SimulationState {
     placed_buildings_buf: Vec<u32>,
     // Successful missile fires by humans and bots, broadcast as (row, col, radius) triplets
     fired_missiles_buf: Vec<u32>,
+    // Missiles that were intercepted by AA. Triplet (source_row, source_col, target_row, target_col).
+    intercepted_missiles_buf: Vec<u32>,
     // In-flight missiles pending detonation: [target_row, target_col, faction_id, remaining_ticks]
     inflight_missiles: Vec<u32>,
 
@@ -254,11 +270,14 @@ impl SimulationState {
             defense_build_complete: Vec::new(),
             building_type: Vec::new(),
             building_owner: Vec::new(),
+            building_charges: Vec::new(),
+            building_cooldown: Vec::new(),
             transferred_buildings_buf: Vec::new(),
             destroyed_buildings_buf: Vec::new(),
             completed_buildings_buf: Vec::new(),
             placed_buildings_buf: Vec::new(),
             fired_missiles_buf: Vec::new(),
+            intercepted_missiles_buf: Vec::new(),
             inflight_missiles: Vec::new(),
 
             // Player Initializers
@@ -385,8 +404,6 @@ impl SimulationState {
     pub fn init_players(
         &mut self,
         num_players: u8,
-        start_cells: u32,
-        start_troops: f32,
         start_gold: u32,
         start_growth_rate: u32,
         start_max_cap: u32,
@@ -715,16 +732,32 @@ impl SimulationState {
                 // Gold income scales with territory: each owned cell yields
                 // GOLD_PER_CELL_PER_SEC, divided by the tick rate so the per-second
                 // rate is identical regardless of how fast the sim ticks.
-                self.player_gold[i] += (cells as f32 * GOLD_PER_CELL_PER_SEC) / tick_hz;
+                // Each completed Gold Mine grants a +10% bonus.
+                let mut mine_count = 0.0;
+                for b in 0..self.defense_buildings.len() {
+                    if self.building_type[b] == BTYPE_MINE 
+                        && self.building_owner[b] as usize == i 
+                        && self.defense_build_complete[b] == 0 
+                    {
+                        mine_count += 1.0;
+                    }
+                }
+                
+                let base_income = (cells as f32 * GOLD_PER_CELL_PER_SEC) / tick_hz;
+                self.player_gold[i] += base_income * (1.0 + mine_count * 0.10);
 
                 // Max population scales purely with territory (no flat base).
                 let max_cap = (cells * POP_CAP_PER_CELL).max(1);
                 self.player_max_population_cap[i] = max_cap;
                 let max_cap_f = max_cap as f32;
 
-                // Population ratio p in [0, 1].
+                // Total troops in the system = home reserves + deployed on fronts.
+                // Growth rate is a function of TOTAL fill so deploying troops never
+                // grants a free refill while the front runs.
                 let troops = self.player_total_troops[i];
-                let p = (troops / max_cap_f).clamp(0.0, 1.0);
+                let attack = self.player_attack_pool[i];
+                let total  = troops + attack;
+                let p = (total / max_cap_f).clamp(0.0, 1.0);
 
                 // Growth curve (troops/sec): peaks at p = 0.40, zero at p = 1.0,
                 // positive at p = 0 (the recovery floor). See the consts above.
@@ -738,8 +771,9 @@ impl SimulationState {
                     (base_growth * self.oversize_growth_scale(cells)).max(MIN_GROWTH_PER_SEC);
 
                 let new_troops = troops + growth_per_sec / tick_hz;
-                // Never exceed the cap (this also enforces "zero growth at 100%").
-                self.player_total_troops[i] = new_troops.min(max_cap_f);
+                // Cap home reserves so that home + attacking never exceeds max_cap.
+                let home_cap = (max_cap_f - attack).max(0.0);
+                self.player_total_troops[i] = new_troops.min(home_cap);
             }
         }
     }
@@ -1127,6 +1161,16 @@ impl SimulationState {
         self.place_building_internal(faction_id, center_row, center_col, BTYPE_SILO, SILO_BUILDING_COST, SILO_BUILD_SECONDS)
     }
 
+    #[wasm_bindgen]
+    pub fn place_mine(&mut self, faction_id: u32, center_row: i32, center_col: i32) -> bool {
+        self.place_building_internal(faction_id, center_row, center_col, BTYPE_MINE, MINE_BUILDING_COST, MINE_BUILD_SECONDS)
+    }
+
+    #[wasm_bindgen]
+    pub fn place_antiair(&mut self, faction_id: u32, center_row: i32, center_col: i32) -> bool {
+        self.place_building_internal(faction_id, center_row, center_col, BTYPE_ANTIAIR, ANTIAIR_BUILDING_COST, ANTIAIR_BUILD_SECONDS)
+    }
+
     /// Shared placement logic for every building type. Validates the 8×8 footprint
     /// (fully owned, clear of existing buildings) and affordability, stamps the
     /// BUILDING_MASK footprint, charges gold, and registers the building with its
@@ -1179,6 +1223,10 @@ impl SimulationState {
         self.defense_build_complete.push(self.current_tick + build_ticks.max(1));
         self.building_type.push(btype);
         self.building_owner.push(faction_id);
+        
+        let charges = if btype == BTYPE_ANTIAIR { ANTIAIR_MAX_CHARGES } else { 0 };
+        self.building_charges.push(charges);
+        self.building_cooldown.push(0);
 
         // Bot builds are broadcast by the server polling placed_buildings_buf
         // each tick; human builds are broadcast directly from handleInput. The
@@ -1218,11 +1266,14 @@ impl SimulationState {
         if self.player_gold[f] < MISSILE_COST { return 1; }
 
         let mut source_center = 0;
+        let mut source_index = 0;
         let mut in_range = false;
         for i in 0..self.defense_buildings.len() {
             if self.building_type[i] != BTYPE_SILO { continue; }
             if self.defense_build_complete[i] > self.current_tick { continue; } // still building
             if self.building_owner[i] as usize != f { continue; }
+            if self.building_cooldown[i] > self.current_tick { continue; } // silo is on cooldown!
+
             let center = self.defense_buildings[i];
             let cr = (center / MAP_WIDTH as u32) as i32;
             let cc = (center % MAP_WIDTH as u32) as i32;
@@ -1231,10 +1282,13 @@ impl SimulationState {
             if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE { 
                 in_range = true; 
                 source_center = center;
+                source_index = i;
                 break; 
             }
         }
         if !in_range { return 1; }
+
+        self.building_cooldown[source_index] = self.current_tick + (2.0 * self.tick_hz as f32).ceil() as u32;
 
         self.player_gold[f] -= MISSILE_COST;
         self.player_gold_spent[f] += MISSILE_COST;
@@ -1248,10 +1302,13 @@ impl SimulationState {
         let flight_time_sec = dist / 40.0; // 40 cells/sec matches frontend
         let remaining_ticks = (flight_time_sec * self.tick_hz as f32).ceil() as u32;
 
+        self.inflight_missiles.push(source_row);
+        self.inflight_missiles.push(source_col);
         self.inflight_missiles.push(target_row as u32);
         self.inflight_missiles.push(target_col as u32);
         self.inflight_missiles.push(faction_id);
         self.inflight_missiles.push(remaining_ticks);
+        self.inflight_missiles.push(remaining_ticks); // total_ticks
 
         self.fired_missiles_buf.push(source_row);
         self.fired_missiles_buf.push(source_col);
@@ -1265,28 +1322,93 @@ impl SimulationState {
     fn process_inflight_missiles(&mut self) {
         let mut i = 0;
         while i < self.inflight_missiles.len() {
-            let ticks = self.inflight_missiles[i + 3];
+            let ticks = self.inflight_missiles[i + 5];
+            let source_row = self.inflight_missiles[i];
+            let source_col = self.inflight_missiles[i + 1];
+            let target_row = self.inflight_missiles[i + 2] as i32;
+            let target_col = self.inflight_missiles[i + 3] as i32;
+            let faction_id = self.inflight_missiles[i + 4];
+            let total_ticks = self.inflight_missiles[i + 6] as f32;
+
+            let t = 1.0 - (ticks as f32 / total_ticks);
+            let curr_r = source_row as f32 + (target_row as f32 - source_row as f32) * t;
+            let curr_c = source_col as f32 + (target_col as f32 - source_col as f32) * t;
+            
+            let mut intercepted = false;
+            
+            // Continuous Airspace Scan (only intercept mid-air, t between 0.15 and 0.85)
+            if t >= 0.15 && t <= 0.85 {
+                let target_idx = (target_row as usize) * MAP_WIDTH + (target_col as usize);
+                let target_owner = self.cell_owner(target_idx) as u32;
+
+                for b in 0..self.defense_buildings.len() {
+                    if self.building_type[b] != BTYPE_ANTIAIR { continue; }
+                    if self.defense_build_complete[b] > self.current_tick { continue; } // under construction
+                    let b_owner = self.building_owner[b] as u32;
+                    if b_owner == 0 || b_owner == faction_id { continue; } // ignore own or unowned
+                    
+                    // Only intercept if the missile is targeting this AA battery's faction's territory
+                    if b_owner != target_owner { continue; }
+                    
+                    if self.building_charges[b] == 0 { continue; }
+                    
+                    let center = self.defense_buildings[b];
+                    let cr = (center / MAP_WIDTH as u32) as i32;
+                    let cc = (center % MAP_WIDTH as u32) as i32;
+                    let dr = curr_r - cr as f32;
+                    let dc = curr_c - cc as f32;
+                    
+                    if dr * dr + dc * dc <= (ANTIAIR_RADIUS * ANTIAIR_RADIUS) as f32 {
+                        intercepted = true;
+                        self.building_charges[b] -= 1;
+                        
+                        self.intercepted_missiles_buf.push(source_row);
+                        self.intercepted_missiles_buf.push(source_col);
+                        self.intercepted_missiles_buf.push(target_row as u32);
+                        self.intercepted_missiles_buf.push(target_col as u32);
+                        self.intercepted_missiles_buf.push(cr as u32);
+                        self.intercepted_missiles_buf.push(cc as u32);
+                        self.intercepted_missiles_buf.push(curr_r.round() as u32);
+                        self.intercepted_missiles_buf.push(curr_c.round() as u32);
+                        
+                        if self.building_charges[b] == 0 {
+                            self.destroy_building(b);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if intercepted {
+                // Remove missile (7 elements)
+                let last_idx = self.inflight_missiles.len() - 7;
+                if i != last_idx {
+                    for j in 0..7 {
+                        self.inflight_missiles[i + j] = self.inflight_missiles[last_idx + j];
+                    }
+                }
+                for _ in 0..7 {
+                    self.inflight_missiles.pop();
+                }
+                continue; // do not increment i
+            }
+
             if ticks <= 1 {
-                // Time's up! Detonate.
-                let target_row = self.inflight_missiles[i] as i32;
-                let target_col = self.inflight_missiles[i + 1] as i32;
-                let faction_id = self.inflight_missiles[i + 2];
-                
                 self.detonate_missile(target_row, target_col, faction_id);
                 
-                // Swap-remove the 4 elements by replacing them with the last 4 elements
-                let last_idx = self.inflight_missiles.len() - 4;
+                // Remove missile (7 elements)
+                let last_idx = self.inflight_missiles.len() - 7;
                 if i != last_idx {
-                    self.inflight_missiles[i] = self.inflight_missiles[last_idx];
-                    self.inflight_missiles[i+1] = self.inflight_missiles[last_idx+1];
-                    self.inflight_missiles[i+2] = self.inflight_missiles[last_idx+2];
-                    self.inflight_missiles[i+3] = self.inflight_missiles[last_idx+3];
+                    for j in 0..7 {
+                        self.inflight_missiles[i + j] = self.inflight_missiles[last_idx + j];
+                    }
                 }
-                self.inflight_missiles.truncate(last_idx);
-                // Do not increment i, as we need to process the newly swapped-in missile
+                for _ in 0..7 {
+                    self.inflight_missiles.pop();
+                }
             } else {
-                self.inflight_missiles[i + 3] -= 1;
-                i += 4;
+                self.inflight_missiles[i + 5] -= 1;
+                i += 7;
             }
         }
     }
@@ -1496,6 +1618,8 @@ impl SimulationState {
         self.defense_build_complete.swap_remove(idx);
         self.building_type.swap_remove(idx);
         self.building_owner.swap_remove(idx);
+        self.building_charges.swap_remove(idx);
+        self.building_cooldown.swap_remove(idx);
     }
 
     #[wasm_bindgen]
@@ -1575,6 +1699,21 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn clear_fired_missiles(&mut self) {
         self.fired_missiles_buf.clear();
+    }
+
+    #[wasm_bindgen]
+    pub fn get_intercepted_missiles_count(&self) -> u32 {
+        (self.intercepted_missiles_buf.len() / 8) as u32
+    }
+
+    #[wasm_bindgen]
+    pub fn get_intercepted_missiles_ptr(&self) -> *const u32 {
+        self.intercepted_missiles_buf.as_ptr()
+    }
+
+    #[wasm_bindgen]
+    pub fn clear_intercepted_missiles(&mut self) {
+        self.intercepted_missiles_buf.clear();
     }
 
     /// Drive every bot faction one building decision. A bot that can afford a
@@ -1667,27 +1806,39 @@ impl SimulationState {
 
             if silo_centers.is_empty() { continue; }
 
-            // Prefer targeting enemy buildings (silos or defense towers)
+            // Prefer targeting enemy buildings (silos > antiair/defense > mines)
             let mut best_target: Option<(i32, i32)> = None;
+            let mut best_score = 0;
             for i in 0..self.defense_buildings.len() {
                 let owner = self.building_owner[i] as usize;
                 if owner != 0 && owner != f {
-                    let center = self.defense_buildings[i];
-                    let r = (center / MAP_WIDTH as u32) as i32;
-                    let c = (center % MAP_WIDTH as u32) as i32;
-                    // Check if in range of any silo
-                    for &sc in &silo_centers {
-                        let sr = (sc / MAP_WIDTH as u32) as i32;
-                        let sc = (sc % MAP_WIDTH as u32) as i32;
-                        let dr = r - sr;
-                        let dc = c - sc;
-                        if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE {
-                            best_target = Some((r, c));
-                            break;
+                    let btype = self.building_type[i];
+                    let score = if btype == BTYPE_SILO {
+                        3
+                    } else if btype == BTYPE_ANTIAIR || btype == BTYPE_DEFENSE {
+                        2
+                    } else {
+                        1
+                    };
+                    
+                    if score > best_score {
+                        let center = self.defense_buildings[i];
+                        let r = (center / MAP_WIDTH as u32) as i32;
+                        let c = (center % MAP_WIDTH as u32) as i32;
+                        // Check if in range of any silo
+                        for &sc in &silo_centers {
+                            let sr = (sc / MAP_WIDTH as u32) as i32;
+                            let sc_col = (sc % MAP_WIDTH as u32) as i32;
+                            let dr = r - sr;
+                            let dc = c - sc_col;
+                            if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE {
+                                best_target = Some((r, c));
+                                best_score = score;
+                                break;
+                            }
                         }
                     }
                 }
-                if best_target.is_some() { break; } // pick the first enemy building found
             }
 
             if let Some((r, c)) = best_target {
