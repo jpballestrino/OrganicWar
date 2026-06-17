@@ -163,11 +163,109 @@ function terrainEU(nx, ny) {
   return TERRAIN.PLAINS;
 }
 
+// --- Africa ---
+// Land mask built at module load from a polygon trace of the real coastline
+// (lon −20..55, lat 40..−38 equirectangular window) rasterized into a
+// 300×312 Uint8Array. Same noise-wobble coastline lookup as NA and EU.
+const AF_MASK_W = 300, AF_MASK_H = 312;
+const AF_LON_MIN = -20, AF_LON_MAX = 55;
+const AF_LAT_MAX = 40,  AF_LAT_MIN = -38;
+const _afNx = lon => (lon - AF_LON_MIN) / (AF_LON_MAX - AF_LON_MIN);
+const _afNy = lat => (AF_LAT_MAX - lat) / (AF_LAT_MAX - AF_LAT_MIN);
+
+// Africa mainland coastline [lon, lat] — clockwise from Strait of Gibraltar
+const AF_POLY = [
+  [-5.9,35.9],[-2.0,35.0],[0.0,36.9],[3.5,37.1],[7.5,37.1],
+  [9.0,37.5],[10.6,37.0],[11.5,33.5],[13.5,33.2],
+  [15.0,32.9],[20.0,32.9],[25.2,31.0],[28.5,31.0],[32.3,30.5],
+  [34.9,27.5],[36.5,22.0],[36.5,18.5],[38.0,15.6],
+  [43.0,11.5],[44.9,8.2],[46.9,7.5],[50.2,11.5],[51.4,11.5],
+  [50.5,10.4],[49.5,5.0],[44.5,-1.5],[40.5,-10.0],
+  [40.0,-14.0],[37.5,-21.5],[35.5,-25.0],[33.0,-28.0],
+  [30.5,-31.0],[28.0,-33.0],[25.0,-34.0],[20.0,-34.8],
+  [18.5,-34.4],[17.9,-32.5],[16.5,-29.2],[15.0,-28.0],
+  [13.0,-22.0],[12.0,-17.0],[12.5,-11.0],[11.5,-3.5],
+  [9.5,0.5],[8.5,1.5],[5.0,-1.0],[3.5,2.0],
+  [2.8,4.3],[1.6,6.2],[0.0,5.5],
+  [-2.0,5.0],[-4.0,5.0],[-6.0,5.0],[-8.0,5.0],
+  [-10.5,6.0],[-13.0,8.5],[-15.0,10.7],[-16.0,12.0],
+  [-17.5,14.7],[-17.1,20.8],[-15.9,23.7],[-14.5,26.1],
+  [-13.1,27.9],[-9.5,30.4],[-7.5,33.5],[-5.8,35.8],
+];
+// Madagascar — clockwise
+const AF_POLY_MDG = [
+  [44.0,-12.0],[50.5,-16.0],[50.5,-25.5],
+  [46.5,-25.5],[43.5,-21.0],[43.0,-16.0],
+];
+
+// Precompute normalised polygon coords (avoid repeated arithmetic in the hot loop)
+const AF_POLY_NORM     = AF_POLY.map(([lon, lat]) => [_afNx(lon), _afNy(lat)]);
+const AF_POLY_MDG_NORM = AF_POLY_MDG.map(([lon, lat]) => [_afNx(lon), _afNy(lat)]);
+
+function _afPolyContains(polyN, px, py) {
+  let inside = false;
+  for (let i = 0, j = polyN.length - 1; i < polyN.length; j = i++) {
+    const [xi, yi] = polyN[i], [xj, yj] = polyN[j];
+    if ((yi > py) !== (yj > py) &&
+        px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+const AF_MASK_BITS = new Uint8Array(AF_MASK_W * AF_MASK_H);
+for (let r = 0; r < AF_MASK_H; r++) {
+  const pny = (r + 0.5) / AF_MASK_H;
+  for (let c = 0; c < AF_MASK_W; c++) {
+    const pnx = (c + 0.5) / AF_MASK_W;
+    AF_MASK_BITS[r * AF_MASK_W + c] =
+      (_afPolyContains(AF_POLY_NORM, pnx, pny) ||
+       _afPolyContains(AF_POLY_MDG_NORM, pnx, pny)) ? 1 : 0;
+  }
+}
+
+function isLandAF(nx, ny) {
+  const dx = (valueNoise(nx * 50, ny * 50) - 0.5) * 0.012;
+  const dy = (valueNoise(nx * 50 + 10, ny * 50 + 10) - 0.5) * 0.012;
+  let px = Math.floor((nx + dx) * AF_MASK_W);
+  let py = Math.floor((ny + dy) * AF_MASK_H);
+  px = Math.max(0, Math.min(AF_MASK_W - 1, px));
+  py = Math.max(0, Math.min(AF_MASK_H - 1, py));
+  return AF_MASK_BITS[py * AF_MASK_W + px] === 1;
+}
+
+// Africa mountain ranges — elliptical zones placed by real lon/lat.
+// Coords in normalised AF map space (lon −20..55, lat 40..−38).
+const AF_RANGES = [
+  [_afNx(2),    _afNy(33),   0.093, 0.038],  // Atlas Mtns (Morocco/Algeria/Tunisia)
+  [_afNx(17),   _afNy(22),   0.040, 0.038],  // Tibesti Massif (Chad)
+  [_afNx(39),   _afNy(10),   0.053, 0.064],  // Ethiopian Highlands
+  [_afNx(37),   _afNy(1.5),  0.040, 0.051],  // E African Rift / Kenya Highlands
+  [_afNx(29.5), _afNy(-0.5), 0.027, 0.026],  // Ruwenzori / Congo Highlands
+  [_afNx(29),   _afNy(-30),  0.040, 0.038],  // Drakensberg (South Africa)
+  [_afNx(10),   _afNy(5),    0.040, 0.038],  // Cameroon Highlands
+];
+
+function terrainAF(nx, ny) {
+  if (!isLandAF(nx, ny)) return TERRAIN.WATER;
+  const n = valueNoise(nx * 25, ny * 25);
+  let best = Infinity;
+  for (const [cx, cy, rx, ry] of AF_RANGES) {
+    const a = (nx - cx) / rx, b = (ny - cy) / ry;
+    const d = a * a + b * b;
+    if (d < best) best = d;
+  }
+  if (best < 1.0 + n * 0.4) return TERRAIN.MOUNTAINS;
+  if (best < 2.6 + n * 0.8) return TERRAIN.HIGHLANDS;
+  // Sahel fringe: scattered highlands just south of the Sahara
+  if (ny > 0.10 && ny < 0.32 && n > 0.65) return TERRAIN.HIGHLANDS;
+  return TERRAIN.PLAINS;
+}
+
 // --- Map registry ---
 // The set of playable maps. The map id IS the room's `preset` (single source of
 // truth, decided server-side and echoed to the client via init-config).
-export const MAP_POOL = ['north_america', 'europe'];
-export const MAP_LABELS = { north_america: 'North America', europe: 'Europe' };
+export const MAP_POOL = ['north_america', 'europe', 'africa'];
+export const MAP_LABELS = { north_america: 'North America', europe: 'Europe', africa: 'Africa' };
 export function isValidMapId(id) { return MAP_POOL.includes(id); }
 export function randomMapId() { return MAP_POOL[(Math.random() * MAP_POOL.length) | 0]; }
 
@@ -175,7 +273,9 @@ export function randomMapId() { return MAP_POOL[(Math.random() * MAP_POOL.length
 // `mapId` selects the landmass; an unknown id falls back to North America so a
 // bad preset can never crash terrain generation (which would kill the room).
 export function terrainAt(nx, ny, mapId = 'north_america') {
-  return mapId === 'europe' ? terrainEU(nx, ny) : terrainNA(nx, ny);
+  if (mapId === 'europe') return terrainEU(nx, ny);
+  if (mapId === 'africa') return terrainAF(nx, ny);
+  return terrainNA(nx, ny);
 }
 
 // --- Island bridging ---

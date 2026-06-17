@@ -8,7 +8,7 @@ export function homeTemplate() {
                 <h1 class="home-title">
                     <span class="home-title-main">ORGANICWAR</span><span class="home-title-io">.io</span>
                 </h1>
-                <div class="home-tagline">Find your destiny</div>
+                <div class="home-tagline">Conquer the map</div>
             </div>
 
             <!-- STATE A: Auth / Guest -->

@@ -663,7 +663,7 @@ export function initNetwork() {
         const mineCount = myBuildings.filter(b => b.type === 'mine' && !b.constructing).length;
         const goldRate = Math.round(cells * GOLD_PER_CELL_PER_SEC * (1 + mineCount * 0.10));
         const lblGoldRate = document.getElementById('lblMyGoldRate');
-        if (lblGoldRate) lblGoldRate.innerText = mineCount > 0 ? `+${goldRate}/s ×${(1 + mineCount * 0.10).toFixed(1)}` : `+${goldRate}/s`;
+        if (lblGoldRate) lblGoldRate.innerText = `+${goldRate}/s`;
         
         const lblTowers = document.getElementById('lblMyTowers');
         if (lblTowers) {

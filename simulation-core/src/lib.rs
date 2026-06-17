@@ -1749,11 +1749,13 @@ impl SimulationState {
             let jr = (self.next_rand() % span) as i32 - jitter;
             let jc = (self.next_rand() % span) as i32 - jitter;
 
-            // 20% chance to build a silo if they can afford it
-            if (self.next_rand() % 100) < 20 && self.player_gold[f] >= SILO_BUILDING_COST {
+            let roll = self.next_rand() % 100;
+            let tr = crow + jr;
+            let tc = ccol + jc;
+
+            // 15% chance to build a silo if they can afford it and enemy in range
+            if roll < 15 && self.player_gold[f] >= SILO_BUILDING_COST {
                 let mut can_reach_enemy = false;
-                let tr = crow + jr;
-                let tc = ccol + jc;
                 let r_min = (tr - SILO_RANGE).max(0);
                 let r_max = (tr + SILO_RANGE).min(MAP_HEIGHT as i32 - 1);
                 let c_min = (tc - SILO_RANGE).max(0);
@@ -1780,9 +1782,18 @@ impl SimulationState {
                     self.place_silo(f as u32, tr, tc);
                     continue;
                 }
+            } else if roll < 30 && self.player_gold[f] >= ANTIAIR_BUILDING_COST {
+                // 15% chance for Anti-Air
+                self.place_antiair(f as u32, tr, tc);
+                continue;
+            } else if roll < 45 && self.player_gold[f] >= MINE_BUILDING_COST {
+                // 15% chance for Gold Mine
+                self.place_mine(f as u32, tr, tc);
+                continue;
             }
             
-            self.place_defense_building(f as u32, crow + jr, ccol + jc);
+            // Default: 55% chance for Defense Tower (or fallback if silo fails)
+            self.place_defense_building(f as u32, tr, tc);
         }
     }
 
