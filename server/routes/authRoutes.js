@@ -1,18 +1,22 @@
 import express from 'express';
 import crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
-import { createUser, findUserByEmail, findUserByUsername, findUserById, updateLastLogin, findUserByOAuth, createOAuthUser, linkOAuthToUser, createPasswordResetToken, findValidResetToken, markResetTokenUsed, updateUserPassword, findGuildById } from '../database.js';
+import { createUser, findUserByEmail, findUserByUsername, findUserById, updateLastLogin, findUserByOAuth, createOAuthUser, linkOAuthToUser, createPasswordResetToken, findValidResetToken, markResetTokenUsed, updateUserPassword, findGuildById, createEmailVerificationToken, findEmailVerificationToken, markEmailVerificationTokenUsed, setEmailVerified } from '../database.js';
 import { generateToken, verifyToken, hashPassword, comparePassword, OAUTH_PLACEHOLDER } from '../auth.js';
-import { sendPasswordResetEmail } from '../email.js';
+import { sendPasswordResetEmail, sendVerificationEmail } from '../email.js';
+import { isProfane } from '../utils/contentFilter.js';
 
 const authRouter = express.Router();
 const googleOAuthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-authRouter.post('/register', (req, res) => {
+authRouter.post('/register', async (req, res) => {
   const { username, email, password, displayName } = req.body;
     
   if (!username || typeof username !== 'string' || username.length < 3 || username.length > 15 || !/^[a-zA-Z0-9_]+$/.test(username)) {
     return res.status(400).json({ error: 'Invalid username. 3-15 chars, alphanumeric + underscores only.' });
+  }
+  if (isProfane(username)) {
+    return res.status(400).json({ error: 'Username contains inappropriate content.' });
   }
   if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Invalid email format.' });
@@ -22,6 +26,9 @@ authRouter.post('/register', (req, res) => {
   }
   if (displayName && (typeof displayName !== 'string' || displayName.length < 2 || displayName.length > 20 || /[<>]/.test(displayName))) {
     return res.status(400).json({ error: 'Display name must be 2-20 characters and cannot contain < or >.' });
+  }
+  if (displayName && isProfane(displayName)) {
+    return res.status(400).json({ error: 'Display name contains inappropriate content.' });
   }
 
   if (findUserByUsername(username)) {
@@ -35,16 +42,26 @@ authRouter.post('/register', (req, res) => {
     const hashedPassword = hashPassword(password);
     const finalDisplayName = displayName || username;
     const user = createUser(username, email, hashedPassword, finalDisplayName);
+
+    const emailToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString().replace('T', ' ').replace('Z', '');
+    createEmailVerificationToken(user.id, emailToken, expiresAt);
+
+    const sent = await sendVerificationEmail(email, emailToken);
+    if (sent) {
+      // SMTP is working — hold login until the user clicks the link.
+      return res.json({ requiresVerification: true, message: 'Account created! Check your email to verify your address before logging in.' });
+    }
+
+    // SMTP not configured (dev/local) — auto-verify and log the link so dev can click it.
+    setEmailVerified(user.id);
+    const appUrl = process.env.APP_URL || 'http://localhost:3000';
+    console.log(`[EMAIL] Verification URL (SMTP off): ${appUrl}/api/auth/verify-email?token=${emailToken}`);
+
     const token = generateToken(user);
-        
     res.json({
       token,
-      user: {
-        id: user.id,
-        username: user.username,
-        displayName: user.display_name,
-        eloRating: user.elo_rating,
-      },
+      user: { id: user.id, username: user.username, displayName: user.display_name, eloRating: user.elo_rating },
     });
   } catch (err) {
     console.error(err);
@@ -66,6 +83,14 @@ authRouter.post('/login', (req, res) => {
 
   if (!comparePassword(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid credentials.' });
+  }
+
+  if (!user.email_verified) {
+    return res.status(403).json({
+      error: 'Please verify your email before logging in.',
+      requiresVerification: true,
+      email: user.email,
+    });
   }
 
   updateLastLogin(user.id);
@@ -136,6 +161,8 @@ function generateOAuthUsername(rawName) {
     .replace(/^_|_$/g, '')
     .substring(0, 12);
   if (base.length < 3) {base = base + '_' + 'usr';}
+  // Fall back to a generic name if the provider-derived base contains profanity.
+  if (isProfane(base)) {base = 'player';}
   let candidate = base;
   while (findUserByUsername(candidate)) {
     const suffix = String(Math.floor(Math.random() * 900) + 100);
@@ -161,6 +188,8 @@ function handleOAuthUser(res, provider, providerId, email, displayName) {
       const existingByEmail = findUserByEmail(email);
       if (existingByEmail) {
         linkOAuthToUser(existingByEmail.id, provider, providerId);
+        // OAuth login proves email ownership — clear any pending verification.
+        if (!existingByEmail.email_verified) { setEmailVerified(existingByEmail.id); }
         updateLastLogin(existingByEmail.id);
         const token = generateToken(existingByEmail);
         const userPayload = encodeURIComponent(JSON.stringify({
@@ -173,10 +202,12 @@ function handleOAuthUser(res, provider, providerId, email, displayName) {
     }
 
     const username = generateOAuthUsername(displayName || (email ? email.split('@')[0] : 'player'));
-    const safeName = (displayName || username).substring(0, 20);
+    const rawName = (displayName || username).substring(0, 20);
+    const safeName = isProfane(rawName) ? username : rawName;
     const safeEmail = email || `${provider}_${providerId}@oauth.local`;
 
     user = createOAuthUser(username, safeEmail, safeName, provider, providerId);
+    setEmailVerified(user.id);
     updateLastLogin(user.id);
     const token = generateToken(user);
     const userPayload = encodeURIComponent(JSON.stringify({
@@ -193,10 +224,13 @@ function handleOAuthUser(res, provider, providerId, email, displayName) {
 // ---------- GOOGLE OAUTH ----------
 authRouter.get('/google', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) {return res.status(500).json({ error: 'Google OAuth not configured on this server.' });}
+  if (!clientId) {
+    return res.redirect('/?oauth_error=' + encodeURIComponent('Google login is not enabled on this server.'));
+  }
 
   const state = crypto.randomBytes(16).toString('hex');
-  res.cookie('oauth_state', state, { httpOnly: true, maxAge: 300000, sameSite: 'lax' });
+  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.cookie('oauth_state', state, { httpOnly: true, maxAge: 300000, sameSite: 'lax', secure: isSecure });
 
   const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
   const params = new URLSearchParams({
@@ -263,10 +297,13 @@ authRouter.get('/google/callback', async (req, res) => {
 // ---------- DISCORD OAUTH ----------
 authRouter.get('/discord', (req, res) => {
   const clientId = process.env.DISCORD_CLIENT_ID;
-  if (!clientId) {return res.status(500).json({ error: 'Discord OAuth not configured on this server.' });}
+  if (!clientId) {
+    return res.redirect('/?oauth_error=' + encodeURIComponent('Discord login is not enabled on this server.'));
+  }
 
   const state = crypto.randomBytes(16).toString('hex');
-  res.cookie('oauth_state', state, { httpOnly: true, maxAge: 300000, sameSite: 'lax' });
+  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.cookie('oauth_state', state, { httpOnly: true, maxAge: 300000, sameSite: 'lax', secure: isSecure });
 
   const redirectUri = process.env.DISCORD_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
   const params = new URLSearchParams({
@@ -324,6 +361,46 @@ authRouter.get('/discord/callback', async (req, res) => {
   }
 });
 
+// ---------- EMAIL VERIFICATION ----------
+authRouter.get('/verify-email', (req, res) => {
+  const { token } = req.query;
+  if (!token) {
+    return res.redirect('/?email_verified=invalid');
+  }
+  const row = findEmailVerificationToken(token);
+  if (!row) {
+    return res.redirect('/?email_verified=invalid');
+  }
+  setEmailVerified(row.user_id);
+  markEmailVerificationTokenUsed(row.id);
+  res.redirect('/?email_verified=success');
+});
+
+authRouter.post('/resend-verification', async (req, res) => {
+  const { email } = req.body;
+  const genericMsg = 'If that account exists and is unverified, a new email has been sent.';
+
+  if (!email || typeof email !== 'string') {
+    return res.json({ message: genericMsg });
+  }
+
+  try {
+    const user = findUserByEmail(email);
+    if (!user || user.email_verified) {
+      return res.json({ message: genericMsg });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString().replace('T', ' ').replace('Z', '');
+    createEmailVerificationToken(user.id, token, expiresAt);
+    await sendVerificationEmail(email, token);
+    res.json({ message: genericMsg });
+  } catch (err) {
+    console.error('[AUTH] resend-verification error:', err);
+    res.json({ message: genericMsg });
+  }
+});
+
 // ---------- FORGOT / RESET PASSWORD ----------
 authRouter.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
@@ -342,7 +419,7 @@ authRouter.post('/forgot-password', async (req, res) => {
     }
 
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 3600000).toISOString().replace('T', ' ').replace('Z', '');
+    const expiresAt = new Date(Date.now() + 1800000).toISOString().replace('T', ' ').replace('Z', '');
     createPasswordResetToken(user.id, token, expiresAt);
 
     await sendPasswordResetEmail(email, token);

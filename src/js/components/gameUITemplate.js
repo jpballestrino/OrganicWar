@@ -176,6 +176,13 @@ export function gameUITemplate() {
                         <span class="build-cost text-gold">5,000g</span>
                     </div>
                 </div>
+                <div class="build-option" id="btnBuildCity" data-mode="city">
+                    <span class="build-key">7</span>
+                    <div class="build-info">
+                        <span class="build-name">City</span>
+                        <span class="build-cost text-gold">2,000g</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

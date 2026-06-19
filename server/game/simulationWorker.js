@@ -227,13 +227,14 @@ class RoomSimWorker {
     for (let i = 0; i < count; i++) {
       const center = buf[i * 3];
       const factionId = buf[i * 3 + 1];
-      const btype = buf[i * 3 + 2]; // 0=defense, 1=silo, 2=mine, 3=antiair
+      const btype = buf[i * 3 + 2]; // 0=defense, 1=silo, 2=mine, 3=antiair, 4=city
       const row = Math.floor(center / MAP_WIDTH);
       const col = center % MAP_WIDTH;
       let payload;
       if      (btype === 1) payload = { type: 'silo',    factionId, row, col, range: SILO_RANGE, buildMs: SILO_BUILD_MS };
       else if (btype === 2) payload = { type: 'mine',    factionId, row, col, buildMs: 10000 };
       else if (btype === 3) payload = { type: 'antiair', factionId, row, col, buildMs: 10000 };
+      else if (btype === 4) payload = { type: 'city',    factionId, row, col, buildMs: 5000 };
       else                  payload = { type: 'defense', factionId, row, col, radius: 40, defTier: 10, buildMs: DEFENSE_BUILD_MS };
       parentPort.postMessage({ type: 'emit', event: 'building-placed', payload });
     }
@@ -290,13 +291,14 @@ class RoomSimWorker {
     for (let i = 0; i < count; i++) {
       const center = buf[i * 3];
       const factionId = buf[i * 3 + 1];
-      const btype = buf[i * 3 + 2]; // 0=defense, 1=silo, 2=mine, 3=antiair
+      const btype = buf[i * 3 + 2]; // 0=defense, 1=silo, 2=mine, 3=antiair, 4=city
       const row = Math.floor(center / MAP_WIDTH);
       const col = center % MAP_WIDTH;
       let payload;
       if      (btype === 1) payload = { type: 'silo',    factionId, row, col, range: SILO_RANGE };
       else if (btype === 2) payload = { type: 'mine',    factionId, row, col };
       else if (btype === 3) payload = { type: 'antiair', factionId, row, col };
+      else if (btype === 4) payload = { type: 'city',    factionId, row, col };
       else                  payload = { type: 'defense', factionId, row, col, radius: 40, defTier: 10 };
       parentPort.postMessage({ type: 'emit', event: 'building-completed', payload });
     }
@@ -543,6 +545,20 @@ class RoomSimWorker {
         if (ok) {
           parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
             type: 'antiair', factionId, row, col, buildMs: 10000,
+          }});
+        } else {
+          parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });
+        }
+      }
+    } else if (input.type === 'build_city') {
+      const { targetCell } = input.payload ?? {};
+      if (validCell(targetCell)) {
+        const row = Math.floor(targetCell / MAP_WIDTH);
+        const col = targetCell % MAP_WIDTH;
+        const ok = this.exports.simulationstate_place_city(this.statePtr, factionId, row, col);
+        if (ok) {
+          parentPort.postMessage({ type: 'emit', event: 'building-placed', payload: {
+            type: 'city', factionId, row, col, buildMs: 5000,
           }});
         } else {
           parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'build-rejected', payload: { type: input.type } });

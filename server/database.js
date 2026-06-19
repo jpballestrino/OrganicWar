@@ -55,7 +55,7 @@ export function prepareStatements() {
     findUserById: db.prepare('SELECT * FROM users WHERE id = ?'),
     updateLastLogin: db.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?'),
     updateUserStats: db.prepare('UPDATE users SET total_wins = total_wins + ?, total_losses = total_losses + ?, total_games = total_games + ?, total_cells_conquered = total_cells_conquered + ?, total_kills = total_kills + ? WHERE id = ?'),
-    createGuild: db.prepare('INSERT INTO guilds (name, tag, description, leader_id, color) VALUES (?, ?, ?, ?, ?)'),
+    createGuild: db.prepare('INSERT INTO guilds (name, tag, description, leader_id, color, is_open) VALUES (?, ?, ?, ?, ?, ?)'),
     findGuildById: db.prepare('SELECT * FROM guilds WHERE id = ?'),
     addGuildMember: db.prepare('INSERT INTO guild_members (user_id, guild_id, role) VALUES (?, ?, ?)'),
     removeGuildMember: db.prepare('DELETE FROM guild_members WHERE user_id = ? AND guild_id = ?'),
@@ -84,6 +84,18 @@ export function prepareStatements() {
     updateGuildRequestStatus: db.prepare('UPDATE guild_requests SET status = ? WHERE id = ?'),
     getTopPlayers: db.prepare('SELECT u.id, u.username, u.display_name, u.total_wins, u.total_losses, u.total_games, u.elo_rating, u.guild_id, g.tag as guild_tag, g.name as guild_name, g.color as guild_color FROM users u LEFT JOIN guilds g ON u.guild_id = g.id ORDER BY u.elo_rating DESC LIMIT ?'),
     getTopGuilds: db.prepare('SELECT id, name, tag, member_count, elo_rating, total_guild_wins, total_guild_losses, color, is_open, max_members FROM guilds ORDER BY elo_rating DESC LIMIT ?'),
+    getPlayersPage: db.prepare("SELECT u.id, u.username, u.display_name, u.total_wins, u.total_losses, u.total_games, u.elo_rating, u.guild_id, g.tag as guild_tag, g.name as guild_name, g.color as guild_color FROM users u LEFT JOIN guilds g ON u.guild_id = g.id WHERE (? = 1 OR u.username LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\') ORDER BY u.elo_rating DESC LIMIT ? OFFSET ?"),
+    countPlayersPage: db.prepare("SELECT COUNT(*) as count FROM users u WHERE (? = 1 OR u.username LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\')"),
+    getGuildsPage: db.prepare("SELECT id, name, tag, member_count, elo_rating, total_guild_wins, total_guild_losses, color, is_open, max_members FROM guilds WHERE (? = 1 OR name LIKE ? ESCAPE '\\' OR tag LIKE ? ESCAPE '\\') ORDER BY elo_rating DESC LIMIT ? OFFSET ?"),
+    countGuildsPage: db.prepare("SELECT COUNT(*) as count FROM guilds WHERE (? = 1 OR name LIKE ? ESCAPE '\\' OR tag LIKE ? ESCAPE '\\')"),
+    getOpenGuildsPage: db.prepare("SELECT id, name, tag, member_count, elo_rating, color, is_open, max_members, description FROM guilds WHERE is_open = 1 AND member_count < max_members AND (? = 1 OR name LIKE ? ESCAPE '\\' OR tag LIKE ? ESCAPE '\\') ORDER BY elo_rating DESC LIMIT ? OFFSET ?"),
+    countOpenGuildsPage: db.prepare("SELECT COUNT(*) as count FROM guilds WHERE is_open = 1 AND member_count < max_members AND (? = 1 OR name LIKE ? ESCAPE '\\' OR tag LIKE ? ESCAPE '\\')"),
+    // Email verification
+    createEmailVerificationToken: db.prepare('INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES (?, ?, ?)'),
+    findEmailVerificationToken: db.prepare(`SELECT * FROM email_verification_tokens WHERE token = ? AND used = 0 AND expires_at > datetime('now')`),
+    markEmailVerificationTokenUsed: db.prepare('UPDATE email_verification_tokens SET used = 1 WHERE id = ?'),
+    setEmailVerified: db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?'),
+    deleteOldEmailVerificationTokens: db.prepare('DELETE FROM email_verification_tokens WHERE user_id = ? AND used = 0'),
   });
 }
 
@@ -112,10 +124,10 @@ export function updateUserStats(userId, { wins, losses, games, cells, kills }) {
   stmts.updateUserStats.run(wins, losses, games, cells, kills, userId);
 }
 
-export function createGuild(name, tag, description, leaderId, color) {
+export function createGuild(name, tag, description, leaderId, color, isOpen = 0) {
   let guildId;
   const transaction = db.transaction(() => {
-    const info = stmts.createGuild.run(name, tag, description, leaderId, color);
+    const info = stmts.createGuild.run(name, tag, description, leaderId, color, isOpen ? 1 : 0);
     guildId = info.lastInsertRowid;
     stmts.addGuildMember.run(leaderId, guildId, 'leader');
     stmts.updateUserGuild.run(guildId, leaderId);
@@ -155,8 +167,35 @@ export function updateGuildSettings(guildId, name, tag, description, color, isOp
 }
 
 export function searchGuilds(query) {
-  const escaped = query.replace(/[%_]/g, '\\$&');
+  const escaped = query.replace(/[%_\\]/g, '\\$&');
   return stmts.searchGuilds.all(`%${escaped}%`, `%${escaped}%`);
+}
+
+export function getPlayersPage(search, page, limit) {
+  const noFilter = search ? 0 : 1;
+  const like = search ? `%${search.replace(/[%_\\]/g, '\\$&')}%` : '';
+  const offset = (page - 1) * limit;
+  const rows = stmts.getPlayersPage.all(noFilter, like, like, limit, offset);
+  const { count } = stmts.countPlayersPage.get(noFilter, like, like);
+  return { rows, total: count };
+}
+
+export function getGuildsPage(search, page, limit) {
+  const noFilter = search ? 0 : 1;
+  const like = search ? `%${search.replace(/[%_\\]/g, '\\$&')}%` : '';
+  const offset = (page - 1) * limit;
+  const rows = stmts.getGuildsPage.all(noFilter, like, like, limit, offset);
+  const { count } = stmts.countGuildsPage.get(noFilter, like, like);
+  return { rows, total: count };
+}
+
+export function getOpenGuildsPage(search, page, limit) {
+  const noFilter = search ? 0 : 1;
+  const like = search ? `%${search.replace(/[%_\\]/g, '\\$&')}%` : '';
+  const offset = (page - 1) * limit;
+  const rows = stmts.getOpenGuildsPage.all(noFilter, like, like, limit, offset);
+  const { count } = stmts.countOpenGuildsPage.get(noFilter, like, like);
+  return { rows, total: count };
 }
 
 export function findInviteById(inviteId) {
@@ -303,7 +342,7 @@ export function createPasswordResetToken(userId, token, expiresAt) {
 
 export function findValidResetToken(token) {
   return db.prepare(
-    'SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > datetime("now")',
+    `SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > datetime('now')`,
   ).get(token);
 }
 
@@ -313,6 +352,24 @@ export function markResetTokenUsed(tokenId) {
 
 export function updateUserPassword(userId, passwordHash) {
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId);
+}
+
+// ---------- EMAIL VERIFICATION -----------
+export function createEmailVerificationToken(userId, token, expiresAt) {
+  stmts.deleteOldEmailVerificationTokens.run(userId);
+  stmts.createEmailVerificationToken.run(userId, token, expiresAt);
+}
+
+export function findEmailVerificationToken(token) {
+  return stmts.findEmailVerificationToken.get(token);
+}
+
+export function markEmailVerificationTokenUsed(tokenId) {
+  stmts.markEmailVerificationTokenUsed.run(tokenId);
+}
+
+export function setEmailVerified(userId) {
+  stmts.setEmailVerified.run(userId);
 }
 
 export default db;

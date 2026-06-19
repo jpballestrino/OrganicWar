@@ -42,11 +42,16 @@ export async function register(username, email, password) {
     body: JSON.stringify({ username, email, password }),
   });
   const data = await response.json();
-    
+
   if (!response.ok) {
     throw new Error(data.error || 'Registration failed');
   }
-    
+
+  // SMTP configured: server withholds the JWT until email is verified.
+  if (data.requiresVerification) {
+    return { requiresVerification: true, email };
+  }
+
   setToken(data.token);
   setUser(data.user);
   return data.user;
@@ -59,11 +64,16 @@ export async function login(username, password) {
     body: JSON.stringify({ username, password }),
   });
   const data = await response.json();
-    
+
   if (!response.ok) {
-    throw new Error(data.error || 'Login failed');
+    const err = new Error(data.error || 'Login failed');
+    if (data.requiresVerification) {
+      err.requiresVerification = true;
+      err.email = data.email;
+    }
+    throw err;
   }
-    
+
   setToken(data.token);
   setUser(data.user);
   return data.user;

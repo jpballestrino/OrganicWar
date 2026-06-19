@@ -553,6 +553,7 @@ export class WebGLRenderer {
             const isSilo    = b.type === 'silo';
             const isMine    = b.type === 'mine';
             const isAntiAir = b.type === 'antiair';
+            const isCity    = b.type === 'city';
             const [r, g, bl] = rgb;
 
             const pulse = constructing ? 1 : 1 + 0.05 * Math.sin(now * 0.0028 + b.row * 0.6);
@@ -572,8 +573,8 @@ export class WebGLRenderer {
                 ctx.closePath();
             };
 
-            const hexColor = isMine ? '#f59e0b' : color;
-            const hexRgb   = isMine ? [245, 158, 11] : rgb;
+            const hexColor = isMine ? '#f59e0b' : isCity ? '#a78bfa' : color;
+            const hexRgb   = isMine ? [245, 158, 11] : isCity ? [167, 139, 250] : rgb;
 
             drawHex(hexR);
             ctx.fillStyle = 'rgba(3, 5, 12, 0.92)';
@@ -790,6 +791,43 @@ export class WebGLRenderer {
                     }
                 }
                 ctx.shadowBlur = 0;
+
+            } else if (isCity) {
+                // ── CITY: skyline silhouette — three towers of varying heights ──
+                const [cr, cg, cb] = [167, 139, 250];
+                const bw = s * 0.34, bh = s * 1.55;
+                const buildings = [
+                    { x: -s*0.52, w: bw*0.9,  h: bh * 0.72 },
+                    { x: -s*0.13, w: bw*1.12, h: bh },
+                    { x:  s*0.29, w: bw*0.9,  h: bh * 0.85 },
+                ];
+                const baseY = s * 0.72;
+                // Fill gradient
+                const cityGrad = ctx.createLinearGradient(0, -bh, 0, baseY);
+                cityGrad.addColorStop(0, `rgba(${cr},${cg},${cb},0.95)`);
+                cityGrad.addColorStop(1, `rgba(${Math.floor(cr*0.3)},${Math.floor(cg*0.3)},${Math.floor(cb*0.3)},0.88)`);
+                if (!constructing && !state.lowGraphics) { ctx.shadowColor = '#a78bfa'; ctx.shadowBlur = s * 1.2; }
+                for (const bd of buildings) {
+                    ctx.beginPath();
+                    ctx.rect(bd.x, baseY - bd.h, bd.w, bd.h);
+                    ctx.fillStyle = cityGrad; ctx.fill();
+                    ctx.strokeStyle = constructing ? 'rgba(167,139,250,0.3)' : '#a78bfa';
+                    ctx.lineWidth = Math.max(0.5, z * 0.7); ctx.stroke();
+                }
+                ctx.shadowBlur = 0;
+                // Windows — tiny bright dots
+                if (!constructing && s > 6) {
+                    ctx.fillStyle = 'rgba(230,220,255,0.85)';
+                    for (const bd of buildings) {
+                        for (let wy = 0; wy < 3; wy++) {
+                            for (let wx = 0; wx < 2; wx++) {
+                                const wx0 = bd.x + bd.w * (0.22 + wx * 0.45);
+                                const wy0 = baseY - bd.h * (0.25 + wy * 0.28);
+                                ctx.fillRect(wx0, wy0, Math.max(1, s*0.09), Math.max(1, s*0.09));
+                            }
+                        }
+                    }
+                }
 
             } else {
                 // ── DEFENSE TOWER: cyberpunk fortress with power conduits ──
@@ -1027,6 +1065,26 @@ export class WebGLRenderer {
         ctx.textBaseline = 'bottom';
         ctx.fillStyle = 'rgba(120, 255, 120, 0.95)';
         ctx.fillText('Anti-Air Battery (click to place)', center.x, topLeft.y - 4);
+    }
+
+    drawCityPlacementPreview(ctx, hoverRow, hoverCol) {
+        const topLeft = this.worldToScreen(hoverCol - 4, hoverRow - 4);
+        const bottomRight = this.worldToScreen(hoverCol + 4, hoverRow + 4);
+        const w = bottomRight.x - topLeft.x;
+        const h = bottomRight.y - topLeft.y;
+        const center = this.worldToScreen(hoverCol, hoverRow);
+
+        ctx.fillStyle = 'rgba(167, 139, 250, 0.18)';
+        ctx.fillRect(topLeft.x, topLeft.y, w, h);
+        ctx.strokeStyle = 'rgba(167, 139, 250, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(topLeft.x, topLeft.y, w, h);
+
+        ctx.font = "12px 'Orbitron', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = 'rgba(167, 139, 250, 0.95)';
+        ctx.fillText('City (click to place)', center.x, topLeft.y - 4);
     }
 
     // Missile-targeting overlay: dashed firing-range rings around the player's own

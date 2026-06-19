@@ -2,8 +2,9 @@ import './js/initDOM.js';
 import { socket, initNetwork, quitAndReload } from './js/network.js';
 import { initAuthUI } from './js/authUI.js';
 import { initGuildUI, showToast } from './js/guildUI.js';
-import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST } from './js/constants.js';
+import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST, CITY_BUILDING_COST } from './js/constants.js';
 import { initRankingsUI } from './js/rankingsUI.js';
+import { initFeedbackUI } from './js/feedbackUI.js';
 import { state } from './js/state.js';
 import initWasm, { SimulationState } from './wasm/simulation_core.js';
 import wasmUrl from './wasm/simulation_core_bg.wasm?url';
@@ -437,6 +438,7 @@ if (_isMobile) {
   initAuthUI();
   initGuildUI();
   initRankingsUI();
+  initFeedbackUI();
   initLobbyUI();
   initDevSandboxUI();
   initEscMenu();
@@ -576,6 +578,17 @@ async function startSimulationEngine() {
               payload: { targetCell }
             });
             state.activePurchaseMode = null;
+          } else if (state.activePurchaseMode === 'city') {
+            if (state.playerGold < CITY_BUILDING_COST) {
+              showToast(`Not enough gold — a City costs ${CITY_BUILDING_COST.toLocaleString()}.`, 'error');
+              state.activePurchaseMode = null;
+              return;
+            }
+            socket.emit('sim-input', {
+              type: 'build_city',
+              payload: { targetCell }
+            });
+            state.activePurchaseMode = null;
           } else if (state.activePurchaseMode === 'missile') {
             // A missile must always be aimed at an enemy cell. Clicking your own
             // land or nature is not allowed and shows NO message — just ignore it
@@ -656,6 +669,13 @@ async function startSimulationEngine() {
         return;
       }
 
+      if (e.key === '7' && state.gameState === 'PLAYING') {
+        if (inField) return;
+        e.preventDefault();
+        state.activePurchaseMode = state.activePurchaseMode === 'city' ? null : 'city';
+        return;
+      }
+
       // '2' toggles missile-targeting mode (fires from a completed silo in range).
       if (e.key === '2' && state.gameState === 'PLAYING') {
         if (inField) return;
@@ -709,6 +729,7 @@ async function startSimulationEngine() {
     bindBuildButton('btnFireMissile', 'missile');
     bindBuildButton('btnBuildMine', 'mine');
     bindBuildButton('btnBuildAntiAir', 'antiair');
+    bindBuildButton('btnBuildCity', 'city');
 
     requestAnimationFrame(gameLoop);
   } catch (err) {
@@ -765,12 +786,14 @@ function gameLoop(time) {
       const btnMissile = document.getElementById('btnFireMissile');
       const btnMine = document.getElementById('btnBuildMine');
       const btnAntiAir = document.getElementById('btnBuildAntiAir');
-      
+      const btnCity = document.getElementById('btnBuildCity');
+
       if (btnTower) btnTower.classList.toggle('active', state.activePurchaseMode === 'defense_building');
       if (btnSilo) btnSilo.classList.toggle('active', state.activePurchaseMode === 'silo');
       if (btnMissile) btnMissile.classList.toggle('active', state.activePurchaseMode === 'missile');
       if (btnMine) btnMine.classList.toggle('active', state.activePurchaseMode === 'mine');
       if (btnAntiAir) btnAntiAir.classList.toggle('active', state.activePurchaseMode === 'antiair');
+      if (btnCity) btnCity.classList.toggle('active', state.activePurchaseMode === 'city');
 
       if (overlayCanvas) {
         if (overlayCanvas.width !== window.innerWidth || overlayCanvas.height !== window.innerHeight) {
@@ -802,6 +825,8 @@ function gameLoop(time) {
             renderer.drawMinePlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
           } else if (state.activePurchaseMode === 'antiair' && state.hoveredCell.r >= 0) {
             renderer.drawAntiAirPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
+          } else if (state.activePurchaseMode === 'city' && state.hoveredCell.r >= 0) {
+            renderer.drawCityPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
           } else if (state.activePurchaseMode === 'missile') {
             renderer.drawMissileTargeting(ctx, state.buildings, parseInt(state.playerFaction), state.hoveredCell.r, state.hoveredCell.c);
           }

@@ -138,6 +138,26 @@ export function homeTemplate() {
                 </div>
             </div>
 
+            <!-- STATE: Email Verification Pending -->
+            <div id="homeStateVerification" style="display: none;">
+                <div style="text-align: center; padding: 20px 0;">
+                    <div style="font-size: 48px; margin-bottom: 15px;">📧</div>
+                    <h2 style="color: #ffc107; margin: 0 0 10px;">Check Your Email</h2>
+                    <p style="color: #aaa; font-size: 14px; margin: 0 0 5px;">We sent a verification link to:</p>
+                    <p style="color: #fff; font-size: 14px; font-weight: bold; margin: 0 0 20px;" id="verifyEmailDisplay"></p>
+                    <div id="verifyResendMsg" style="display:none; color: #4ade80; background: rgba(40,167,69,0.2); padding: 10px; border-radius: 5px; margin-bottom: 15px; border: 1px solid rgba(40,167,69,0.4); font-size: 13px;">
+                        Verification email resent!
+                    </div>
+                    <button id="btnResendVerification" class="home-btn home-btn-play" style="width: 100%; margin-bottom: 12px;">
+                        <span class="home-btn-icon">🔄</span>
+                        <span class="home-btn-text">Resend Verification Email</span>
+                    </button>
+                    <div>
+                        <a href="#" id="linkBackFromVerify" style="color: #ccc; font-size: 12px; text-decoration: none;">← Back to Login</a>
+                    </div>
+                </div>
+            </div>
+
             <!-- STATE A-2: Guest Nickname Entry -->
             <div id="homeStateGuest" style="display: none;">
                 <div class="home-input-group">
@@ -223,6 +243,8 @@ export function homeTemplate() {
                 <span id="homePlayersOnline">Players Online: —</span>
                 <span class="home-footer-dot">•</span>
                 <a href="#" id="linkTutorial" style="color: #4ade80; text-decoration: none; font-weight: bold;">📖 How to Play</a>
+                <span class="home-footer-dot">•</span>
+                <a href="#" id="linkFeedback" style="color: #94a3b8; text-decoration: none;">💬 Feedback</a>
                 <span class="home-footer-dot auth-footer-links" style="display:none;">•</span>
                 <a href="#" id="linkProfile" class="auth-footer-links"
                     style="display:none; color: #ccc; text-decoration: none;">Profile</a>

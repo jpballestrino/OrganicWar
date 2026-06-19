@@ -40,6 +40,10 @@ export function guildTemplate() {
                         style="width:100%; margin-bottom:10px; padding:10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:5px; text-transform:uppercase;">
                     <input type="text" id="cgDesc" placeholder="Description (optional, max 100)" maxlength="100"
                         style="width:100%; margin-bottom:10px; padding:10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:5px;">
+                    <div style="margin-bottom: 12px; display:flex; align-items:center; gap:10px; background:rgba(255,255,255,0.04); padding:10px 12px; border-radius:6px; border:1px solid rgba(255,255,255,0.08);">
+                        <input type="checkbox" id="cgIsOpen" style="width:16px; height:16px; accent-color:#ffc107; cursor:pointer;">
+                        <label for="cgIsOpen" style="font-size:13px; color:#eee; cursor:pointer; user-select:none;">Open to public joining</label>
+                    </div>
                     <div style="margin-bottom: 15px;">
                         <label style="font-size: 12px; color: #ccc;">Guild Color:</label>
                         <div id="cgColorPicker" style="display:flex; gap: 5px; margin-top: 5px;"></div>
@@ -49,10 +53,16 @@ export function guildTemplate() {
                 </div>
 
                 <div id="panelSearchGuilds" style="display:none;">
-                    <input type="text" id="searchInputGuilds" placeholder="Search by name or tag..."
-                        style="width:100%; margin-bottom:15px; padding:10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:5px;">
+                    <input type="text" id="searchInputGuilds" placeholder="Search open guilds by name or tag..."
+                        style="width:100%; margin-bottom:10px; padding:10px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:5px; box-sizing:border-box; outline:none;"
+                        autocomplete="off" spellcheck="false">
                     <div id="guildSearchResults"
-                        style="max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                        style="max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 40px;">
+                    </div>
+                    <div id="joinGuildPagination" style="display:flex; justify-content:center; align-items:center; gap:12px; padding:10px 0 0;">
+                        <button id="joinPrevBtn" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); color:#fff; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; font-family:inherit;">← Prev</button>
+                        <span id="joinPageInfo" style="color:#888; font-size:12px; min-width:80px; text-align:center;">Page 1 of 1</span>
+                        <button id="joinNextBtn" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); color:#fff; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; font-family:inherit;">Next →</button>
                     </div>
                 </div>
 
@@ -100,7 +110,6 @@ export function guildTemplate() {
                     <div
                         style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:12px; color:#888; font-weight:bold; padding:0 5px;">
                         <span>Member</span>
-                        <span>Role</span>
                         <span>ELO</span>
                     </div>
                     <div id="guildMemberList"

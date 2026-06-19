@@ -38,8 +38,8 @@ function getFactionForSocket(room, socketId) {
 
 const createRoomSchema = z.object({
   name: z.string().min(1).max(50),
-  maxPlayers: z.union([z.number().int().min(2).max(20), z.string().regex(/^\d+$/)]),
-  preset: z.string().min(1).max(50).optional(),
+  maxPlayers: z.coerce.number().int().min(2).max(20),
+  preset: z.enum(['north_america', 'europe', 'africa']).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
 
@@ -67,7 +67,10 @@ export function setupSocketHandlers(io) {
       build_silo:    { lastMs: 0, minIntervalMs: 200 },
       build_mine:    { lastMs: 0, minIntervalMs: 200 },
       build_antiair: { lastMs: 0, minIntervalMs: 200 },
-      fire_missile:  { lastMs: 0, minIntervalMs: 2000 },
+      // Keep this small: WASM enforces 2s per-silo cooldown, so a global 2s
+      // gate here would block a second ready silo from firing. 100ms is purely
+      // anti-flood; legitimate multi-silo play fires at most once per 100ms.
+      fire_missile:  { lastMs: 0, minIntervalMs: 100 },
     };
     
     let playerToken = socket.handshake.auth.token;
@@ -158,7 +161,7 @@ export function setupSocketHandlers(io) {
           return;
         }
         const { name, maxPlayers, preset, nickname } = parsed.data;
-        const safeName = sanitizeString(name);
+        const safeName = sanitizeString(profanityFilter.clean(name));
         const freshGuild = getFreshGuildInfo();
         const effectiveNickname = cleanNickname(socket.displayName || nickname, 'Host');
         let room = createRoom(safeName, preset || 'north_america', parseInt(maxPlayers) || 5, false);

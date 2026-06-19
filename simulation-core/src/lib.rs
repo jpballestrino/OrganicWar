@@ -125,6 +125,11 @@ const ANTIAIR_BUILD_SECONDS: f32 = 10.0;
 const ANTIAIR_RADIUS: i32 = 400;
 const ANTIAIR_MAX_CHARGES: u8 = 3;
 
+const BTYPE_CITY: u8 = 4;
+const CITY_BUILDING_COST: f32 = 2000.0;
+const CITY_BUILD_SECONDS: f32 = 5.0;
+const CITY_POP_BONUS: f32 = 0.05;
+
 // Upper bound for per-cell difficulty_to_invade (troops-per-cell × enclosure).
 // The client uses this same value to normalize density to 0..1 for the shader,
 // so density == DIFFICULTY_CAP → fully solid interior at max enclosure.
@@ -746,10 +751,24 @@ impl SimulationState {
                 let base_income = (cells as f32 * GOLD_PER_CELL_PER_SEC) / tick_hz;
                 self.player_gold[i] += base_income * (1.0 + mine_count * 0.10);
 
+                // Each completed City building grants +CITY_POP_BONUS to max pop.
+                let mut city_count = 0.0_f32;
+                for b in 0..self.defense_buildings.len() {
+                    if self.building_type[b] == BTYPE_CITY
+                        && self.building_owner[b] as usize == i
+                        && self.defense_build_complete[b] == 0
+                    {
+                        city_count += 1.0;
+                    }
+                }
+
                 // Max population scales purely with territory (no flat base).
+                // The exported cap stays linear (cells × POP_CAP_PER_CELL) so the
+                // client's cell-count derivation (maxPop / POP_CAP_PER_CELL) is exact.
                 let max_cap = (cells * POP_CAP_PER_CELL).max(1);
                 self.player_max_population_cap[i] = max_cap;
-                let max_cap_f = max_cap as f32;
+                // Effective cap applies city bonus; used for growth and home-cap only.
+                let effective_cap_f = max_cap as f32 * (1.0 + city_count * CITY_POP_BONUS);
 
                 // Total troops in the system = home reserves + deployed on fronts.
                 // Growth rate is a function of TOTAL fill so deploying troops never
@@ -757,7 +776,7 @@ impl SimulationState {
                 let troops = self.player_total_troops[i];
                 let attack = self.player_attack_pool[i];
                 let total  = troops + attack;
-                let p = (total / max_cap_f).clamp(0.0, 1.0);
+                let p = (total / effective_cap_f).clamp(0.0, 1.0);
 
                 // Growth curve (troops/sec): peaks at p = 0.40, zero at p = 1.0,
                 // positive at p = 0 (the recovery floor). See the consts above.
@@ -766,13 +785,13 @@ impl SimulationState {
                 // factor (≤ 1 only past the soft cap). The recovery floor is left
                 // unscaled so a near-dead faction always claws back, but for a huge
                 // empire MIN_GROWTH is negligible against its size.
-                let base_growth = max_cap_f * PEAK_GROWTH_FRACTION * shape;
+                let base_growth = effective_cap_f * PEAK_GROWTH_FRACTION * shape;
                 let growth_per_sec =
                     (base_growth * self.oversize_growth_scale(cells)).max(MIN_GROWTH_PER_SEC);
 
                 let new_troops = troops + growth_per_sec / tick_hz;
-                // Cap home reserves so that home + attacking never exceeds max_cap.
-                let home_cap = (max_cap_f - attack).max(0.0);
+                // Cap home reserves so that home + attacking never exceeds effective cap.
+                let home_cap = (effective_cap_f - attack).max(0.0);
                 self.player_total_troops[i] = new_troops.min(home_cap);
             }
         }
@@ -1169,6 +1188,11 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn place_antiair(&mut self, faction_id: u32, center_row: i32, center_col: i32) -> bool {
         self.place_building_internal(faction_id, center_row, center_col, BTYPE_ANTIAIR, ANTIAIR_BUILDING_COST, ANTIAIR_BUILD_SECONDS)
+    }
+
+    #[wasm_bindgen]
+    pub fn place_city(&mut self, faction_id: u32, center_row: i32, center_col: i32) -> bool {
+        self.place_building_internal(faction_id, center_row, center_col, BTYPE_CITY, CITY_BUILDING_COST, CITY_BUILD_SECONDS)
     }
 
     /// Shared placement logic for every building type. Validates the 8×8 footprint

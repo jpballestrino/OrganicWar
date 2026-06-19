@@ -24,6 +24,11 @@ let selectedColor = '#ffc107';
 let onlineMembers = new Set();
 let isCurrentlyInGame = false;
 
+let joinPage = 1;
+let joinSearch = '';
+let joinFetchId = 0;
+let joinSearchTimer = null;
+
 export function updateGuildChatVisibility() {
   const panel = getE('guildChatPanel');
   if (!panel) {return;}
@@ -68,7 +73,7 @@ export function initGuildUI() {
   getE('btn-close-guild-hall')?.addEventListener('click', closeGuildHall);
 
   getE('tabCreateGuild')?.addEventListener('click', () => switchGuildTab('CreateGuild'));
-  getE('tabSearchGuilds')?.addEventListener('click', () => { switchGuildTab('SearchGuilds'); loadGuildSearch(''); });
+  getE('tabSearchGuilds')?.addEventListener('click', () => { switchGuildTab('SearchGuilds'); resetAndLoadOpenGuilds(); });
   getE('tabPendingInvites')?.addEventListener('click', () => { switchGuildTab('PendingInvites'); loadPendingInvites(); });
 
   getE('tabGuildRoster')?.addEventListener('click', () => switchGuildViewTab('Roster'));
@@ -85,7 +90,17 @@ export function initGuildUI() {
   getE('cgTag')?.addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   });
-  getE('searchInputGuilds')?.addEventListener('input', (e) => loadGuildSearch(e.target.value));
+  getE('searchInputGuilds')?.addEventListener('input', (e) => {
+    clearTimeout(joinSearchTimer);
+    joinSearchTimer = setTimeout(() => {
+      joinSearch = e.target.value.trim();
+      joinPage = 1;
+      loadOpenGuilds();
+    }, 300);
+  });
+
+  getE('joinPrevBtn')?.addEventListener('click', () => { if (joinPage > 1) { joinPage--; loadOpenGuilds(); } });
+  getE('joinNextBtn')?.addEventListener('click', () => { joinPage++; loadOpenGuilds(); });
 
   getE('btnCreateGuildSubmit')?.addEventListener('click', createGuild);
 
@@ -385,9 +400,10 @@ async function createGuild() {
   const name = getE('cgName').value;
   const tag = getE('cgTag').value;
   const desc = getE('cgDesc').value;
+  const isOpen = getE('cgIsOpen')?.checked ?? false;
 
   try {
-    const res = await api('', 'POST', { name, tag, description: desc, color: selectedColor });
+    const res = await api('', 'POST', { name, tag, description: desc, color: selectedColor, isOpen });
     showToast('Guild created successfully!', 'success');
     currentGuildId = res.guild.id;
     currentGuildRole = 'leader';
@@ -399,66 +415,75 @@ async function createGuild() {
   }
 }
 
-async function loadGuildSearch(query) {
+function resetAndLoadOpenGuilds() {
+  joinPage = 1;
+  joinSearch = '';
+  const input = getE('searchInputGuilds');
+  if (input) input.value = '';
+  loadOpenGuilds();
+}
+
+async function loadOpenGuilds() {
+  const rid = ++joinFetchId;
   const list = getE('guildSearchResults');
-  if (query.length < 2 && query.length > 0) {return;}
-    
-  list.innerHTML = '<div style="text-align:center; color:#888;">Searching...</div>';
+  list.innerHTML = '<div style="text-align:center; color:#888; padding:15px;">Loading...</div>';
+
+  const params = new URLSearchParams({ page: joinPage });
+  if (joinSearch) params.set('search', joinSearch);
+
   try {
-    const res = await api(`/search?q=${query}`);
+    const res = await api(`/open?${params}`);
+    if (rid !== joinFetchId) return;
+
     list.innerHTML = '';
-    if (res.guilds.length === 0) {
-      list.innerHTML = '<div style="text-align:center; color:#888;">No guilds found.</div>';
+    if (!res.guilds || res.guilds.length === 0) {
+      list.innerHTML = `<div style="text-align:center; color:#888; padding:15px;">${joinSearch ? 'No open guilds match your search.' : 'No open guilds available.'}</div>`;
+      renderJoinPagination(res.page || 1, res.pages || 1);
       return;
     }
 
     res.guilds.forEach(g => {
       const item = document.createElement('div');
-      item.style.display = 'flex';
-      item.style.justifyContent = 'space-between';
-      item.style.alignItems = 'center';
-      item.style.background = 'rgba(255,255,255,0.05)';
-      item.style.padding = '10px';
-      item.style.borderRadius = '6px';
-            
-      const canJoin = g.is_open && g.member_count < g.max_members;
-      const canRequest = !g.is_open && g.member_count < g.max_members;
+      item.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:10px; border-radius:6px;';
 
       const infoDiv = document.createElement('div');
       infoDiv.innerHTML = `
-                <div style="font-weight:bold; font-size:14px;"><span class="guild-tag-badge" style="color:${escapeHtml(g.color)}">[${escapeHtml(g.tag)}]</span> ${escapeHtml(g.name)}</div>
-                <div style="font-size:11px; color:#aaa; margin-top:4px;">${g.member_count}/${g.max_members} Members • ${g.elo_rating} ELO</div>
-            `;
+        <div style="font-weight:bold; font-size:14px;"><span style="color:${escapeHtml(g.color)}">[${escapeHtml(g.tag)}]</span> ${escapeHtml(g.name)}</div>
+        <div style="font-size:11px; color:#aaa; margin-top:3px;">${g.member_count}/${g.max_members} members · ${g.elo_rating} ELO</div>
+      `;
 
       const actionDiv = document.createElement('div');
-      if (canJoin) {
-        const joinBtn = document.createElement('button');
-        joinBtn.className = 'home-btn home-btn-play';
-        joinBtn.style.cssText = 'padding: 6px 12px; font-size:11px;';
-        joinBtn.textContent = 'Join';
-        joinBtn.addEventListener('click', () => window.joinGuild(g.id, joinBtn));
-        actionDiv.appendChild(joinBtn);
-      } else if (canRequest) {
-        const reqBtn = document.createElement('button');
-        reqBtn.className = 'home-btn';
-        reqBtn.style.cssText = 'padding: 6px 12px; font-size:11px; background: #3c8cdc;';
-        reqBtn.textContent = 'Request';
-        reqBtn.addEventListener('click', () => window.requestGuildJoin(g.id, reqBtn));
-        actionDiv.appendChild(reqBtn);
-      } else {
-        actionDiv.innerHTML = `<span style="color:#888; font-size:11px; text-transform:uppercase;">${g.is_open ? 'Full' : 'Closed/Full'}</span>`;
-      }
+      const joinBtn = document.createElement('button');
+      joinBtn.className = 'home-btn home-btn-play';
+      joinBtn.style.cssText = 'padding:5px 12px; font-size:11px;';
+      joinBtn.textContent = 'Join';
+      joinBtn.addEventListener('click', () => window.joinGuild(g.id, joinBtn));
+      actionDiv.appendChild(joinBtn);
 
       item.appendChild(infoDiv);
       item.appendChild(actionDiv);
       list.appendChild(item);
     });
+
+    renderJoinPagination(res.page, res.pages);
   } catch (err) {
-    const errDiv = document.createElement('div');
-    errDiv.style.color = 'red';
-    errDiv.textContent = `Error: ${err.message}`;
-    list.replaceChildren(errDiv);
+    if (rid !== joinFetchId) return;
+    list.innerHTML = `<div style="color:red; text-align:center; padding:15px;">Error: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+function renderJoinPagination(page, pages) {
+  const prev = getE('joinPrevBtn');
+  const next = getE('joinNextBtn');
+  const info = getE('joinPageInfo');
+  if (!prev || !next || !info) return;
+  info.textContent = `Page ${page} of ${pages}`;
+  prev.disabled = page <= 1;
+  next.disabled = page >= pages;
+  prev.style.opacity = page <= 1 ? '0.35' : '1';
+  next.style.opacity = page >= pages ? '0.35' : '1';
+  prev.style.cursor = page <= 1 ? 'default' : 'pointer';
+  next.style.cursor = page >= pages ? 'default' : 'pointer';
 }
 
 window.joinGuild = async function(id, btnElement) {

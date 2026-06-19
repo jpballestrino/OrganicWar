@@ -45,6 +45,12 @@ export const ANTIAIR_BUILDING_COST = 5000;
 export const ANTIAIR_BUILD_MS = 10000;
 export const ANTIAIR_RADIUS = 400;
 export const ANTIAIR_MAX_CHARGES = 3;
+
+// City building — boosts max pop by CITY_POP_BONUS per completed city.
+// Mirrors BTYPE_CITY / CITY_BUILDING_COST / CITY_BUILD_SECONDS / CITY_POP_BONUS in lib.rs.
+export const CITY_BUILDING_COST = 2000;
+export const CITY_BUILD_MS = 5000;
+export const CITY_POP_BONUS = 0.05;
 export const MISSILE_COST = 2000;
 export const MISSILE_BLAST_RADIUS = 15;
 export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill

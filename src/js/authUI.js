@@ -8,24 +8,44 @@ export async function initAuthUI() {
   const stateAuth = getE('homeStateAuth');
   const stateGuest = getE('homeStateGuest');
 
-  // --- OAuth callback: detect token/user in URL params ---
+  // --- URL param callbacks (OAuth, email verification) ---
   const urlParams = new URLSearchParams(window.location.search);
   const oauthToken = urlParams.get('token');
   const oauthUser = urlParams.get('user');
   const oauthError = urlParams.get('oauth_error');
+  const emailVerified = urlParams.get('email_verified');
 
   if (oauthToken && oauthUser) {
     setToken(oauthToken);
     setUser(JSON.parse(decodeURIComponent(oauthUser)));
-    window.history.replaceState({}, '', '/'); // Clean URL
+    window.history.replaceState({}, '', '/');
     setupLoggedInState();
-    return; // Skip rest of init – user is now logged in
+    return;
   }
   if (oauthError) {
     window.history.replaceState({}, '', '/');
     setTimeout(() => {
       const el = getE('loginError');
       if (el) { el.textContent = decodeURIComponent(oauthError); el.classList.add('visible'); }
+    }, 100);
+  }
+  if (emailVerified === 'success') {
+    window.history.replaceState({}, '', '/');
+    setTimeout(() => {
+      const el = getE('loginError');
+      if (el) {
+        el.textContent = 'Email verified! You can now log in.';
+        el.style.color = '#4ade80';
+        el.classList.add('visible');
+        setTimeout(() => { el.classList.remove('visible'); el.style.color = ''; }, 5000);
+      }
+    }, 100);
+  }
+  if (emailVerified === 'invalid') {
+    window.history.replaceState({}, '', '/');
+    setTimeout(() => {
+      const el = getE('loginError');
+      if (el) { el.textContent = 'Verification link is invalid or expired.'; el.classList.add('visible'); }
     }, 100);
   }
 
@@ -113,6 +133,51 @@ export async function initAuthUI() {
     }
   });
 
+  // --- Verification pending state ---
+  let pendingVerifyEmail = '';
+
+  function showVerificationState(email) {
+    pendingVerifyEmail = email || '';
+    getE('homeStateAuth').style.display = 'none';
+    getE('homeStateGuest').style.display = 'none';
+    const stateVerify = getE('homeStateVerification');
+    if (stateVerify) {
+      stateVerify.style.display = 'block';
+      const lbl = getE('verifyEmailDisplay');
+      if (lbl) { lbl.textContent = email || ''; }
+      const msg = getE('verifyResendMsg');
+      if (msg) { msg.style.display = 'none'; }
+    }
+  }
+
+  const btnResend = getE('btnResendVerification');
+  if (btnResend) {
+    btnResend.addEventListener('click', async () => {
+      btnResend.style.opacity = '0.5';
+      try {
+        await fetch('/api/auth/resend-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: pendingVerifyEmail }),
+        });
+        const msg = getE('verifyResendMsg');
+        if (msg) { msg.style.display = 'block'; }
+      } catch (_) { /* silent */ } finally {
+        btnResend.style.opacity = '1';
+      }
+    });
+  }
+
+  const linkBackFromVerify = getE('linkBackFromVerify');
+  if (linkBackFromVerify) {
+    linkBackFromVerify.addEventListener('click', (e) => {
+      e.preventDefault();
+      const stateVerify = getE('homeStateVerification');
+      if (stateVerify) { stateVerify.style.display = 'none'; }
+      setupLoggedOutState();
+    });
+  }
+
   // Forms Submission
   getE('btnLoginSubmit').addEventListener('click', async () => {
     const username = document.getElementById('loginUsername').value.trim();
@@ -125,6 +190,10 @@ export async function initAuthUI() {
       await login(username, password);
       await setupLoggedInState();
     } catch(e) {
+      if (e.requiresVerification) {
+        showVerificationState(e.email);
+        return;
+      }
       showError('loginError', e.message);
     } finally {
       getE('btnLoginSubmit').style.opacity = '1';
@@ -140,7 +209,11 @@ export async function initAuthUI() {
 
     try {
       getE('btnRegSubmit').style.opacity = '0.5';
-      await register(username, email, password);
+      const result = await register(username, email, password);
+      if (result && result.requiresVerification) {
+        showVerificationState(result.email);
+        return;
+      }
       await setupLoggedInState();
     } catch(e) {
       showError('regError', e.message);
@@ -201,6 +274,8 @@ export async function setupLoggedInState() {
   getE('homeStateAuth').style.display = 'none';
   getE('homeStateGuest').style.display = 'none';
   getE('homeStateLoggedIn').style.display = 'block';
+  const sv = getE('homeStateVerification');
+  if (sv) { sv.style.display = 'none'; }
 
   getE('lblWelcomeName').textContent = `Welcome, ${user.displayName || user.display_name}`;
   getE('lblElo').textContent = `ELO: ${user.eloRating !== undefined ? user.eloRating : user.elo_rating}`;
@@ -232,6 +307,8 @@ function setupLoggedOutState() {
   getE('homeStateAuth').style.display = 'block';
   getE('homeStateGuest').style.display = 'none';
   getE('homeStateLoggedIn').style.display = 'none';
+  const sv = getE('homeStateVerification');
+  if (sv) { sv.style.display = 'none'; }
     
   const footerLinks = document.querySelectorAll('.auth-footer-links');
   footerLinks.forEach(l => l.style.display = 'none');

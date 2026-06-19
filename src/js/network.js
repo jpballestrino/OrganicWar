@@ -4,7 +4,7 @@ import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken } from './auth.js';
 import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
-import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST } from './constants.js';
+import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST, CITY_BUILDING_COST, CITY_POP_BONUS } from './constants.js';
 
 export const socket = io({
   auth: { token: getToken() },
@@ -570,19 +570,23 @@ export function initNetwork() {
         const totalTroops = Math.floor(troops) + attacking;
         state.playerTroops = totalTroops;
 
+        // Compute effective max pop including completed city bonus (mirrors Rust apply_production).
+        const myCities = (state.buildings || []).filter(b => b.type === 'city' && b.factionId === fid && !b.constructing).length;
+        const effectiveMaxPop = Math.round(maxPop * (1 + myCities * CITY_POP_BONUS));
+
         const lblTroops = document.getElementById('lblMyTroops');
         const lblMax = document.getElementById('lblMyMaxPop');
         if (lblTroops) lblTroops.innerText = totalTroops;
-        if (lblMax) lblMax.innerText = maxPop;
+        if (lblMax) lblMax.innerText = effectiveMaxPop;
 
         // Fill and growth both use the total pool so they match the Rust formula.
-        const fill = maxPop > 0 ? totalTroops / maxPop : 0;
+        const fill = effectiveMaxPop > 0 ? totalTroops / effectiveMaxPop : 0;
         const lblFill = document.getElementById('lblMyFill');
         if (lblFill) lblFill.innerText = `${Math.round(fill * 100)}%`;
 
         // Growth rate (troops/sec): green while still accelerating (below the
         // peak fill), red once past the peak and slowing toward the cap.
-        const growth = troopGrowthPerSec(totalTroops, maxPop);
+        const growth = troopGrowthPerSec(totalTroops, effectiveMaxPop);
         const lblGrowth = document.getElementById('lblMyGrowth');
         if (lblGrowth) {
           lblGrowth.innerText = `+${Math.round(growth)}/s`;
@@ -691,6 +695,9 @@ export function initNetwork() {
 
         const btnAntiAir = document.getElementById('btnBuildAntiAir');
         if (btnAntiAir) btnAntiAir.classList.toggle('disabled', gold < ANTIAIR_BUILDING_COST);
+
+        const btnCity = document.getElementById('btnBuildCity');
+        if (btnCity) btnCity.classList.toggle('disabled', gold < CITY_BUILDING_COST);
       }
     }
   });
@@ -825,6 +832,8 @@ export function initNetwork() {
         ? `Can't build a gold mine here — need ${MINE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
       : type === 'build_antiair'
         ? `Can't build an Anti-Air battery here — need ${ANTIAIR_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
+      : type === 'build_city'
+        ? `Can't build a city here — need ${CITY_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`
         : `Cannot build here — need ${DEFENSE_BUILDING_COST.toLocaleString()} gold and you must own the entire 8×8 area, clear of other buildings.`;
     showToast(msg, 'error');
   });

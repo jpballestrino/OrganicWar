@@ -146,6 +146,57 @@ export function modalsTemplate() {
         </div>
     </div>
 
+    <!-- Feedback Modal -->
+    <div id="feedbackModal" class="modal-float" style="z-index: 1200;">
+        <div class="modal-card" style="width: 460px;">
+            <div class="modal-header">
+                <span class="modal-title">📣 Send Feedback</span>
+                <button id="btnCloseFeedback" class="modal-close">&times;</button>
+            </div>
+
+            <!-- Success state -->
+            <div id="feedbackSuccess" style="display: none; text-align: center; padding: 16px 0 8px;">
+                <div style="font-size: 52px; margin-bottom: 14px; line-height: 1;">✅</div>
+                <div style="font-size: 17px; font-weight: bold; color: #4ade80; margin-bottom: 8px;">Report Sent!</div>
+                <div style="font-size: 13px; color: #888; line-height: 1.7;">Thanks for helping improve OrganicWar.io.<br>We'll look into it soon.</div>
+                <button id="btnFeedbackDone" class="modal-btn modal-btn-neutral" style="margin-top: 24px; max-width: 160px;">Close</button>
+            </div>
+
+            <!-- Form state -->
+            <div id="feedbackFormBody">
+                <!-- Type selector -->
+                <div style="display: flex; gap: 8px; margin-bottom: 18px;">
+                    <button class="feedback-type-btn active" data-type="bug">🐛 Bug</button>
+                    <button class="feedback-type-btn" data-type="suggestion">💡 Suggestion</button>
+                    <button class="feedback-type-btn" data-type="other">💬 Other</button>
+                </div>
+
+                <!-- Subject -->
+                <div style="margin-bottom: 14px;">
+                    <label style="font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 6px;">Subject</label>
+                    <input id="feedbackSubject" type="text" maxlength="80" placeholder="Brief one-line summary..."
+                        style="width: 100%; padding: 9px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 13px; outline: none; font-family: inherit; box-sizing: border-box; transition: border-color 0.2s;">
+                </div>
+
+                <!-- Description -->
+                <div style="margin-bottom: 14px;">
+                    <label style="font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 6px;">Description</label>
+                    <textarea id="feedbackDescription" maxlength="2000" rows="4" placeholder="Describe in detail — what happened, what you expected, or what you'd like to see..."
+                        style="width: 100%; padding: 9px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #fff; font-size: 13px; outline: none; font-family: inherit; resize: vertical; min-height: 90px; box-sizing: border-box; transition: border-color 0.2s;"></textarea>
+                    <div id="feedbackDescCount" style="font-size: 11px; color: #555; text-align: right; margin-top: 3px;">0 / 2000</div>
+                </div>
+
+                <!-- Error -->
+                <div id="feedbackError" style="display: none; color: #f87171; font-size: 12px; margin-top: 12px; padding: 8px 12px; background: rgba(239,68,68,0.08); border-radius: 6px; border: 1px solid rgba(239,68,68,0.2);"></div>
+
+                <div class="modal-actions">
+                    <button id="btnFeedbackCancel" class="modal-btn modal-btn-neutral">Cancel</button>
+                    <button id="btnFeedbackSubmit" class="modal-btn modal-btn-gold">Send Report →</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Rankings Modal -->
     <div id="rankingsModal" class="game-overlay"
         style="display: none; pointer-events: auto; justify-content: center; z-index: 1045;">
@@ -155,12 +206,18 @@ export function modalsTemplate() {
                 <button id="btnCloseRankings" class="modal-close">&times;</button>
             </div>
 
-            <div class="auth-tabs" style="margin-bottom: 15px; justify-content: center; gap: 20px;">
+            <div class="auth-tabs" style="margin-bottom: 12px; justify-content: center; gap: 20px;">
                 <button class="auth-tab active" id="tabRankingsPlayers" style="flex: none; padding: 10px 30px;">Players</button>
                 <button class="auth-tab" id="tabRankingsGuilds" style="flex: none; padding: 10px 30px;">Guilds</button>
             </div>
 
-            <div style="flex: 1; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); padding: 10px;">
+            <div style="margin-bottom: 10px; flex-shrink: 0;">
+                <input id="rankingsSearch" type="text" placeholder="Search players..."
+                    style="width: 100%; padding: 8px 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: #fff; font-size: 13px; outline: none; font-family: inherit; box-sizing: border-box;"
+                    autocomplete="off" spellcheck="false">
+            </div>
+
+            <div style="flex: 1; min-height: 0; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); padding: 10px;">
                 <div id="rankingsHeader" style="display: flex; padding: 10px; font-weight: bold; font-size: 12px; color: #888; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 5px;">
                     <div style="width: 50px; text-align: center;">Rank</div>
                     <div style="flex: 1;">Player</div>
@@ -171,6 +228,12 @@ export function modalsTemplate() {
                 <div id="rankingsList" style="display: flex; flex-direction: column; gap: 5px;">
                     <div style="text-align:center; padding: 20px; color:#888;">Loading...</div>
                 </div>
+            </div>
+
+            <div id="rankingsPagination" style="display: flex; justify-content: center; align-items: center; gap: 15px; padding: 10px 0 0; flex-shrink: 0;">
+                <button id="rankingsPrevBtn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 6px 14px; border-radius: 5px; cursor: pointer; font-size: 13px; font-family: inherit;">← Prev</button>
+                <span id="rankingsPageInfo" style="color: #888; font-size: 13px; min-width: 90px; text-align: center;">Page 1 of 1</span>
+                <button id="rankingsNextBtn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 6px 14px; border-radius: 5px; cursor: pointer; font-size: 13px; font-family: inherit;">Next →</button>
             </div>
         </div>
     </div>

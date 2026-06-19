@@ -1,14 +1,15 @@
 import express from 'express';
 import { verifyToken } from '../auth.js';
-import { 
-  createGuild, findGuildById, getGuildMembers, searchGuilds, 
-  findUserByUsername, findUserById, findInviteById, respondToGuildInvite, 
-  addGuildMember, removeGuildMember, promoteGuildMember, 
-  updateGuildSettings, transferLeadership, disbandGuild, 
+import {
+  createGuild, findGuildById, getGuildMembers, searchGuilds, getOpenGuildsPage,
+  findUserByUsername, findUserById, findInviteById, respondToGuildInvite,
+  addGuildMember, removeGuildMember, promoteGuildMember,
+  updateGuildSettings, transferLeadership, disbandGuild,
   createGuildInvite, getPendingInvites,
   createGuildRequest, getGuildRequests, findGuildRequestById, respondToGuildRequest,
 } from '../database.js';
 import { userSocketMap } from '../game/state.js';
+import { isProfane } from '../utils/contentFilter.js';
 
 // Shared guild field validation, used by both create and update routes.
 // `requireNameTag` is true on create (name+tag mandatory) and false on update
@@ -19,14 +20,19 @@ function validateGuildFields({ name, tag, description, color }, { requireNameTag
     if (typeof name !== 'string' || name.length < 3 || name.length > 25 || /[<>]/.test(name)) {
       return 'Name must be 3-25 chars and cannot contain < or >.';
     }
+    if (isProfane(name)) return 'Guild name contains inappropriate content.';
   }
   if (requireNameTag || tag !== undefined) {
     if (typeof tag !== 'string' || tag.length < 2 || tag.length > 5 || !/^[A-Z0-9]+$/i.test(tag)) {
       return 'Tag must be 2-5 alphanumeric chars.';
     }
+    if (isProfane(tag)) return 'Guild tag contains inappropriate content.';
   }
   if (description !== undefined && (typeof description !== 'string' || description.length > 500)) {
     return 'Description must be a string up to 500 characters.';
+  }
+  if (description !== undefined && isProfane(description)) {
+    return 'Guild description contains inappropriate content.';
   }
   if (color !== undefined && (typeof color !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(color))) {
     return 'Color must be a hex code like #ffc107.';
@@ -79,13 +85,13 @@ export default function(io) {
       return res.status(400).json({ error: 'You are already in a guild.' });
     }
         
-    let { name, tag, description, color } = req.body;
+    let { name, tag, description, color, isOpen } = req.body;
     const validationError = validateGuildFields(req.body, { requireNameTag: true });
     if (validationError) { return res.status(400).json({ error: validationError }); }
     tag = tag.toUpperCase();
-        
+
     try {
-      const guild = createGuild(name, tag, description || '', req.user.id, color || '#ffc107');
+      const guild = createGuild(name, tag, description || '', req.user.id, color || '#ffc107', isOpen ? 1 : 0);
             
       // Join socket to guild room
       const socketId = userSocketMap.get(req.user.id);
@@ -102,6 +108,18 @@ export default function(io) {
         return res.status(400).json({ error: 'Guild name or tag already exists.' });
       }
       res.status(500).json({ error: 'Failed to create guild.' });
+    }
+  });
+
+  // GET /api/guilds/open - Paginated list of open, non-full guilds
+  router.get('/open', (req, res) => {
+    try {
+      const page = Math.max(1, parseInt(req.query.page) || 1);
+      const search = (req.query.search || '').trim().slice(0, 50);
+      const { rows, total } = getOpenGuildsPage(search, page, 10);
+      res.json({ guilds: rows, total, page, pages: Math.max(1, Math.ceil(total / 10)) });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to fetch open guilds.' });
     }
   });
 
