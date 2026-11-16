@@ -168,8 +168,8 @@ function terrainEU(nx, ny) {
 // (lon −20..55, lat 40..−38 equirectangular window) rasterized into a
 // 300×312 Uint8Array. Same noise-wobble coastline lookup as NA and EU.
 const AF_MASK_W = 300, AF_MASK_H = 312;
-const AF_LON_MIN = -20, AF_LON_MAX = 55;
-const AF_LAT_MAX = 40,  AF_LAT_MIN = -38;
+const AF_LON_MIN = -18, AF_LON_MAX = 52;
+const AF_LAT_MAX = 38,  AF_LAT_MIN = -35;
 const _afNx = lon => (lon - AF_LON_MIN) / (AF_LON_MAX - AF_LON_MIN);
 const _afNy = lat => (AF_LAT_MAX - lat) / (AF_LAT_MAX - AF_LAT_MIN);
 

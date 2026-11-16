@@ -292,6 +292,8 @@ export async function setupLoggedInState() {
     
   const footerLinks = document.querySelectorAll('.auth-footer-links');
   footerLinks.forEach(l => l.style.display = 'inline');
+  const footerAuthRow = document.querySelector('.home-footer-auth-row');
+  if (footerAuthRow) footerAuthRow.style.display = 'flex';
 
   getE('nicknameInput').value = user.displayName || user.display_name;
 
