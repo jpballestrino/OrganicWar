@@ -273,12 +273,7 @@ export function initNetwork() {
     showServerError('Game Error', message || 'The game server encountered an error. Please return to the menu.');
   });
 
-  socket.on('player-count-update', (count) => {
-    const el = document.getElementById('homePlayersOnline');
-    if (el) {
-      el.innerText = `Players Online: ${count}`;
-    }
-  });
+  socket.on('player-count-update', (_count) => {});
 
   socket.on('init-config', (config) => {
     state.activePlayerSlots = config.activePlayerSlots;

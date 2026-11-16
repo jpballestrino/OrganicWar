@@ -92,7 +92,7 @@ export function homeTemplate() {
                     <div id="forgotSuccess"
                         style="display:none; color: #4ade80; background: rgba(40,167,69,0.2); padding: 10px; border-radius: 5px; margin-bottom: 10px; text-align: center; border: 1px solid rgba(40,167,69,0.4); font-size: 13px;">
                     </div>
-                    <button id="btnForgotSubmit" class="home-btn home-btn-play" style="margin-top: 10px;">
+                    <button id="btnForgotSubmit" class="home-btn home-btn-play" style="margin-top: 10px; width: 100%;">
                         <span class="home-btn-icon">📧</span>
                         <span class="home-btn-text">Send Reset Link</span>
                     </button>
@@ -238,19 +238,17 @@ export function homeTemplate() {
             </div>
 
             <div class="home-footer">
-                <span>v1.0.0</span>
-                <span class="home-footer-dot">•</span>
-                <span id="homePlayersOnline">Players Online: —</span>
-                <span class="home-footer-dot">•</span>
-                <a href="#" id="linkTutorial" style="color: #4ade80; text-decoration: none; font-weight: bold;">📖 How to Play</a>
-                <span class="home-footer-dot">•</span>
-                <a href="#" id="linkFeedback" style="color: #94a3b8; text-decoration: none;">💬 Feedback</a>
-                <span class="home-footer-dot auth-footer-links" style="display:none;">•</span>
-                <a href="#" id="linkProfile" class="auth-footer-links"
-                    style="display:none; color: #ccc; text-decoration: none;">Profile</a>
-                <span class="home-footer-dot auth-footer-links" style="display:none;">•</span>
-                <a href="#" id="linkLogout" class="auth-footer-links"
-                    style="display:none; color: #ff6b6b; text-decoration: none;">Logout</a>
+                <div class="home-footer-row">
+                    <span>OrganicWar.io &nbsp;v1.0.0</span>
+                    <span class="home-footer-dot">•</span>
+                    <a href="#" id="linkTutorial" style="color: #4ade80; text-decoration: none; font-weight: bold;">📖 How to Play</a>
+                </div>
+                <div class="home-footer-row home-footer-auth-row" style="display:none;">
+                    <a href="#" id="linkFeedback" class="auth-footer-links" style="color: #94a3b8; text-decoration: none;">💬 Send Feedback</a>
+                    <span class="home-footer-dot">•</span>
+                    <a href="#" id="linkProfile" class="auth-footer-links" style="color: #ccc; text-decoration: none;">👤 My Profile</a>
+                </div>
+                <a href="#" id="linkLogout" class="auth-footer-links home-footer-row" style="display:none; color: #ff6b6b; text-decoration: none;">🚪 Log Out</a>
             </div>
         </div>
     </div>
