@@ -30,6 +30,7 @@ export const state = {
   selectedSlot: null,
   selectedDoctrine: 'balanced',
   activePurchaseMode: null,
+  isSpectating: false, // eliminated but still watching the match (inputs disabled)
   isInGameMenuOpen: false,
   isRankedMatch: false,
   isGuildWar: false,
@@ -99,6 +100,7 @@ export function resetGameState() {
   state.selectedSlot = null;
   state.selectedDoctrine = 'balanced';
   state.activePurchaseMode = null;
+  state.isSpectating = false;
   state.navalTargetingMode = false;
   state.selectedSiloCell = null;
   state.lastIncomingAttackCoords = null;

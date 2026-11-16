@@ -25,6 +25,16 @@ export function gameUITemplate() {
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
+                <div class="toggle-row" style="margin-bottom: 4px;">
+                    <div style="text-align: left;">
+                        <div class="toggle-label">Sound</div>
+                        <div class="toggle-sub">Battle sound effects</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggleSound" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
                 <hr class="settings-divider">
                 <button id="btnQuitToMenu" class="modal-btn modal-btn-danger" style="width: 100%; padding: 14px; font-size: 15px;">Main Menu</button>
             </div>
@@ -97,6 +107,7 @@ export function gameUITemplate() {
         <!-- Game Leaderboard Overlay -->
         <div id="gameLeaderboard" style="display: none; position: absolute; top: 70px; right: 10px; width: 180px; background: rgba(15,15,20,0.85); border: 1px solid #444; border-radius: 6px; padding: 8px; z-index: 1000; pointer-events: none; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">
             <div style="font-size: 12px; font-weight: bold; color: #aaa; text-transform: uppercase; margin-bottom: 6px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 4px;">Leaderboard</div>
+            <div id="lblMyRank" class="leaderboard-rank-chip"></div>
             <div id="leaderboardList" style="display: flex; flex-direction: column; gap: 4px;"></div>
         </div>
 

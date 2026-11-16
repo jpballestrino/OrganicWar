@@ -11,6 +11,9 @@ import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
 import { registerSim, getCellOwner } from './js/simBridge.js';
 import { generateTerrain, warmMapCache } from './js/mapGen.js';
+import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
+import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
+import { renderProgressCards } from './js/progression.js';
 
 let wasmModule = null;
 let simulation = null;
@@ -155,8 +158,11 @@ function initLobbyUI() {
     'Nexus-1', 'Nova-7', 'Cygnus-X', 'Orion-9', 'Aegis-4', 'Vanguard-2', 
     'Pulse-8', 'Zenith-5', 'Cobalt-3', 'Titan-6', 'Atlas-0', 'Echo-7',
   ];
+  // Remember a guest's callsign between visits; fall back to a random one.
+  let savedNick = '';
+  try { savedNick = localStorage.getItem('ow_nickname') || ''; } catch (_) { /* storage blocked */ }
   if (nickInput && !nickInput.value) {
-    nickInput.value = androidNames[Math.floor(Math.random() * androidNames.length)];
+    nickInput.value = savedNick || androidNames[Math.floor(Math.random() * androidNames.length)];
   }
 
   const btnMultiplayer = document.getElementById('btn-multiplayer');
@@ -178,9 +184,14 @@ function initLobbyUI() {
   const handleQuickPlay = () => {
     let name = nickInput ? nickInput.value : 'Guest';
     state.playerNickname = name;
+    try { localStorage.setItem('ow_nickname', name); } catch (_) { /* storage blocked */ }
     if (homeScreen) homeScreen.style.display = 'none';
     socket.emit('quick-play', { nickname: state.playerNickname });
   };
+
+  // "Play Again" on the recap screen reloads the page with this flag set, so the
+  // player drops straight into the next Quick Battle instead of the title screen.
+  if (consumeAutoQuickPlay()) { setTimeout(handleQuickPlay, 200); }
 
   const btnQuickPlay = document.getElementById('btn-quick-play');
   if (btnQuickPlay) btnQuickPlay.onclick = handleQuickPlay;
@@ -426,6 +437,16 @@ function initEscMenu() {
       try { localStorage.setItem('lowGraphics', e.target.checked ? '1' : '0'); } catch (_) {}
     };
   }
+
+  // Sound toggle — persisted by the sfx module.
+  const toggleSound = document.getElementById('toggleSound');
+  if (toggleSound) {
+    toggleSound.checked = !isMuted();
+    toggleSound.onchange = (e) => {
+      setMuted(!e.target.checked);
+      if (e.target.checked) playSfx('select');
+    };
+  }
 }
 
 // Mobile device guard — game requires keyboard + mouse; no touch support
@@ -434,7 +455,10 @@ if (_isMobile) {
   const mb = document.getElementById('mobileBlock');
   if (mb) mb.style.display = 'flex';
 } else {
+  initSfx();
   initNetwork();
+  initMatchFeel({ socket, quit: quitAndReload });
+  renderProgressCards();
   initAuthUI();
   initGuildUI();
   initRankingsUI();
@@ -507,6 +531,8 @@ async function startSimulationEngine() {
     });
 
     canvas.addEventListener('mousedown', (e) => {
+      // Eliminated players watching the rest of the match can't issue orders.
+      if (state.isSpectating) return;
       if (e.button === 2) { // Right click
         if (state.activePurchaseMode) {
           state.activePurchaseMode = null;
@@ -520,6 +546,7 @@ async function startSimulationEngine() {
               targetOwner = 0;
             }
             socket.emit('sim-input', { type: 'cancel_front', payload: { targetFaction: targetOwner } });
+            playSfx('cancel');
           }
         }
         return;
@@ -618,6 +645,7 @@ async function startSimulationEngine() {
                 attackPercentage: state.attackPercentage
               }
             });
+            playSfx('order');
           }
         }
       }
@@ -628,11 +656,13 @@ async function startSimulationEngine() {
     window.addEventListener('keydown', (e) => {
       const active = document.activeElement;
       const inField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+      if (state.isSpectating) return;
 
       if (e.code === 'Space' && state.gameState === 'PLAYING') {
         if (inField) return;
         e.preventDefault();
         socket.emit('sim-input', { type: 'cancel' });
+        playSfx('cancel');
         return;
       }
 
@@ -704,7 +734,8 @@ async function startSimulationEngine() {
       const btn = document.getElementById(id);
       if (btn) {
         btn.addEventListener('click', () => {
-          if (state.gameState !== 'PLAYING') return;
+          if (state.gameState !== 'PLAYING' || state.isSpectating) return;
+          playSfx('select');
           if (btn.classList.contains('disabled')) {
             if (mode === 'missile') {
               const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;

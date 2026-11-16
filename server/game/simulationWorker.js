@@ -109,6 +109,14 @@ class RoomSimWorker {
     this.prevAlive = new Set();
     this.gameOverFired = false;
 
+    // Per-match bookkeeping for the end-of-match recap (placement, peak land,
+    // survival time, who finished whom). JS-side only — the sim is untouched.
+    this.startedAt = Date.now();
+    this.peakCells = new Uint32Array(21);
+    this.lastCentroidCell = new Int32Array(21).fill(-1);
+    this.placements = {};
+    this.survivedSec = {};
+
     this.profileMetrics = {
       tickCount: 0,
       totalTickMs: 0,
@@ -387,6 +395,9 @@ class RoomSimWorker {
     const centroids = {};
     for (let fid = 1; fid <= 20; fid++) {
       if (owned[fid] > 0) {
+        if (owned[fid] > this.peakCells[fid]) this.peakCells[fid] = owned[fid];
+        this.lastCentroidCell[fid] =
+          Math.round(rowSum[fid] / owned[fid]) * MAP_WIDTH + Math.round(colSum[fid] / owned[fid]);
         centroids[fid] = {
           row: Math.round(rowSum[fid] / owned[fid]),
           col: Math.round(colSum[fid] / owned[fid]),
@@ -428,9 +439,24 @@ class RoomSimWorker {
     }
 
     if (this.prevAlive.size > 0) {
+      const killView = new Float32Array(
+        this.exports.memory.buffer, this.exports.simulationstate_get_player_kill_count_ptr(this.statePtr), 21);
+      const survivedSec = Math.floor((Date.now() - this.startedAt) / 1000);
       for (const fid of this.prevAlive) {
         if (!nowAlive.has(fid)) {
-          parentPort.postMessage({ type: 'emit', event: 'player-eliminated', payload: { factionId: fid } });
+          // Everyone still standing outlasted this faction.
+          const placement = nowAlive.size + 1;
+          this.placements[fid] = placement;
+          this.survivedSec[fid] = survivedSec;
+          parentPort.postMessage({ type: 'emit', event: 'player-eliminated', payload: {
+            factionId: fid,
+            killerId: this._findKiller(fid, nowAlive),
+            placement,
+            aliveCount: nowAlive.size,
+            survivedSec,
+            peakCells: this.peakCells[fid],
+            kills: Math.floor(killView[fid] || 0),
+          } });
         }
       }
 
@@ -444,8 +470,6 @@ class RoomSimWorker {
         const cellsView = new Uint32Array(this.exports.memory.buffer, cellsPtr, 21);
         const goldPtr = this.exports.simulationstate_get_player_gold_ptr(this.statePtr);
         const goldView = new Float32Array(this.exports.memory.buffer, goldPtr, 21);
-        const killPtr = this.exports.simulationstate_get_player_kill_count_ptr(this.statePtr);
-        const killView = new Float32Array(this.exports.memory.buffer, killPtr, 21);
         const goldSpentPtr = this.exports.simulationstate_get_player_gold_spent_ptr(this.statePtr);
         const goldSpentView = new Float32Array(this.exports.memory.buffer, goldSpentPtr, 21);
 
@@ -454,7 +478,10 @@ class RoomSimWorker {
             cells: cellsView[fid] || 0,
             gold: Math.floor(goldView[fid] || 0),
             kills: Math.floor(killView[fid] || 0),
-            goldSpent: Math.floor(goldSpentView[fid] || 0)
+            goldSpent: Math.floor(goldSpentView[fid] || 0),
+            peakCells: this.peakCells[fid],
+            placement: fid === winner ? 1 : (this.placements[fid] || 0),
+            survivedSec: this.survivedSec[fid] ?? survivedSec,
           };
         }
 
@@ -463,6 +490,19 @@ class RoomSimWorker {
     }
 
     this.prevAlive = nowAlive;
+  }
+
+  // Best-effort "who finished them off": whoever now holds the cell where the
+  // dead faction's territory was last centred. Near death a faction is only a
+  // handful of cells, so its centroid sits on the last ground it lost. Returns 0
+  // when that ground is nature (missile kill) or the answer is unclear.
+  _findKiller(fid, nowAlive) {
+    const cell = this.lastCentroidCell[fid];
+    if (cell < 0 || cell >= TOTAL_CELLS) return 0;
+    const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
+    const cells = new Uint16Array(this.exports.memory.buffer, cellPtr, TOTAL_CELLS);
+    const owner = cells[cell] & 0x7F;
+    return owner !== fid && nowAlive.has(owner) ? owner : 0;
   }
 
   handleInput(factionId, input) {

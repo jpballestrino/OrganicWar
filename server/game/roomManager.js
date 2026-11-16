@@ -563,7 +563,11 @@ export function handleGameOver(room, winnerFaction, matchStats = {}) {
 
   let isAllianceWin = winnerFaction ? !!room.sim.alliances[winnerFaction] : false;
 
-  io.to(room.id).emit('game-over', { winner: winnerFaction });
+  io.to(room.id).emit('game-over', {
+    winner: winnerFaction,
+    stats: matchStats,
+    durationSec: Math.floor((Date.now() - room.createdAt) / 1000),
+  });
 
   if (room.isGuildWar && winnerFaction) {
     let winningGuild = winnerFaction <= room.teamSize ? room.guildA : room.guildB;
