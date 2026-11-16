@@ -232,6 +232,11 @@ pub struct SimulationState {
     // Accumulated gold (f32 so fractional per-tick income accrues correctly).
     player_gold: Vec<f32>,
     player_kill_count: Vec<f32>,
+    // The faction that most recently took a cell from each player (conquest or
+    // missile blast); 0 = nobody yet. When a player's last cell falls this is,
+    // by construction, whoever eliminated them — read by the server for the
+    // kill feed and elimination credit.
+    player_last_attacker: Vec<u32>,
     player_gold_spent: Vec<f32>,
     player_population_growth_rate: Vec<u32>,
     player_is_alive: Vec<u8>,
@@ -292,6 +297,7 @@ impl SimulationState {
             front_pool: vec![0.0; PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
             player_gold: vec![0.0; PLAYER_ARRAY_SIZE],
             player_kill_count: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_last_attacker: vec![0; PLAYER_ARRAY_SIZE],
             player_gold_spent: vec![0.0; PLAYER_ARRAY_SIZE],
             player_population_growth_rate: vec![0; PLAYER_ARRAY_SIZE],
             player_is_alive: vec![0; PLAYER_ARRAY_SIZE],
@@ -990,6 +996,7 @@ impl SimulationState {
                             let density = self.player_total_troops[n_owner] / def_cells;
                             self.player_total_troops[n_owner] -= density;
                             self.player_kill_count[f] += density;
+                            self.player_last_attacker[n_owner] = f as u32;
                             if self.player_total_troops[n_owner] < 0.0 {
                                 self.player_total_troops[n_owner] = 0.0;
                             }
@@ -1102,6 +1109,9 @@ impl SimulationState {
 
     #[wasm_bindgen]
     pub fn get_player_kill_count_ptr(&self) -> *const f32 { self.player_kill_count.as_ptr() }
+
+    #[wasm_bindgen]
+    pub fn get_player_last_attacker_ptr(&self) -> *const u32 { self.player_last_attacker.as_ptr() }
 
     #[wasm_bindgen]
     pub fn get_player_gold_spent_ptr(&self) -> *const f32 { self.player_gold_spent.as_ptr() }
@@ -1457,6 +1467,10 @@ impl SimulationState {
                     self.player_total_troops[owner] -= density;
                     if faction_id < PLAYER_ARRAY_SIZE as u32 {
                         self.player_kill_count[faction_id as usize] += density;
+                        // Own collateral cells don't count as an attack on yourself.
+                        if faction_id as usize != owner {
+                            self.player_last_attacker[owner] = faction_id;
+                        }
                     }
                     if self.player_total_troops[owner] < 0.0 { self.player_total_troops[owner] = 0.0; }
                     self.player_owned_cells[owner] = self.player_owned_cells[owner].saturating_sub(1);
@@ -1908,5 +1922,49 @@ impl SimulationState {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `player_last_attacker` must name whoever took a player's most recent cell,
+    // so that at elimination it identifies the eliminator (kill feed / XP credit).
+    #[test]
+    fn last_attacker_tracks_conquest_and_missiles() {
+        let mut s = SimulationState::new();
+        s.init_players(3, 500, 50, 5000);
+        s.set_tick_hz(25);
+        s.spawn_faction(1, 500, 500);
+        s.spawn_faction(2, 500, 560);
+        let f1_home = (500 * MAP_WIDTH + 500) as u32;
+        let f2_home = (500 * MAP_WIDTH + 560) as u32;
+        assert!(s.player_owned_cells[2] > 0);
+        assert_eq!(s.player_last_attacker[2], 0);
+
+        // Faction 1 grows into neutral land until it touches faction 2, then
+        // overruns it. Faction 2 never gives an order.
+        let mut ticks = 0;
+        while s.player_owned_cells[2] > 0 && ticks < 20_000 {
+            if ticks % 10 == 0 {
+                s.player_total_troops[1] = 500_000.0;
+                s.execute_expansion(1, f1_home, 30);
+                s.execute_expansion(1, f2_home, 60);
+            }
+            s.tick();
+            ticks += 1;
+        }
+        assert_eq!(s.player_owned_cells[2], 0, "faction 2 should have been conquered");
+        assert_eq!(s.player_last_attacker[2], 1);
+        assert_eq!(s.player_last_attacker[1], 0, "the attacker was never hit");
+
+        // A missile from faction 3 onto faction 1's land is recorded...
+        s.detonate_missile(500, 500, 3);
+        assert_eq!(s.player_last_attacker[1], 3);
+        // ...but faction 1's own collateral blast is not an attack on itself.
+        s.player_last_attacker[1] = 0;
+        s.detonate_missile(500, 530, 1);
+        assert_eq!(s.player_last_attacker[1], 0);
     }
 }

@@ -9,6 +9,12 @@ const RANKS = [
   [20, 'Major'], [27, 'Colonel'], [35, 'General'], [45, 'Warlord'], [60, 'Emperor'],
 ];
 
+// Goals and XP are calibrated against headless 20-bot matches (Europe and North
+// America, ~1.26M land cells): a fair share is ~63k land, the map is fully
+// claimed within ~45s, half the field is gone by 1.5-5 min and a match lasts
+// 7-10 min. So 150k land is roughly a top-5 empire and 3 minutes is roughly
+// outliving half the lobby. Re-measure if map size, player count or pacing change.
+//
 // kind 'sum': progress accumulates across the day's matches.
 // kind 'max': the goal must be reached within a single match.
 // kind 'atMost': the stat must be at or below the goal in a single match.
@@ -21,8 +27,8 @@ const MISSION_POOL = [
   { id: 'win',      text: 'Win a battle',                   stat: 'wins',         kind: 'sum',    goal: 1,     xp: 250 },
   { id: 'towers3',  text: 'Build 3 Defense Towers',         stat: 'towers',       kind: 'sum',    goal: 3,     xp: 60 },
   { id: 'missile2', text: 'Fire 2 missiles',                stat: 'missiles',     kind: 'sum',    goal: 2,     xp: 110 },
-  { id: 'land25k',  text: 'Hold 25,000 land in one battle', stat: 'peakCells',    kind: 'max',    goal: 25000, xp: 100 },
-  { id: 'survive5', text: 'Survive 5 minutes in a battle',  stat: 'survivedSec',  kind: 'max',    goal: 300,   xp: 60 },
+  { id: 'land150k', text: 'Hold 150,000 land in one battle', stat: 'peakCells',   kind: 'max',    goal: 150000, xp: 120 },
+  { id: 'survive3', text: 'Survive 3 minutes in a battle',  stat: 'survivedSec',  kind: 'max',    goal: 180,   xp: 60 },
   { id: 'lead',     text: 'Hold 1st place during a battle', stat: 'tookLead',     kind: 'sum',    goal: 1,     xp: 120 },
 ];
 
@@ -131,7 +137,9 @@ export function applyMatchResult(match) {
   add(`Placed #${placement} of ${total}`, ((total - placement) / (total - 1)) * 100);
   if (match.won) add('Victory', 150);
   add(`Eliminations ×${match.eliminations || 0}`, (match.eliminations || 0) * 40);
-  add('Territory held', Math.min(80, (match.peakCells || 0) / 1500));
+  // 1 XP per 5,000 peak land: ~12 for a fair share (63k), capped at 400k land.
+  add('Territory held', Math.min(80, (match.peakCells || 0) / 5000));
+  // 4 XP per minute, capped at 10 minutes (about a full match).
   add('Time survived', Math.min(40, ((match.survivedSec || 0) / 60) * 4));
 
   // Day streak: consecutive calendar days with at least one battle.

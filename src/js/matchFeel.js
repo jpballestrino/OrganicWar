@@ -13,7 +13,9 @@ import { getCellOwner } from './simBridge.js';
 import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST } from './constants.js';
 
 const AUTO_QUICK_PLAY_KEY = 'ow_auto_quick_play';
-const LAND_MILESTONES = [2000, 5000, 10000, 25000, 50000, 100000, 200000, 400000];
+// A fair share of a 20-player map is ~63k land (everyone passes 50k in the first
+// 30s), so milestones start above that: each one marks a real power spike.
+const LAND_MILESTONES = [100000, 250000, 500000, 1000000];
 const ALIVE_CALLOUTS = {
   10: ['10 remain', 'The map is getting crowded'],
   5: ['Final 5', 'Every border is a front line'],
@@ -140,6 +142,7 @@ function isOnScreen(row, col) {
 // ── Match lifecycle ──────────────────────────────────────────────────────────
 function beginMatch() {
   ensureFeelDom();
+  document.body.classList.add('in-match');
   match = freshMatch();
   match.active = true;
   match.startedAt = performance.now();
@@ -336,7 +339,9 @@ export function onSnapshotStats({ cells, gold, rank, alive, leaderFid }) {
     const oldest = match.cellSamples[0];
     if (oldest && now - oldest.t >= 1500) {
       const drop = oldest.cells - cells;
-      if (drop >= Math.max(120, oldest.cells * 0.04) && now - match.lastAlarmAt > 12000) {
+      // Measured: an empire in full collapse loses ~2% of its land per 2s, and
+      // ordinary border skirmishing nets out near zero — so 1% is a real push.
+      if (drop >= Math.max(150, oldest.cells * 0.01) && now - match.lastAlarmAt > 12000) {
         match.lastAlarmAt = now;
         flashDanger();
         announce('Under attack', 'Your borders are collapsing — reinforce or counter', 'red', 'alarm');
@@ -391,6 +396,11 @@ export function onSnapshotStats({ cells, gold, rank, alive, leaderFid }) {
 // ── Wiring ───────────────────────────────────────────────────────────────────
 export function initMatchFeel({ socket, quit }) {
   if (quit) quitFn = quit;
+
+  // From the first in-match screen on, toasts move to the bottom-right corner
+  // (see feel.css) so they never cover the leaderboard. Cleared by the page
+  // reload that every exit path goes through.
+  socket.on('spawn-selection-start', () => document.body.classList.add('in-match'));
 
   socket.on('spawn-timer', (ticks) => {
     if (ticks > 0 && ticks <= 3) playSfx('tick');

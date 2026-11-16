@@ -79,6 +79,17 @@
     100% { transform: translate(0, 0); }
 }
 
+/* --- In-match toasts: bottom-right, clear of the leaderboard (top-right),
+       kill feed (top-left) and both HUD bars; newest sits nearest the corner --- */
+body.in-match #notificationContainer {
+    top: auto;
+    bottom: 76px;
+    right: 16px;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    max-width: min(420px, 60vw);
+}
+
 /* --- Leaderboard rank chip --- */
 .leaderboard-rank-chip {
     font-family: 'Orbitron', sans-serif;

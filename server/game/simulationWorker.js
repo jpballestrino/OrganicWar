@@ -492,11 +492,20 @@ class RoomSimWorker {
     this.prevAlive = nowAlive;
   }
 
-  // Best-effort "who finished them off": whoever now holds the cell where the
-  // dead faction's territory was last centred. Near death a faction is only a
-  // handful of cells, so its centroid sits on the last ground it lost. Returns 0
-  // when that ground is nature (missile kill) or the answer is unclear.
+  // Who eliminated `fid`: the sim records the last faction to take a cell from
+  // each player (conquest or missile), which at the moment their final cell
+  // falls is exactly their eliminator. Returns 0 if nobody is on record.
+  //
+  // Fallback for a WASM build that predates `player_last_attacker` (server/wasm
+  // not rebuilt yet): guess from whoever holds the ground where the faction was
+  // last centred.
   _findKiller(fid, nowAlive) {
+    const getPtr = this.exports.simulationstate_get_player_last_attacker_ptr;
+    if (getPtr) {
+      const view = new Uint32Array(this.exports.memory.buffer, getPtr(this.statePtr), 21);
+      const killer = view[fid];
+      return killer >= 1 && killer <= 20 && killer !== fid ? killer : 0;
+    }
     const cell = this.lastCentroidCell[fid];
     if (cell < 0 || cell >= TOTAL_CELLS) return 0;
     const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
