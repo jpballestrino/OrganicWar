@@ -70,8 +70,8 @@ exactly after a pure-performance change (the sim is deterministic):
 - [x] 4.3 Tests for every link + bots benefit from links.
 
 ### Phase 5 — Wrap-up
-- [ ] 5.1 `CLAUDE.md` updated to match the code.
-- [ ] 5.2 Full build + `cargo test` + lint + e2e worker match + browser check.
+- [x] 5.1 `CLAUDE.md` updated to match the code.
+- [x] 5.2 Full build + `cargo test` + lint + e2e worker match + browser check.
 - [ ] 5.3 PR description current.
 
 ## Findings
@@ -191,3 +191,12 @@ the cap per second, so any fair exchange rate is either useless or decisive.
   (measurement running: `PLAYERS=64 SECONDS=1200 node scripts/bench-room.mjs`), then Phase 3.
 - Phase 3.1–3.4 done (prices, plunder/salvage, Blitz, bots). Next: 3.5 proposals, then Phase 4.
 - Phase 4 done (synergies + visuals, tests). Next: Phase 5 (CLAUDE.md, final verification, PR text).
+- Phase 5: CLAUDE.md rewritten for the new wire format, economy, synergies,
+  capacity and build bar; dead client constants removed. Final checks: 5 sim
+  tests pass, lint clean, `npm run build` ok, browser suite all pass, 20-player
+  worker match = domination at 3:30 (6% of a core, 8 MB heap, ~80 KB/s deltas
+  + 7 KB/s stats per client), full-state sync exact.
+- **All planned work is done.** Open decisions for the owner: the proposals
+  above (bounty on the leader first — plunder feeds the snowball in big rooms),
+  and whether to offer a 64-player mode in the UI (engine + custom rooms
+  support it; Quick Battle stays 20).

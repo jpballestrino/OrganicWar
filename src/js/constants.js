@@ -1,17 +1,20 @@
+// Shared client + server constants. Values that mirror simulation-core/src/lib.rs
+// say so; the sim is always authoritative. Economy numbers (income, growth,
+// population cap, live prices) are NOT mirrored: the HUD reads them from the
+// sim-stats message (see simBridge.decodeStats).
+
 export const COLS = 1920;
 export const ROWS = 1080;
-export const CELL_SIZE = 1;
+export const MAP_WIDTH = COLS;
+export const MAP_HEIGHT = ROWS;
+export const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 // Faction capacity of one room — mirrors MAX_PLAYERS in simulation-core/src/lib.rs
-// (the server checks the two agree at room start). Index 0 is neutral land, so
-// per-faction arrays have MAX_FACTIONS + 1 entries.
+// (the worker refuses to start a room if the two disagree). Index 0 is neutral
+// land, so per-faction arrays have MAX_FACTIONS + 1 entries.
 export const MAX_FACTIONS = 64;
 // Players in a Quick Battle. Pacing, missions and milestones are calibrated
 // for 20 (see progression.js / matchFeel.js) — re-measure before changing.
 export const QUICK_PLAY_PLAYERS = 20;
-export const BORDER_BRIGHTNESS = 65;
-export const MAP_WIDTH = COLS * CELL_SIZE;
-export const MAP_HEIGHT = ROWS * CELL_SIZE;
-export const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 
 // Packed per-cell layout (one u16 per cell). Mirrors the bit layout in
 // simulation-core/src/lib.rs — keep both in lockstep.
@@ -21,54 +24,27 @@ export const CELL_OWNER_MASK = 0x007F;
 export const CELL_TERRAIN_SHIFT = 7;
 export const CELL_TERRAIN_MASK = 0x000F << CELL_TERRAIN_SHIFT; // 0x0780
 
-// Population growth model — MUST mirror simulation-core/src/lib.rs. Used only to
-// display the growth rate in the HUD (the server runs the authoritative sim).
-export const POP_CAP_PER_CELL = 2;
-// Gold income per owned cell per second — mirrors GOLD_PER_CELL_PER_SEC in
-// simulation-core/src/lib.rs. Used to show the income rate in the economy HUD.
-export const GOLD_PER_CELL_PER_SEC = 0.00333;
-// Gold cost of a defense building — mirrors DEFENSE_BUILDING_COST in
-// simulation-core/src/lib.rs. The server is authoritative; this is for the HUD
-// and a client-side pre-check so we don't send unaffordable build requests.
+// Base prices (the first building of each type; the sim adds 25% per one
+// already owned and sends the live price in sim-stats). Mirror the *_COST
+// consts in lib.rs; used before the first stats message arrives.
 export const DEFENSE_BUILDING_COST = 2000;
-// Defense building construction time (ms) — mirrors DEFENSE_BUILD_SECONDS (5s) in
-// simulation-core/src/lib.rs. Used as the client fill-bar duration; the server
-// sends the authoritative value in the building-placed event (this is a fallback).
-export const DEFENSE_BUILD_MS = 5000;
-// Missile silo + missiles — mirror SILO_* / MISSILE_* in simulation-core/src/lib.rs.
-// The server is authoritative; these drive HUD labels, client-side affordability
-// pre-checks, the dashed range/blast previews, and the build-time fill bar.
 export const SILO_BUILDING_COST = 10000;
-export const SILO_BUILD_MS = 10000;
-export const SILO_RANGE = 240;      // missile firing range from a completed silo (cells)
-
-// Gold Mine building
 export const MINE_BUILDING_COST = 3000;
-export const MINE_BUILD_MS = 10000;
-
-// Anti-Air Battery building
 export const ANTIAIR_BUILDING_COST = 5000;
-export const ANTIAIR_BUILD_MS = 10000;
-export const ANTIAIR_RADIUS = 400;
-export const ANTIAIR_MAX_CHARGES = 3;
-
-// City building — boosts max pop by CITY_POP_BONUS per completed city.
-// Mirrors BTYPE_CITY / CITY_BUILDING_COST / CITY_BUILD_SECONDS / CITY_POP_BONUS in lib.rs.
 export const CITY_BUILDING_COST = 2000;
-export const CITY_BUILD_MS = 5000;
-export const CITY_POP_BONUS = 0.05;
 export const MISSILE_COST = 2000;
-export const MISSILE_BLAST_RADIUS = 15;
-export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill
-export const PEAK_GROWTH_FRACTION = 0.05; // peak troops/sec as a fraction of cap
-export const MIN_GROWTH_PER_SEC = 5.0;    // recovery floor
 
-// Max troops a single defended cell can cost (defender troops-per-cell density is
-// clamped to this in the sim). Also the top of the territory render-opacity ramp:
-// difficulty 0..DIFFICULTY_CAP maps to colour opacity 0..100%. Mirror lib.rs.
-export const DIFFICULTY_CAP = 50;
-// Floor so freshly-taken, low-density territory still reads as owned (not invisible).
-export const MIN_TERRITORY_OPACITY = 0.12;
+// Geometry for previews and range rings — mirror lib.rs.
+export const BUILDING_RADIUS = 40;     // defense tower fortification radius (cells)
+export const SILO_RANGE = 240;         // missile range from a silo (cells)
+export const ANTIAIR_RADIUS = 400;     // anti-air interception radius (cells)
+export const MISSILE_BLAST_RADIUS = 15;
+// Fallback progress-bar duration; building-placed carries the real buildMs.
+export const DEFENSE_BUILD_MS = 5000;
+
+// Troop growth peaks at this population fill (lib.rs GROWTH_PEAK_RATIO); the
+// HUD colours the growth rate green below it and red above it.
+export const GROWTH_PEAK_RATIO = 0.40;
 
 // ── Building links (synergies) — mirror LINK_* in simulation-core/src/lib.rs ──
 // Two of your COMPLETED buildings within LINK_RADIUS cells of each other link
@@ -131,17 +107,6 @@ export function fmtInt(n) {
   return Math.max(0, Math.floor(n || 0)).toLocaleString('en-US');
 }
 
-// Troops/sec a player gains right now, given current troops and max population.
-// Same downward parabola the sim uses (peak at GROWTH_PEAK_RATIO, 0 at full pop).
-export function troopGrowthPerSec(troops, maxPop) {
-  if (maxPop <= 0 || troops >= maxPop) { return 0; }
-  const p = Math.min(Math.max(troops / maxPop, 0), 1);
-  const root2 = 2 * GROWTH_PEAK_RATIO - 1;                       // -0.2
-  const shapePeak = (1 - GROWTH_PEAK_RATIO) * (GROWTH_PEAK_RATIO - root2); // 0.36
-  const shape = Math.max((1 - p) * (p - root2) / shapePeak, 0);
-  return Math.max(maxPop * PEAK_GROWTH_FRACTION * shape, MIN_GROWTH_PER_SEC);
-}
-
 // Faction colours. The first 30 are hand-picked; the rest (rooms bigger than
 // 30) are spread around the hue wheel by the golden angle so neighbours in id
 // order never look alike. One list feeds every format the UI needs.
@@ -162,70 +127,10 @@ function hslToRgb(h, sat, light) {
 }
 
 export const factionRGB = {};
-export const factionBaseColors = {};
 export const factionHexColors = {};
 for (let fid = 1; fid <= MAX_FACTIONS; fid++) {
   const rgb = HAND_PICKED_RGB[fid - 1]
     || hslToRgb((fid * 137.508) % 360, 0.55 + (fid % 3) * 0.1, 0.58 + (fid % 2) * 0.08);
   factionRGB[fid] = rgb;
-  factionBaseColors[fid] = rgb.join(', ');
   factionHexColors[fid] = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
-
-export const terrainRGB = {
-  0: [241, 245, 237],  // Plains (Light Pale Greenish-Tan)
-  1: [230, 223, 210],  // Highlands (Soft Tan)
-  2: [215, 215, 215],  // Mountains (Pale Grey)
-  3: [120, 190, 220],   // Water (Soft Light Blue)
-};
-
-export const terrainColors = {
-  0: '#f1f5ed', // Plains
-  1: '#e6dfd2', // Highlands
-  2: '#d7d7d7', // Mountains
-  3: '#78bedc',  // Water
-};
-
-export const TERRAIN_WATER = 3;
-export const CAPTURE_COST_PLAINS = 0.15;
-export const CAPTURE_COST_HIGHLANDS = 0.45;
-export const CAPTURE_COST_MOUNTAINS = 1.00;
-export const MIN_ATTACK_FORCE = 12;
-export const INITIAL_TROOPS = 200;
-export const INITIAL_GOLD = 100;
-export const BASE_CAPACITY = 150;
-export const SHOP_COST_MULTIPLIER = 1.0;
-export const SHOP_COSTS = {
-  factory: 3000,
-  city: 4500,
-  defense: 2000,
-  missile: 6000,
-  silo: 3500,
-  port: 2500,
-  artillery: 4000,
-};
-export const INITIAL_MISSILE_COOLDOWN = -0.8;
-export const SILO_UPGRADE_COST_L2 = 20000;
-export const SILO_UPGRADE_COST_L3 = 50000;
-export const SILO_UPGRADE_RANGES = [100, 150, 200];
-export const SILO_BLAST_RADIUS = [18, 30, 46];
-export const EXPLOSION_VISUAL_MULTIPLIER = 3;
-export const VITAL_SPACE_RADIUS = 40;
-
-// Defense building influence radius (cells). Must match BUILDING_RADIUS in
-// simulation-core/src/lib.rs and the radius emitted in the building-placed event.
-export const BUILDING_RADIUS = 40;
-
-// Faction & Doctrine modifiers
-export const CAPACITY_GAIN_STANDARD = 0.125;
-export const CAPACITY_GAIN_EXPANSIONIST = 0.1875;
-export const CAPACITY_CITY_MULTIPLIER = 0.25;
-
-export const DOCTRINE_FACTORY_COST_INDUSTRIAL = 0.8;
-export const DOCTRINE_FACTORY_COST_MILITARIST = 1.2;
-
-// Expansion velocity limits
-export const MIN_EXPANSION_STEPS = 3;
-export const MAX_EXPANSION_STEPS = 500;
-export const MAX_NATURE_EXPANSION_STEPS = 300;
-export const MIN_NATURE_EXPANSION_STEPS = 10;
