@@ -11,6 +11,9 @@ import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
 import { registerSim, getCellOwner } from './js/simBridge.js';
 import { generateTerrain, warmMapCache } from './js/mapGen.js';
+import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
+import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
+import { renderProgressCards } from './js/progression.js';
 
 let wasmModule = null;
 let simulation = null;
@@ -155,8 +158,11 @@ function initLobbyUI() {
     'Nexus-1', 'Nova-7', 'Cygnus-X', 'Orion-9', 'Aegis-4', 'Vanguard-2', 
     'Pulse-8', 'Zenith-5', 'Cobalt-3', 'Titan-6', 'Atlas-0', 'Echo-7',
   ];
+  // Remember a guest's callsign between visits; fall back to a random one.
+  let savedNick = '';
+  try { savedNick = localStorage.getItem('ow_nickname') || ''; } catch (_) { /* storage blocked */ }
   if (nickInput && !nickInput.value) {
-    nickInput.value = androidNames[Math.floor(Math.random() * androidNames.length)];
+    nickInput.value = savedNick || androidNames[Math.floor(Math.random() * androidNames.length)];
   }
 
   const btnMultiplayer = document.getElementById('btn-multiplayer');
@@ -178,9 +184,14 @@ function initLobbyUI() {
   const handleQuickPlay = () => {
     let name = nickInput ? nickInput.value : 'Guest';
     state.playerNickname = name;
+    try { localStorage.setItem('ow_nickname', name); } catch (_) { /* storage blocked */ }
     if (homeScreen) homeScreen.style.display = 'none';
     socket.emit('quick-play', { nickname: state.playerNickname });
   };
+
+  // "Play Again" on the recap screen reloads the page with this flag set, so the
+  // player drops straight into the next Quick Battle instead of the title screen.
+  if (consumeAutoQuickPlay()) { setTimeout(handleQuickPlay, 200); }
 
   const btnQuickPlay = document.getElementById('btn-quick-play');
   if (btnQuickPlay) btnQuickPlay.onclick = handleQuickPlay;
@@ -426,6 +437,16 @@ function initEscMenu() {
       try { localStorage.setItem('lowGraphics', e.target.checked ? '1' : '0'); } catch (_) {}
     };
   }
+
+  // Sound toggle — persisted by the sfx module.
+  const toggleSound = document.getElementById('toggleSound');
+  if (toggleSound) {
+    toggleSound.checked = !isMuted();
+    toggleSound.onchange = (e) => {
+      setMuted(!e.target.checked);
+      if (e.target.checked) playSfx('select');
+    };
+  }
 }
 
 // Mobile device guard — game requires keyboard + mouse; no touch support
@@ -434,7 +455,10 @@ if (_isMobile) {
   const mb = document.getElementById('mobileBlock');
   if (mb) mb.style.display = 'flex';
 } else {
+  initSfx();
   initNetwork();
+  initMatchFeel({ socket, quit: quitAndReload });
+  renderProgressCards();
   initAuthUI();
   initGuildUI();
   initRankingsUI();
@@ -506,7 +530,12 @@ async function startSimulationEngine() {
       e.preventDefault();
     });
 
-    canvas.addEventListener('mousedown', (e) => {
+    // A press on the map: right button cancels, left button orders/places.
+    // Left presses are dispatched on mouse-up (see below) so a drag can pan the
+    // camera without also firing an attack.
+    const handleCanvasPress = (e) => {
+      // Eliminated players watching the rest of the match can't issue orders.
+      if (state.isSpectating) return;
       if (e.button === 2) { // Right click
         if (state.activePurchaseMode) {
           state.activePurchaseMode = null;
@@ -520,6 +549,7 @@ async function startSimulationEngine() {
               targetOwner = 0;
             }
             socket.emit('sim-input', { type: 'cancel_front', payload: { targetFaction: targetOwner } });
+            playSfx('cancel');
           }
         }
         return;
@@ -618,21 +648,57 @@ async function startSimulationEngine() {
                 attackPercentage: state.attackPercentage
               }
             });
+            playSfx('order');
           }
         }
       }
+    };
+
+    // Left-drag pans the camera; a press that never moves past the threshold is
+    // a click. Spectators can still drag to look around.
+    const DRAG_THRESHOLD_PX = 6;
+    let press = null;
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2) { handleCanvasPress(e); return; }
+      if (e.button !== 0) return;
+      press = {
+        event: e, x: e.clientX, y: e.clientY,
+        camX: renderer.camera.x, camY: renderer.camera.y, dragged: false,
+      };
     });
+    window.addEventListener('mousemove', (e) => {
+      if (!press) return;
+      const dx = e.clientX - press.x;
+      const dy = e.clientY - press.y;
+      if (!press.dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      press.dragged = true;
+      state.isPanning = true;
+      // updateCamera() clamps to the map bounds on the next frame.
+      renderer.camera.x = press.camX - dx / renderer.camera.zoom;
+      renderer.camera.y = press.camY - dy / renderer.camera.zoom;
+      canvas.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!press || e.button !== 0) return;
+      const done = press;
+      press = null;
+      state.isPanning = false;
+      if (!done.dragged) handleCanvasPress(done.event);
+    });
+    window.addEventListener('blur', () => { press = null; state.isPanning = false; });
 
     // Space cancels an in-progress attack, recalling the attacking troops to defense.
     // '3' toggles defense building placement mode.
     window.addEventListener('keydown', (e) => {
       const active = document.activeElement;
       const inField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+      if (state.isSpectating) return;
 
       if (e.code === 'Space' && state.gameState === 'PLAYING') {
         if (inField) return;
         e.preventDefault();
         socket.emit('sim-input', { type: 'cancel' });
+        playSfx('cancel');
         return;
       }
 
@@ -680,9 +746,14 @@ async function startSimulationEngine() {
       if (e.key === '2' && state.gameState === 'PLAYING') {
         if (inField) return;
         e.preventDefault();
-        const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;
-        if (siloCount === 0) {
+        const mySilos = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo');
+        if (mySilos.length === 0) {
           showToast('You must build a Missile Silo first.', 'error');
+          return;
+        }
+        // A silo under construction can't fire yet.
+        if (mySilos.every(b => b.constructing)) {
+          showToast('Your Missile Silo is still under construction.', 'error');
           return;
         }
         if (state.playerGold < MISSILE_COST) {
@@ -704,12 +775,17 @@ async function startSimulationEngine() {
       const btn = document.getElementById(id);
       if (btn) {
         btn.addEventListener('click', () => {
-          if (state.gameState !== 'PLAYING') return;
+          if (state.gameState !== 'PLAYING' || state.isSpectating) return;
+          playSfx('select');
           if (btn.classList.contains('disabled')) {
             if (mode === 'missile') {
-              const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;
-              if (siloCount === 0) {
+              const mySilos = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo');
+              if (mySilos.length === 0) {
                 showToast('You must build a Missile Silo first.', 'error');
+                return;
+              }
+              if (mySilos.every(b => b.constructing)) {
+                showToast('Your Missile Silo is still under construction.', 'error');
                 return;
               }
             }
@@ -774,7 +850,9 @@ function gameLoop(time) {
       const overlayCanvas = document.getElementById('overlayCanvas');
       const gameCanvas = document.getElementById('gameCanvas');
       
-      if (state.gameState === 'SPAWN_SELECTION' || state.activePurchaseMode) {
+      if (state.isPanning) {
+          if (gameCanvas) gameCanvas.style.cursor = 'grabbing';
+      } else if (state.gameState === 'SPAWN_SELECTION' || state.activePurchaseMode) {
           if (gameCanvas) gameCanvas.style.cursor = 'crosshair';
       } else {
           if (gameCanvas) gameCanvas.style.cursor = 'default';

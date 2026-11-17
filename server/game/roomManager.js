@@ -402,6 +402,14 @@ export function matchmakeGuildWars() {
 }
 
 export const SAFE_ZONE_RADIUS = 80;
+// Seconds players get to pick a spawn. The map is on screen for the first time
+// here, so 5s was too short to read it; the phase ends early once every human
+// has picked (see the select-spawn handler).
+const SPAWN_SELECTION_SECONDS = 8;
+// A faction holding this share of all land wins outright, so the match ends on
+// a decisive moment instead of a long mop-up (or a fortified stalemate). Guild
+// wars are team games and keep last-team-standing.
+const DOMINATION_SHARE = 0.65;
 
 export function startSpawnSelection(room) {
   room.isOpen = false;
@@ -409,27 +417,30 @@ export function startSpawnSelection(room) {
   
   // mapId (= room.preset) lets the client repaint the correct terrain before
   // players pick spawns — this is the first screen that renders the map canvas.
-  io.to(room.id).emit('spawn-selection-start', { duration: 5, mapId: room.preset });
+  io.to(room.id).emit('spawn-selection-start', { duration: SPAWN_SELECTION_SECONDS, mapId: room.preset });
   log('info', `[Room ${room.id}] Entering spawn selection phase (map: ${room.preset})`);
 
   updateLobbyList();
 
-  let ticks = 5;
+  let ticks = SPAWN_SELECTION_SECONDS;
   io.to(room.id).emit('spawn-timer', ticks);
-  
+
   room.countdownInterval = setInterval(() => {
     ticks--;
     io.to(room.id).emit('spawn-timer', ticks);
 
-    if (ticks <= 0) {
+    // finalizeSpawns may already have run early (all humans picked).
+    if (ticks <= 0 || room.phase !== 'SPAWN_SELECTION') {
       clearInterval(room.countdownInterval);
-      finalizeSpawns(room);
+      if (room.phase === 'SPAWN_SELECTION') { finalizeSpawns(room); }
     }
   }, 1000);
 }
 
 export function finalizeSpawns(room) {
+  if (room.phase !== 'SPAWN_SELECTION') { return; }
   room.phase = 'PLAYING';
+  if (room.spawnEarlyTimer) { clearTimeout(room.spawnEarlyTimer); room.spawnEarlyTimer = null; }
 
   // Fill empty slots with bots given varied random call-sign names.
   const usedNames = new Set(
@@ -514,7 +525,8 @@ export function startMatchNow(room) {
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
       mapId: room.preset,
-      onGameOver: (winnerId, stats) => handleGameOver(room, winnerId, stats),
+      dominationShare: room.isGuildWar ? 0 : DOMINATION_SHARE,
+      onGameOver: (winnerId, stats, byDomination) => handleGameOver(room, winnerId, stats, byDomination),
       onError: (message) => {
         log('error', `[Room ${room.id}] Simulation crashed: ${message}`);
         io.to(room.id).emit('server-error', { message: 'The game simulation crashed. Please return to the main menu.' });
@@ -547,7 +559,7 @@ export function updateLobbyList() {
   io.emit('rooms-list-update', buildLobbyList());
 }
 
-export function handleGameOver(room, winnerFaction, matchStats = {}) {
+export function handleGameOver(room, winnerFaction, matchStats = {}, byDomination = false) {
   if (room.gameOverHandled) { return; }
   room.gameOverHandled = true;
 
@@ -563,7 +575,12 @@ export function handleGameOver(room, winnerFaction, matchStats = {}) {
 
   let isAllianceWin = winnerFaction ? !!room.sim.alliances[winnerFaction] : false;
 
-  io.to(room.id).emit('game-over', { winner: winnerFaction });
+  io.to(room.id).emit('game-over', {
+    winner: winnerFaction,
+    stats: matchStats,
+    byDomination,
+    durationSec: Math.floor((Date.now() - room.createdAt) / 1000),
+  });
 
   if (room.isGuildWar && winnerFaction) {
     let winningGuild = winnerFaction <= room.teamSize ? room.guildA : room.guildB;
@@ -597,6 +614,17 @@ export function handleGameOver(room, winnerFaction, matchStats = {}) {
     }
     averageRoomElo = totalElo / totalHumans;
   }
+
+  // Rank the humans against each other by how the sim placed them (1 = winner,
+  // higher = eliminated earlier; 0/missing = unknown, ranked last). Previously
+  // every non-winner got last place, so ranked ELO ignored how long you survived.
+  const simPlacement = (fid) => {
+    const p = matchStats[fid] && matchStats[fid].placement;
+    return p > 0 ? p : Number.MAX_SAFE_INTEGER;
+  };
+  Object.keys(room.humanPlayers || {})
+    .sort((a, b) => simPlacement(a) - simPlacement(b))
+    .forEach((fid, index) => { room.humanPlayers[fid].placement = index + 1; });
 
   for (let fid in room.humanPlayers) {
     let player = room.humanPlayers[fid];

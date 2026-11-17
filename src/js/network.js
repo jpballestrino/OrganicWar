@@ -4,6 +4,7 @@ import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken } from './auth.js';
 import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
+import { onSnapshotStats } from './matchFeel.js';
 import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILDING_COST, DEFENSE_BUILD_MS, SILO_BUILDING_COST, SILO_RANGE, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST, CITY_BUILDING_COST, CITY_POP_BONUS } from './constants.js';
 
 export const socket = io({
@@ -97,7 +98,7 @@ export function updateDevDashboard() {
 
 // Push an elimination into the kill feed (top-left). Newest on top, capped, each
 // entry auto-fades after a few seconds. Called from the `player-eliminated` event.
-function addKillFeedEntry(factionId) {
+function addKillFeedEntry(factionId, killerId = 0) {
   const feed = document.getElementById('killFeed');
   if (!feed) return;
   const slot = state.activePlayerSlots ? state.activePlayerSlots[factionId] : null;
@@ -110,6 +111,13 @@ function addKillFeedEntry(factionId) {
     `<span class="kill-feed-skull">☠</span>` +
     `<span class="kill-feed-name" style="color:${color}">${escapeHtml(name)}</span>` +
     `<span>eliminated</span>`;
+  if (killerId && killerId !== factionId) {
+    const kSlot = state.activePlayerSlots ? state.activePlayerSlots[killerId] : null;
+    const kName = kSlot && kSlot.nickname ? kSlot.nickname : `Player ${killerId}`;
+    entry.innerHTML +=
+      `<span>by</span>` +
+      `<span class="kill-feed-name" style="color:${factionHexColors[killerId] || '#ffffff'}">${escapeHtml(kName)}</span>`;
+  }
   feed.prepend(entry);
 
   // Cap the visible feed length.
@@ -120,60 +128,6 @@ function addKillFeedEntry(factionId) {
     entry.classList.add('fade-out');
     setTimeout(() => entry.remove(), 500);
   }, 6000);
-}
-
-export function triggerEndGame(status) {
-  state.gameState = 'END_GAME';
-    
-  const container = document.getElementById('gameArea') || document.body;
-  const oldOverlay = document.getElementById('endGameOverlay');
-  if (oldOverlay) {oldOverlay.remove();}
-
-  const overlay = document.createElement('div'); 
-  overlay.className = 'game-overlay';
-  overlay.id = 'endGameOverlay';
-  overlay.style.position = 'fixed';
-  overlay.style.top = '0';
-  overlay.style.left = '0';
-  overlay.style.width = '100vw';
-  overlay.style.height = '100vh';
-  overlay.style.background = 'rgba(10,10,10,0.9)';
-  overlay.style.display = 'flex';
-  overlay.style.flexDirection = 'column';
-  overlay.style.alignItems = 'center';
-  overlay.style.justifyContent = 'center';
-  overlay.style.zIndex = '10000';
-  overlay.style.pointerEvents = 'auto';
-
-  const title = document.createElement('div');
-  title.style.fontSize = '3rem';
-  title.style.fontWeight = 'bold';
-  title.style.marginBottom = '20px';
-  title.style.color = status === 'VICTORY' ? '#4ade80' : '#f87171';
-  title.innerText = status === 'VICTORY' ? '🏆 Victory!' : '💀 Defeat';
-  overlay.appendChild(title);
-
-  const desc = document.createElement('div');
-  desc.style.color = '#ccc';
-  desc.style.marginBottom = '30px';
-  desc.style.fontSize = '1.2rem';
-  desc.innerText = status === 'VICTORY' ? 'Congratulations, Commander! You won.' : 'Better luck next time, Commander.';
-  overlay.appendChild(desc);
-
-  const btnContainer = document.createElement('div');
-  btnContainer.style.display = 'flex';
-  btnContainer.style.gap = '15px';
-
-  const restartBtn = document.createElement('button');
-  restartBtn.className = 'home-btn';
-  restartBtn.style.padding = '12px 24px';
-  restartBtn.style.background = '#28a745';
-  restartBtn.innerText = 'Exit to Title Screen';
-  restartBtn.onclick = () => quitAndReload();
-  btnContainer.appendChild(restartBtn);
-
-  overlay.appendChild(btnContainer);
-  container.appendChild(overlay);
 }
 
 // ── Reconnection overlay helpers ─────────────────────────────────────────────
@@ -442,15 +396,13 @@ export function initNetwork() {
     showToast(message, type);
   });
 
-  socket.on('player-eliminated', ({ factionId }) => {
-    addKillFeedEntry(factionId);
+  socket.on('player-eliminated', ({ factionId, killerId }) => {
+    addKillFeedEntry(factionId, killerId);
     state.eliminatedFactions.add(factionId);
   });
 
-  socket.on('game-over', ({ winner }) => {
-    const isWin = winner === state.playerFaction;
-    triggerEndGame(isWin ? 'VICTORY' : 'DEFEAT');
-  });
+  // `game-over` (and the player's own elimination) are handled by matchFeel.js,
+  // which shows the recap screen with placement, XP and the play-again flow.
 
   socket.on('rooms-list-update', (list) => {
     const container = document.getElementById('roomsList');
@@ -499,7 +451,7 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, playerKills, playerGoldSpent, centroids }) => {
+  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, playerKills, playerGoldSpent, centroids, landCells, dominationShare }) => {
     let t0 = 0;
     if (state.debug) t0 = performance.now();
 
@@ -631,7 +583,7 @@ export function initNetwork() {
               const fColor = factionHexColors[lb.fid] || '#fff';
               const isMe = lb.fid === fid;
               const slot = state.activePlayerSlots ? state.activePlayerSlots[lb.fid] : null;
-              const name = isMe ? 'You' : (slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
+              const name = isMe ? 'You' : escapeHtml(slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
               const fmtScore = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : lb.score;
               const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
               return `
@@ -683,7 +635,8 @@ export function initNetwork() {
         if (btnSilo) btnSilo.classList.toggle('disabled', gold < SILO_BUILDING_COST);
 
         const btnMissile = document.getElementById('btnFireMissile');
-        if (btnMissile) btnMissile.classList.toggle('disabled', gold < MISSILE_COST || siloCount === 0);
+        const readySilos = myBuildings.filter(b => b.type === 'silo' && !b.constructing).length;
+        if (btnMissile) btnMissile.classList.toggle('disabled', gold < MISSILE_COST || readySilos === 0);
 
         const btnMine = document.getElementById('btnBuildMine');
         if (btnMine) btnMine.classList.toggle('disabled', gold < MINE_BUILDING_COST);
@@ -693,6 +646,27 @@ export function initNetwork() {
 
         const btnCity = document.getElementById('btnBuildCity');
         if (btnCity) btnCity.classList.toggle('disabled', gold < CITY_BUILDING_COST);
+
+        // Feed the game-feel layer (rank callouts, under-attack alerts, milestones).
+        const aliveBoard = state.leaderboardData.filter(lb => !lb.isEliminated);
+        // Largest territory (not the same as the score leader) for domination.
+        let landLeaderFid = 0;
+        let landLeaderCells = 0;
+        for (let i = 1; i <= 20; i++) {
+          const c = maxPopArray[i] / POP_CAP_PER_CELL;
+          if (c > landLeaderCells) { landLeaderCells = c; landLeaderFid = i; }
+        }
+        onSnapshotStats({
+          cells,
+          gold,
+          rank: aliveBoard.findIndex(lb => lb.fid === fid) + 1,
+          alive: aliveBoard.length,
+          leaderFid: aliveBoard.length ? aliveBoard[0].fid : 0,
+          landCells: landCells || 0,
+          dominationShare: dominationShare || 0,
+          landLeaderFid,
+          landLeaderCells,
+        });
       }
     }
   });

@@ -160,6 +160,7 @@ export function homeTemplate() {
 
             <!-- STATE A-2: Guest Nickname Entry -->
             <div id="homeStateGuest" style="display: none;">
+                <div class="progress-card"></div>
                 <div class="home-input-group">
                     <label for="nicknameInput" class="home-label">GUEST CALLSIGN</label>
                     <div class="home-input-wrap">
@@ -192,6 +193,7 @@ export function homeTemplate() {
                         <span class="stat-badge guild-badge" id="lblGuild" style="display:none;">[TAG] GuildName</span>
                     </div>
                 </div>
+                <div class="progress-card"></div>
 
                 <div class="home-buttons">
                     <button id="btn-quick-play" class="home-btn home-btn-play">

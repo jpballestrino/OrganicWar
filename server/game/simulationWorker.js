@@ -26,6 +26,8 @@ const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 
 // --- Input validators (gate every WASM call to prevent out-of-bounds panics) ---
 const validFaction = (f) => Number.isInteger(f) && f >= 1 && f <= 20;
+// A front's target: 0 = the neutral-land front, 1-20 = an enemy faction.
+const validFrontTarget = (t) => Number.isInteger(t) && t >= 0 && t <= 20;
 const validCell    = (c) => Number.isInteger(c) && c >= 0 && c < TOTAL_CELLS;
 const validPct     = (p) => typeof p === 'number' && p >= 1 && p <= 90;
 const FULL_SNAPSHOT_THRESHOLD = Math.floor(TOTAL_CELLS * 0.05);
@@ -88,6 +90,17 @@ class RoomSimWorker {
     const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
     generateTerrain(this.exports.memory, cellPtr, this.mapId);
 
+    // Total conquerable land (terrain bits 7-10; 3 = water), counted once: the
+    // denominator for the domination victory and the clients' "% of map" HUD.
+    const terrainCells = new Uint16Array(this.exports.memory.buffer, cellPtr, TOTAL_CELLS);
+    let land = 0;
+    for (let i = 0; i < TOTAL_CELLS; i++) {
+      if (((terrainCells[i] >> 7) & 0xF) !== 3) land++;
+    }
+    this.landCells = land;
+    // Share of all land that wins the match outright (0 disables).
+    this.dominationShare = Number(opts.dominationShare) > 0 ? Number(opts.dominationShare) : 0;
+
     this.exports.simulationstate_init_players(
       this.statePtr,
       Math.max(1, Math.min(20, numPlayers)),
@@ -108,6 +121,14 @@ class RoomSimWorker {
 
     this.prevAlive = new Set();
     this.gameOverFired = false;
+
+    // Per-match bookkeeping for the end-of-match recap (placement, peak land,
+    // survival time, who finished whom). JS-side only — the sim is untouched.
+    this.startedAt = Date.now();
+    this.peakCells = new Uint32Array(21);
+    this.lastCentroidCell = new Int32Array(21).fill(-1);
+    this.placements = {};
+    this.survivedSec = {};
 
     this.profileMetrics = {
       tickCount: 0,
@@ -387,6 +408,9 @@ class RoomSimWorker {
     const centroids = {};
     for (let fid = 1; fid <= 20; fid++) {
       if (owned[fid] > 0) {
+        if (owned[fid] > this.peakCells[fid]) this.peakCells[fid] = owned[fid];
+        this.lastCentroidCell[fid] =
+          Math.round(rowSum[fid] / owned[fid]) * MAP_WIDTH + Math.round(colSum[fid] / owned[fid]);
         centroids[fid] = {
           row: Math.round(rowSum[fid] / owned[fid]),
           col: Math.round(colSum[fid] / owned[fid]),
@@ -408,7 +432,9 @@ class RoomSimWorker {
         playerGold: goldBuffer,
         playerKills: killBuffer,
         playerGoldSpent: goldSpentBuffer,
-        centroids
+        centroids,
+        landCells: this.landCells,
+        dominationShare: this.dominationShare,
       }
     });
     this.lastSnapshotTick = currentTick;
@@ -428,24 +454,54 @@ class RoomSimWorker {
     }
 
     if (this.prevAlive.size > 0) {
+      const killView = new Float32Array(
+        this.exports.memory.buffer, this.exports.simulationstate_get_player_kill_count_ptr(this.statePtr), 21);
+      const survivedSec = Math.floor((Date.now() - this.startedAt) / 1000);
       for (const fid of this.prevAlive) {
         if (!nowAlive.has(fid)) {
-          parentPort.postMessage({ type: 'emit', event: 'player-eliminated', payload: { factionId: fid } });
+          // Everyone still standing outlasted this faction.
+          const placement = nowAlive.size + 1;
+          this.placements[fid] = placement;
+          this.survivedSec[fid] = survivedSec;
+          parentPort.postMessage({ type: 'emit', event: 'player-eliminated', payload: {
+            factionId: fid,
+            killerId: this._findKiller(fid, nowAlive),
+            placement,
+            aliveCount: nowAlive.size,
+            survivedSec,
+            peakCells: this.peakCells[fid],
+            kills: Math.floor(killView[fid] || 0),
+          } });
         }
       }
 
-      if (this.prevAlive.size >= 2 && nowAlive.size <= 1 && !this.gameOverFired) {
+      const cellsPtr = this.exports.simulationstate_get_player_owned_cells_ptr(this.statePtr);
+      const cellsView = new Uint32Array(this.exports.memory.buffer, cellsPtr, 21);
+
+      // Domination: one faction holds the winning share of all land.
+      let dominator = 0;
+      if (this.dominationShare > 0 && nowAlive.size > 1) {
+        for (const fid of nowAlive) {
+          if (cellsView[fid] >= this.landCells * this.dominationShare) { dominator = fid; break; }
+        }
+      }
+
+      const lastStanding = this.prevAlive.size >= 2 && nowAlive.size <= 1;
+      if ((lastStanding || dominator) && !this.gameOverFired) {
         this.gameOverFired = true;
-        const winner = nowAlive.size === 1 ? [...nowAlive][0] : null;
+        const winner = dominator || (nowAlive.size === 1 ? [...nowAlive][0] : null);
+
+        // On a domination win the survivors are ranked behind the winner by land.
+        if (dominator) {
+          [...nowAlive].filter(fid => fid !== winner)
+            .sort((a, b) => cellsView[b] - cellsView[a])
+            .forEach((fid, i) => { this.placements[fid] = i + 2; });
+        }
 
         // Gather final stats for all players
         const stats = {};
-        const cellsPtr = this.exports.simulationstate_get_player_owned_cells_ptr(this.statePtr);
-        const cellsView = new Uint32Array(this.exports.memory.buffer, cellsPtr, 21);
         const goldPtr = this.exports.simulationstate_get_player_gold_ptr(this.statePtr);
         const goldView = new Float32Array(this.exports.memory.buffer, goldPtr, 21);
-        const killPtr = this.exports.simulationstate_get_player_kill_count_ptr(this.statePtr);
-        const killView = new Float32Array(this.exports.memory.buffer, killPtr, 21);
         const goldSpentPtr = this.exports.simulationstate_get_player_gold_spent_ptr(this.statePtr);
         const goldSpentView = new Float32Array(this.exports.memory.buffer, goldSpentPtr, 21);
 
@@ -454,15 +510,40 @@ class RoomSimWorker {
             cells: cellsView[fid] || 0,
             gold: Math.floor(goldView[fid] || 0),
             kills: Math.floor(killView[fid] || 0),
-            goldSpent: Math.floor(goldSpentView[fid] || 0)
+            goldSpent: Math.floor(goldSpentView[fid] || 0),
+            peakCells: this.peakCells[fid],
+            placement: fid === winner ? 1 : (this.placements[fid] || 0),
+            survivedSec: this.survivedSec[fid] ?? survivedSec,
           };
         }
 
-        parentPort.postMessage({ type: 'gameOver', winner, stats });
+        parentPort.postMessage({ type: 'gameOver', winner, stats, byDomination: !!dominator });
       }
     }
 
     this.prevAlive = nowAlive;
+  }
+
+  // Who eliminated `fid`: the sim records the last faction to take a cell from
+  // each player (conquest or missile), which at the moment their final cell
+  // falls is exactly their eliminator. Returns 0 if nobody is on record.
+  //
+  // Fallback for a WASM build that predates `player_last_attacker` (server/wasm
+  // not rebuilt yet): guess from whoever holds the ground where the faction was
+  // last centred.
+  _findKiller(fid, nowAlive) {
+    const getPtr = this.exports.simulationstate_get_player_last_attacker_ptr;
+    if (getPtr) {
+      const view = new Uint32Array(this.exports.memory.buffer, getPtr(this.statePtr), 21);
+      const killer = view[fid];
+      return killer >= 1 && killer <= 20 && killer !== fid ? killer : 0;
+    }
+    const cell = this.lastCentroidCell[fid];
+    if (cell < 0 || cell >= TOTAL_CELLS) return 0;
+    const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
+    const cells = new Uint16Array(this.exports.memory.buffer, cellPtr, TOTAL_CELLS);
+    const owner = cells[cell] & 0x7F;
+    return owner !== fid && nowAlive.has(owner) ? owner : 0;
   }
 
   handleInput(factionId, input) {
@@ -479,7 +560,7 @@ class RoomSimWorker {
       this.exports.simulationstate_cancel_expansion(this.statePtr, factionId);
     } else if (input.type === 'cancel_front') {
       const { targetFaction } = input.payload ?? {};
-      if (validFaction(targetFaction)) {
+      if (validFrontTarget(targetFaction)) {
         this.exports.simulationstate_cancel_front(this.statePtr, factionId, targetFaction);
       }
     } else if (input.type === 'build_defense') {
