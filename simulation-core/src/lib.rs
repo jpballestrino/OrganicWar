@@ -138,6 +138,24 @@ const CITY_BUILDING_COST: f32 = 2000.0;
 const CITY_BUILD_SECONDS: f32 = 5.0;
 const CITY_POP_BONUS: f32 = 0.05;
 
+// ── Economy (see the "Economy" section of CLAUDE.md) ─────────────────────────
+// Each building of a type costs BUILDING_PRICE_STEP more than the last one of
+// that type: price = base × (1 + step × already_owned). Income grows with
+// land but flat prices let a big empire carpet the map with towers by the
+// mid-game; this keeps every purchase a choice. Under-construction buildings
+// count, so a burst of placements can't dodge the step.
+const BUILDING_PRICE_STEP: f32 = 0.25;
+// Eliminating a faction takes its whole treasury (plunder); razing an enemy
+// defense tower by conquest pays this share of the tower's base price (salvage).
+const TOWER_SALVAGE_SHARE: f32 = 0.5;
+// Blitz (key 1): for BLITZ_SECONDS a faction's fronts conquer up to
+// BLITZ_SPEED_MULT× as many cells per tick and pay BLITZ_COST_MULT× the troop
+// cost for enemy-held cells; then BLITZ_COOLDOWN_SECONDS before the next one.
+const BLITZ_SECONDS: f32 = 6.0;
+const BLITZ_COOLDOWN_SECONDS: f32 = 45.0;
+const BLITZ_SPEED_MULT: usize = 2;
+const BLITZ_COST_MULT: f32 = 0.6;
+
 // Upper bound for per-cell difficulty_to_invade (troops-per-cell × enclosure).
 // The client uses this same value to normalize density to 0..1 for the shader,
 // so density == DIFFICULTY_CAP → fully solid interior at max enclosure.
@@ -160,10 +178,12 @@ const NEUTRAL_INVADE_COST: f32 = 0.2;
 //   record (STATS_RECORD_BYTES), players 1..=num_players:
 //     f32 home troops, f32 troops on attack, f32 effective max population,
 //     u32 owned cells, f32 gold, f32 gold income /s, f32 troop growth /s,
-//     f32 kills, f32 gold spent, u16 centroid row, u16 centroid col, u32 flags
+//     f32 kills, f32 gold spent, u16 centroid row, u16 centroid col, u32 flags,
+//     f32 price × 6 (defense, silo, mine, anti-air, city, missile — what this
+//     player pays right now), f32 blitz seconds left, f32 blitz cooldown left
 // Decoded by src/js/simBridge.js (decodeStats) — change both together.
 const STATS_HEADER_BYTES: usize = 16;
-const STATS_RECORD_BYTES: usize = 44;
+const STATS_RECORD_BYTES: usize = 76;
 const STAT_FLAG_ALIVE: u32 = 1;
 const STAT_FLAG_BOT: u32 = 2;
 // write_buildings() emits this many u32s per building.
@@ -293,6 +313,14 @@ pub struct SimulationState {
     // kill feed and elimination credit.
     player_last_attacker: Vec<u32>,
     player_gold_spent: Vec<f32>,
+    // Blitz: the tick the current blitz ends (active while > current_tick) and
+    // the tick the next one may start.
+    player_blitz_until: Vec<u32>,
+    player_blitz_ready: Vec<u32>,
+    // Gold changing hands outside the normal economy, for the server to
+    // announce: (victim, beneficiary, amount, kind) u32 quads; kind 0 = plunder
+    // (elimination), 1 = salvage (tower razed by conquest).
+    plunder_buf: Vec<u32>,
     player_population_growth_rate: Vec<u32>,
     // Per-second rates and the effective population cap (territory cap × city
     // bonus), refreshed every tick by apply_production. Exported in the stats
@@ -364,6 +392,9 @@ impl SimulationState {
             player_kill_count: vec![0.0; PLAYER_ARRAY_SIZE],
             player_last_attacker: vec![0; PLAYER_ARRAY_SIZE],
             player_gold_spent: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_blitz_until: vec![0; PLAYER_ARRAY_SIZE],
+            player_blitz_ready: vec![0; PLAYER_ARRAY_SIZE],
+            plunder_buf: Vec::new(),
             player_population_growth_rate: vec![0; PLAYER_ARRAY_SIZE],
             player_income_per_sec: vec![0.0; PLAYER_ARRAY_SIZE],
             player_growth_per_sec: vec![0.0; PLAYER_ARRAY_SIZE],
@@ -539,6 +570,8 @@ impl SimulationState {
                 self.front_pool[i * PLAYER_ARRAY_SIZE + t] = 0.0;
             }
             self.player_gold[i] = 0.0;
+            self.player_blitz_until[i] = 0;
+            self.player_blitz_ready[i] = 0;
             self.player_population_growth_rate[i] = 0;
             self.player_max_population_cap[i] = 0;
             self.player_account_id[i] = 0;
@@ -689,6 +722,19 @@ impl SimulationState {
     /// land, or nothing legal to take are skipped.
     #[wasm_bindgen]
     pub fn bot_think_all(&mut self, attack_percentage: u8) {
+        // A bot pressing an enemy fires its Blitz as soon as it is ready (never
+        // during the opening truce — it only matters against other factions).
+        if self.current_tick >= BOT_PEACE_SECONDS * self.tick_hz {
+            for f in 1..PLAYER_ARRAY_SIZE {
+                if self.player_is_bot[f] != 1 || self.player_owned_cells[f] == 0 { continue; }
+                if self.player_blitz_ready[f] > self.current_tick { continue; }
+                let base = f * PLAYER_ARRAY_SIZE;
+                if (1..PLAYER_ARRAY_SIZE).any(|t| self.front_pool[base + t] > FRONT_EPS) {
+                    self.activate_blitz(f as u32);
+                }
+            }
+        }
+
         // Which factions need a fresh decision this tick.
         let mut consider = [false; PLAYER_ARRAY_SIZE];
         let mut any = false;
@@ -1115,8 +1161,11 @@ impl SimulationState {
                 // Expansion speed is proportional to THIS front's committed troops,
                 // clamped so it stays organic. Per-front, so a faction with several
                 // fronts pushes each at its own rate.
+                let blitz = self.player_blitz_until[f] > self.current_tick;
+                let speed_mult = if blitz { BLITZ_SPEED_MULT } else { 1 };
+                let enemy_cost_mult = if blitz { BLITZ_COST_MULT } else { 1.0 };
                 let max_conquers = ((self.front_pool[fi] * EXPANSION_CELLS_PER_TROOP) as usize)
-                    .clamp(MIN_CONQUERS_PER_TICK, MAX_CONQUERS_PER_TICK);
+                    .clamp(MIN_CONQUERS_PER_TICK, MAX_CONQUERS_PER_TICK) * speed_mult;
                 let mut conquers = 0;
                 // Set when a legal target was skipped only because the front
                 // couldn't pay for it (see the stalled-front check below).
@@ -1142,7 +1191,7 @@ impl SimulationState {
                     let total_cost = if n_owner == 0 {
                         NEUTRAL_INVADE_COST
                     } else {
-                        self.difficulty_to_invade[n_idx] as f32
+                        self.difficulty_to_invade[n_idx] as f32 * enemy_cost_mult
                     };
 
                     if self.front_pool[fi] >= total_cost {
@@ -1184,6 +1233,11 @@ impl SimulationState {
                         if self.cell_data[n_idx] & BUILDING_MASK != 0 {
                             if let Some(bidx) = self.find_building_for_cell(n_idx) {
                                 if self.building_type[bidx] == BTYPE_DEFENSE {
+                                    // Salvage: the attacker strips the razed tower.
+                                    let victim = self.building_owner[bidx];
+                                    let salvage = DEFENSE_BUILDING_COST * TOWER_SALVAGE_SHARE;
+                                    self.player_gold[f] += salvage;
+                                    self.plunder_buf.extend_from_slice(&[victim, f as u32, salvage as u32, 1]);
                                     self.destroy_building(bidx);
                                 } else {
                                     silo_to_check = Some(bidx);
@@ -1207,6 +1261,9 @@ impl SimulationState {
                         self.player_row_sum[f] += nr;
                         self.player_col_sum[f] += nc;
                         conquers += 1;
+                        if n_owner != 0 && self.player_owned_cells[n_owner] == 0 {
+                            self.plunder(n_owner, f);
+                        }
 
                         // bidx is still valid here: silos are never destroyed above,
                         // so the building list (and indices) didn't shift this cell.
@@ -1386,7 +1443,9 @@ impl SimulationState {
     /// match-level values the server owns; they are echoed in the header.
     #[wasm_bindgen]
     pub fn write_stats(&mut self, land_cells: u32, domination_share: f32) -> u32 {
-        let buf = &mut self.stats_buf;
+        // Built in a local and moved in at the end: the record needs &self
+        // (prices) while it is being written.
+        let mut buf = std::mem::take(&mut self.stats_buf);
         buf.clear();
         buf.extend_from_slice(&self.current_tick.to_le_bytes());
         buf.extend_from_slice(&land_cells.to_le_bytes());
@@ -1418,9 +1477,19 @@ impl SimulationState {
             buf.extend_from_slice(&crow.to_le_bytes());
             buf.extend_from_slice(&ccol.to_le_bytes());
             buf.extend_from_slice(&flags.to_le_bytes());
+            for btype in [BTYPE_DEFENSE, BTYPE_SILO, BTYPE_MINE, BTYPE_ANTIAIR, BTYPE_CITY] {
+                buf.extend_from_slice(&self.building_price(f, btype).to_le_bytes());
+            }
+            buf.extend_from_slice(&self.missile_price(f).to_le_bytes());
+            let hz = self.tick_hz.max(1) as f32;
+            let left = |until: u32| until.saturating_sub(self.current_tick) as f32 / hz;
+            buf.extend_from_slice(&left(self.player_blitz_until[f]).to_le_bytes());
+            buf.extend_from_slice(&left(self.player_blitz_ready[f]).to_le_bytes());
         }
         debug_assert_eq!(buf.len(), STATS_HEADER_BYTES + n * STATS_RECORD_BYTES);
-        buf.len() as u32
+        let len = buf.len() as u32;
+        self.stats_buf = buf;
+        len
     }
 
     #[wasm_bindgen]
@@ -1429,6 +1498,65 @@ impl SimulationState {
     /// The simulation's player capacity (factions 1..=N), so JS never hard-codes it.
     #[wasm_bindgen]
     pub fn max_players() -> u32 { MAX_PLAYERS as u32 }
+
+    /// Base price of a building type (the first one of that type).
+    fn base_price(btype: u8) -> f32 {
+        match btype {
+            BTYPE_DEFENSE => DEFENSE_BUILDING_COST,
+            BTYPE_SILO => SILO_BUILDING_COST,
+            BTYPE_MINE => MINE_BUILDING_COST,
+            BTYPE_ANTIAIR => ANTIAIR_BUILDING_COST,
+            _ => CITY_BUILDING_COST,
+        }
+    }
+
+    /// What faction `f` pays for its next building of type `btype`: the base
+    /// price plus BUILDING_PRICE_STEP for each one of that type it already owns
+    /// (finished or not). Captured buildings count too — they are yours.
+    fn building_price(&self, f: usize, btype: u8) -> f32 {
+        let owned = self.building_type.iter().zip(self.building_owner.iter())
+            .filter(|(&t, &o)| t == btype && o as usize == f)
+            .count();
+        (Self::base_price(btype) * (1.0 + BUILDING_PRICE_STEP * owned as f32)).round()
+    }
+
+    /// What faction `f` pays for its next missile.
+    fn missile_price(&self, _f: usize) -> f32 {
+        MISSILE_COST
+    }
+
+    /// `victim` just lost its last cell to `attacker`: the attacker takes the
+    /// victim's whole treasury. Recorded in plunder_buf for the announcement.
+    fn plunder(&mut self, victim: usize, attacker: usize) {
+        if victim == attacker || victim == 0 || attacker == 0 { return; }
+        let gold = self.player_gold[victim].max(0.0);
+        self.player_gold[victim] = 0.0;
+        self.player_gold[attacker] += gold;
+        self.plunder_buf.extend_from_slice(&[victim as u32, attacker as u32, gold as u32, 0]);
+    }
+
+    /// Start a Blitz for faction `faction_id` (key 1). Returns false if it is
+    /// still on cooldown or the faction is out of the game.
+    #[wasm_bindgen]
+    pub fn activate_blitz(&mut self, faction_id: u32) -> bool {
+        let f = faction_id as usize;
+        if f == 0 || f >= PLAYER_ARRAY_SIZE || self.player_is_alive[f] == 0 { return false; }
+        if self.player_blitz_ready[f] > self.current_tick { return false; }
+        let hz = self.tick_hz.max(1) as f32;
+        self.player_blitz_until[f] = self.current_tick + (BLITZ_SECONDS * hz) as u32;
+        self.player_blitz_ready[f] = self.current_tick + ((BLITZ_SECONDS + BLITZ_COOLDOWN_SECONDS) * hz) as u32;
+        true
+    }
+
+    /// Number of (victim, beneficiary, amount, kind) quads in the plunder buffer.
+    #[wasm_bindgen]
+    pub fn get_plunder_count(&self) -> u32 { (self.plunder_buf.len() / 4) as u32 }
+
+    #[wasm_bindgen]
+    pub fn get_plunder_ptr(&self) -> *const u32 { self.plunder_buf.as_ptr() }
+
+    #[wasm_bindgen]
+    pub fn clear_plunder(&mut self) { self.plunder_buf.clear(); }
 
     /// Place a defense building centered at (center_row, center_col).
     ///
@@ -1480,9 +1608,11 @@ impl SimulationState {
     /// type + completion tick — keeping defense_buildings / defense_build_complete /
     /// building_type index-aligned (see the field INVARIANTs). The defense bonus
     /// (if any) is applied later by process_construction, never here.
-    fn place_building_internal(&mut self, faction_id: u32, center_row: i32, center_col: i32, btype: u8, cost: f32, build_seconds: f32) -> bool {
+    fn place_building_internal(&mut self, faction_id: u32, center_row: i32, center_col: i32, btype: u8, base_cost: f32, build_seconds: f32) -> bool {
         let f = faction_id as usize;
         if f == 0 || f >= PLAYER_ARRAY_SIZE || self.player_is_alive[f] == 0 { return false; }
+        debug_assert_eq!(base_cost, Self::base_price(btype));
+        let cost = self.building_price(f, btype);
 
         // Must be able to afford it. Gold is charged only on a fully successful
         // placement (below), so a failed validation never costs anything.
@@ -1565,7 +1695,8 @@ impl SimulationState {
         let target_owner = self.cell_owner(target_cell) as usize;
         if target_owner == 0 || target_owner == f { return 2; }
 
-        if self.player_gold[f] < MISSILE_COST { return 1; }
+        let missile_cost = self.missile_price(f);
+        if self.player_gold[f] < missile_cost { return 1; }
 
         let mut source_center = 0;
         let mut source_index = 0;
@@ -1592,8 +1723,8 @@ impl SimulationState {
 
         self.building_cooldown[source_index] = self.current_tick + (2.0 * self.tick_hz as f32).ceil() as u32;
 
-        self.player_gold[f] -= MISSILE_COST;
-        self.player_gold_spent[f] += MISSILE_COST;
+        self.player_gold[f] -= missile_cost;
+        self.player_gold_spent[f] += missile_cost;
 
         // Calculate physical distance to determine flight time in ticks
         let source_row = (source_center / MAP_WIDTH as u32) as u32;
@@ -1744,6 +1875,11 @@ impl SimulationState {
                     self.player_owned_cells[owner] = self.player_owned_cells[owner].saturating_sub(1);
                     self.player_row_sum[owner] -= r as f32;
                     self.player_col_sum[owner] -= c as f32;
+                    if self.player_owned_cells[owner] == 0
+                        && (faction_id as usize) < PLAYER_ARRAY_SIZE && faction_id as usize != owner
+                    {
+                        self.plunder(owner, faction_id as usize);
+                    }
                 }
                 // Destroy any building whose footprint this cell belongs to. The
                 // first footprint cell hit clears BUILDING_MASK on all 64, so later
@@ -2029,7 +2165,6 @@ impl SimulationState {
     pub fn bot_build_all(&mut self) {
         for f in 1..PLAYER_ARRAY_SIZE {
             if self.player_is_bot[f] != 1 || self.player_is_alive[f] == 0 { continue; }
-            if self.player_gold[f] < DEFENSE_BUILDING_COST { continue; }
             let cells = self.player_owned_cells[f];
             // Need a territory comfortably bigger than an 8×8 footprint.
             if cells < 300 { continue; }
@@ -2042,6 +2177,10 @@ impl SimulationState {
                 if owner as usize == f { my_buildings += 1; }
             }
             if my_buildings >= (cells / 4000).max(1) { continue; }
+            // Bots pay the same escalating prices as humans.
+            let gold = self.player_gold[f];
+            let can_afford = |s: &Self, btype: u8| gold >= s.building_price(f, btype);
+            if !can_afford(self, BTYPE_DEFENSE) && !can_afford(self, BTYPE_CITY) { continue; }
 
             let crow = (self.player_row_sum[f] / cells as f32).round() as i32;
             let ccol = (self.player_col_sum[f] / cells as f32).round() as i32;
@@ -2057,7 +2196,7 @@ impl SimulationState {
             let tc = ccol + jc;
 
             // 15% chance to build a silo if they can afford it and enemy in range
-            if roll < 15 && self.player_gold[f] >= SILO_BUILDING_COST {
+            if roll < 15 && can_afford(self, BTYPE_SILO) {
                 let mut can_reach_enemy = false;
                 let r_min = (tr - SILO_RANGE).max(0);
                 let r_max = (tr + SILO_RANGE).min(MAP_HEIGHT as i32 - 1);
@@ -2085,18 +2224,25 @@ impl SimulationState {
                     self.place_silo(f as u32, tr, tc);
                     continue;
                 }
-            } else if roll < 30 && self.player_gold[f] >= ANTIAIR_BUILDING_COST {
+            } else if roll < 30 && can_afford(self, BTYPE_ANTIAIR) {
                 // 15% chance for Anti-Air
                 self.place_antiair(f as u32, tr, tc);
                 continue;
-            } else if roll < 45 && self.player_gold[f] >= MINE_BUILDING_COST {
+            } else if roll < 45 && can_afford(self, BTYPE_MINE) {
                 // 15% chance for Gold Mine
                 self.place_mine(f as u32, tr, tc);
                 continue;
+            } else if roll < 60 && can_afford(self, BTYPE_CITY) {
+                // 15% chance for a City (more population)
+                self.place_city(f as u32, tr, tc);
+                continue;
             }
-            
-            // Default: 55% chance for Defense Tower (or fallback if silo fails)
-            self.place_defense_building(f as u32, tr, tc);
+
+            // Default: 40% chance for a Defense Tower (also the fallback when the
+            // rolled type can't be afforded or a silo has nothing in range).
+            if can_afford(self, BTYPE_DEFENSE) {
+                self.place_defense_building(f as u32, tr, tc);
+            }
         }
     }
 
@@ -2318,6 +2464,60 @@ mod tests {
         for _ in 0..200 { s.tick(); }
         assert_eq!(s.write_buildings(), 1);
         assert_eq!(s.delta_scratch[3], 0, "construction finished");
+    }
+
+    // Phase-3 economy: escalating prices, plunder, salvage and Blitz.
+    #[test]
+    fn economy_prices_plunder_salvage_blitz() {
+        let mut s = SimulationState::new();
+        s.init_players(2, 0, 50, 5000);
+        s.set_tick_hz(25);
+        s.spawn_faction(1, 500, 500);
+        s.spawn_faction(2, 500, 525);
+
+        // Each tower costs 25% more than the last; a failed placement is free.
+        s.player_gold[1] = 100_000.0;
+        assert_eq!(s.building_price(1, BTYPE_DEFENSE), 2000.0);
+        assert!(s.place_defense_building(1, 500, 495));
+        assert_eq!(s.player_gold[1], 98_000.0);
+        assert_eq!(s.building_price(1, BTYPE_DEFENSE), 2500.0);
+        assert_eq!(s.building_price(1, BTYPE_CITY), 2000.0, "prices are per type");
+        assert!(!s.place_defense_building(1, 500, 495), "occupied footprint");
+        assert_eq!(s.player_gold[1], 98_000.0, "a rejected placement costs nothing");
+        assert!(s.place_defense_building(1, 500, 505));
+        assert_eq!(s.player_gold[1], 95_500.0);
+
+        // Blitz: once, then on cooldown; it lasts BLITZ_SECONDS.
+        assert!(s.activate_blitz(1));
+        assert!(!s.activate_blitz(1), "on cooldown");
+        assert!(s.player_blitz_until[1] > s.current_tick);
+        for _ in 0..(BLITZ_SECONDS as u32 * 25 + 1) { s.tick(); }
+        assert!(s.player_blitz_until[1] <= s.current_tick, "blitz is over");
+        assert!(!s.activate_blitz(1), "still cooling down");
+
+        // Faction 2 builds a tower, then gets overrun by faction 1:
+        // salvage for the tower, then its whole treasury on elimination.
+        s.player_gold[2] = 10_000.0;
+        assert!(s.place_defense_building(2, 500, 528));
+        let f2_treasury = s.player_gold[2];
+        assert_eq!(f2_treasury, 8_000.0);
+        s.player_gold[1] = 0.0;
+        let mut ticks = 0;
+        while s.player_owned_cells[2] > 0 && ticks < 5_000 {
+            if ticks % 10 == 0 {
+                s.player_total_troops[1] = 500_000.0;
+                s.execute_expansion(1, (500 * MAP_WIDTH + 525) as u32, 60);
+            }
+            s.player_gold[2] = f2_treasury; // freeze its income for an exact check
+            s.tick();
+            ticks += 1;
+        }
+        assert_eq!(s.player_owned_cells[2], 0, "faction 2 was eliminated");
+        let quads: Vec<&[u32]> = s.plunder_buf.chunks(4).collect();
+        assert!(quads.iter().any(|q| q == &[2, 1, 1000, 1]), "tower salvage: {:?}", quads);
+        assert!(quads.iter().any(|q| q[0] == 2 && q[1] == 1 && q[3] == 0 && q[2] >= 8_000), "plunder: {:?}", quads);
+        assert_eq!(s.player_gold[2], 0.0, "the victim's treasury is gone");
+        assert!(s.player_gold[1] >= 9_000.0, "salvage + plunder reached the attacker");
     }
 
     // Full 20-bot match on an all-plains map, driven on the same cadence as

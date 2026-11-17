@@ -23,13 +23,23 @@ const myBuildings = () => {
   return state.buildings.filter(b => b.factionId === fid);
 };
 
-// What the player pays right now for `action`.
+// What the player pays right now for `action` (the sim's live, escalating
+// price once stats have arrived; the base price before that).
 export function actionCost(action) {
-  return action.cost;
+  const live = state.prices && action.priceKey ? state.prices[action.priceKey] : undefined;
+  return Number.isFinite(live) ? live : action.cost;
 }
+
+// Seconds until Blitz can be used again (0 = ready), and seconds of it left.
+const blitzCooldown = () => Math.max(0, (state.blitzReadyAt - performance.now()) / 1000);
+const blitzActive = () => Math.max(0, (state.blitzActiveUntil - performance.now()) / 1000);
 
 // Why `action` can't be started right now, or null if it can.
 function blockedReason(action) {
+  if (action.mode === 'blitz') {
+    const wait = blitzCooldown();
+    return wait > 0.05 ? `Blitz is recharging — ready in ${Math.ceil(wait)}s.` : null;
+  }
   if (action.mode === 'missile') {
     const silos = myBuildings().filter(b => b.type === 'silo');
     if (silos.length === 0) return 'Build a Missile Silo first (key 4).';
@@ -46,6 +56,19 @@ function blockedReason(action) {
 // clicks both come through here, so they behave identically.
 function toggleMode(action) {
   if (state.gameState !== 'PLAYING' || state.isSpectating) return;
+  if (action.instant) {
+    const reason = blockedReason(action);
+    if (reason) {
+      showToast(reason, 'error');
+      playSfx('error');
+      return;
+    }
+    // Optimistic: the next sim-stats confirms (or corrects) the timers.
+    state.blitzReadyAt = performance.now() + 51000;
+    state.blitzActiveUntil = performance.now() + 6000;
+    emitInput({ type: action.input });
+    return;
+  }
   if (state.activePurchaseMode === action.mode) {
     state.activePurchaseMode = null;
     return;
@@ -115,9 +138,18 @@ export function drawBuildPreview(renderer, ctx) {
   }
 }
 
-// Per-frame: highlight the button of the active mode.
+// Per-frame: highlight the button of the active mode, and count Blitz down.
 export function syncBuildBarActive() {
   for (const b of buttons) {
+    if (b.action.mode === 'blitz') {
+      const active = blitzActive();
+      const wait = blitzCooldown();
+      const text = active > 0.05 ? `Active ${Math.ceil(active)}s` : wait > 0.05 ? `${Math.ceil(wait)}s` : 'Ready';
+      if (b.costEl.textContent !== text) b.costEl.textContent = text;
+      b.el.classList.toggle('active', active > 0.05);
+      b.el.classList.toggle('disabled', active <= 0.05 && wait > 0.05);
+      continue;
+    }
     b.el.classList.toggle('active', state.activePurchaseMode === b.action.mode);
   }
 }
@@ -127,6 +159,7 @@ export function updateBuildBar() {
   const mine = myBuildings();
   for (const b of buttons) {
     const { action } = b;
+    if (action.instant) continue; // Blitz is updated every frame
     const cost = actionCost(action);
     let disabled = state.playerGold < cost;
     if (action.mode === 'missile') {

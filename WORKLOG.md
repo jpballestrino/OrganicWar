@@ -58,10 +58,10 @@ exactly after a pure-performance change (the sim is deterministic):
 - [x] 2.7 `scripts/bench-room.mjs` (spawn the real worker with bots; tick ms, KB/s, RSS).
 
 ### Phase 3 — Economy & troops
-- [ ] 3.1 Escalating building prices (+25% per building of that type already owned) — fixes the gold flood / tower spam.
-- [ ] 3.2 Plunder: eliminating a faction takes its treasury; destroying an enemy building by conquest pays salvage.
-- [ ] 3.3 Blitz (key `1`): active ability on a cooldown — fronts advance faster and cheaper for a few seconds.
-- [ ] 3.4 Bots use the new economy (spend gold, build cities).
+- [x] 3.1 Escalating building prices (+25% per building of that type already owned) — fixes the gold flood / tower spam.
+- [x] 3.2 Plunder: eliminating a faction takes its treasury; destroying an enemy building by conquest pays salvage.
+- [x] 3.3 Blitz (key `1`): active ability on a cooldown — fronts advance faster and cheaper for a few seconds.
+- [x] 3.4 Bots use the new economy (spend gold, build cities).
 - [ ] 3.5 Written proposals for what is NOT implemented (below).
 
 ### Phase 4 — Building synergies
@@ -126,8 +126,14 @@ for towers (radius) and silos (range).
   refused while the sims use > 75% of the cores. 4-core box → 32 rooms.
 - Player cap 20 → 64 (engine); Quick Battle stays 20. 64-player room: 2.9 ms/tick
   (7% of a core), 10 MB heap, 87 KB/s deltas + 14 KB/s stats per client.
-  **Open:** 64-player pacing — after 10 min, 30 alive and no domination. See
-  the 64-player domination measurement under Status log.
+  64-player pacing (pre-Phase-3 sim): domination win at 9m09s — leader 21% → 40%
+  in ~1 min once the target bottomed out. Big rooms finish without a special rule.
+
+### Phase 3 results (measured)
+- Native 20-bot match: over at **407 s** (was 580 s), first elimination 56 s (was 63 s).
+- New sim API: `activate_blitz`, `get_plunder_*`; stats record 44 → 76 bytes
+  (6 live prices, blitz active / cooldown seconds).
+- Events: `blitz-started {factionId}`, `gold-seized {fromId, toId, gold, kind}`.
 
 ## Proposals not implemented (for the owner to decide)
 
@@ -144,3 +150,4 @@ _(written in Phase 3.5)_
   rewire, full-state sync, bench script). Next: 2.5 capacity, 2.6 player cap.
 - Phase 2.5 + 2.6 done. Next: decide the domination schedule for big rooms
   (measurement running: `PLAYERS=64 SECONDS=1200 node scripts/bench-room.mjs`), then Phase 3.
+- Phase 3.1–3.4 done (prices, plunder/salvage, Blitz, bots). Next: 3.5 proposals, then Phase 4.

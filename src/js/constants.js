@@ -75,26 +75,30 @@ export const MIN_TERRITORY_OPACITY = 0.12;
 // truth for the HUD build bar, the hotkeys, click placement, the affordability
 // state and the server's reject messages (see src/js/buildBar.js). `mode` is the
 // value held in state.activePurchaseMode; `type` is the building's wire `type`
-// (null for the missile, which is an action, not a building); `input` is the
-// sim-input type sent to the server; `preview` names the renderer method that
-// draws the placement/targeting overlay.
+// (null for actions that are not buildings); `input` is the sim-input type sent
+// to the server; `preview` names the renderer method that draws the placement/
+// targeting overlay; `priceKey` picks the live price from sim-stats (prices
+// escalate per building owned — `cost` is only the base, shown before the first
+// stats arrive). `instant` actions fire on the key press, with no map click.
 export const BUILD_ACTIONS = [
-  { mode: 'missile', key: '2', name: 'Missile', type: null, input: 'fire_missile', cost: MISSILE_COST,
+  { mode: 'blitz', key: '1', name: 'Blitz', type: null, input: 'blitz', cost: 0, instant: true,
+    desc: 'For 6 seconds your attacks advance twice as fast and pay 40% less to take enemy land. 45s cooldown.' },
+  { mode: 'missile', key: '2', name: 'Missile', type: null, input: 'fire_missile', cost: MISSILE_COST, priceKey: 'missile',
     preview: 'drawMissileTargeting',
     desc: 'Fire from a completed silo at an enemy cell in range. Razes troops and buildings in the blast.' },
-  { mode: 'defense_building', key: '3', name: 'Defense Tower', type: 'defense', input: 'build_defense', cost: DEFENSE_BUILDING_COST,
+  { mode: 'defense_building', key: '3', name: 'Defense Tower', type: 'defense', input: 'build_defense', cost: DEFENSE_BUILDING_COST, priceKey: 'defense',
     preview: 'drawBuildingPlacementPreview',
     desc: 'Fortifies your land around it: attackers pay far more per cell. Destroyed if any of its cells falls.' },
-  { mode: 'silo', key: '4', name: 'Missile Silo', type: 'silo', input: 'build_silo', cost: SILO_BUILDING_COST,
+  { mode: 'silo', key: '4', name: 'Missile Silo', type: 'silo', input: 'build_silo', cost: SILO_BUILDING_COST, priceKey: 'silo',
     preview: 'drawSiloPlacementPreview',
     desc: 'Lets you fire missiles at targets within its range. Changes hands only if fully conquered.' },
-  { mode: 'mine', key: '5', name: 'Gold Mine', type: 'mine', input: 'build_mine', cost: MINE_BUILDING_COST,
+  { mode: 'mine', key: '5', name: 'Gold Mine', type: 'mine', input: 'build_mine', cost: MINE_BUILDING_COST, priceKey: 'mine',
     preview: 'drawMinePlacementPreview',
     desc: 'Raises your gold income by 10%.' },
-  { mode: 'antiair', key: '6', name: 'Anti-Air', type: 'antiair', input: 'build_antiair', cost: ANTIAIR_BUILDING_COST,
+  { mode: 'antiair', key: '6', name: 'Anti-Air', type: 'antiair', input: 'build_antiair', cost: ANTIAIR_BUILDING_COST, priceKey: 'antiair',
     preview: 'drawAntiAirPlacementPreview',
     desc: 'Shoots down missiles aimed at your land. Holds 3 interceptors.' },
-  { mode: 'city', key: '7', name: 'City', type: 'city', input: 'build_city', cost: CITY_BUILDING_COST,
+  { mode: 'city', key: '7', name: 'City', type: 'city', input: 'build_city', cost: CITY_BUILDING_COST, priceKey: 'city',
     preview: 'drawCityPlacementPreview',
     desc: 'Raises your maximum population by 5%.' },
 ];

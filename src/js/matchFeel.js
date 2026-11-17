@@ -88,6 +88,7 @@ function ensureFeelDom() {
       <span><kbd>Click</kbd> attack / expand</span>
       <span><kbd>Right-click</kbd> cancel attack</span>
       <span><kbd>Space</kbd> recall all</span>
+      <span><kbd>1</kbd> Blitz</span>
       <span><kbd>Drag</kbd> or <kbd>WASD</kbd> move</span>
       <span><kbd>Wheel</kbd> zoom</span>
       <span><kbd>Shift</kbd>+<kbd>Wheel</kbd> attack %</span>
@@ -553,6 +554,19 @@ export function initMatchFeel({ socket, quit }) {
   });
 
   socket.on('build-rejected', () => playSfx('error'));
+
+  socket.on('gold-seized', ({ toId, gold, kind } = {}) => {
+    if (!match.active || toId !== myFid()) return;
+    if (kind === 'plunder') {
+      announce(`Plunder +${Math.floor(gold).toLocaleString('en-US')} gold`, 'You took their whole treasury', 'gold', 'complete');
+    } else {
+      showToast(`Salvage +${Math.floor(gold).toLocaleString('en-US')} gold from a razed tower`, 'success');
+    }
+  });
+
+  socket.on('blitz-started', ({ factionId } = {}) => {
+    if (match.active && factionId === myFid()) announce('Blitz!', 'Your fronts surge for 6 seconds', 'gold', 'go');
+  });
 
   socket.on('missile-intercepted', () => playSfx('intercept'));
 

@@ -63,6 +63,7 @@ export function setupSocketHandlers(io) {
     const inputRateLimits = {
       expand:        { lastMs: 0, minIntervalMs: 33   },  // ~30/s max
       cancel:        { lastMs: 0, minIntervalMs: 50   },
+      blitz:         { lastMs: 0, minIntervalMs: 500  },
       cancel_front:  { lastMs: 0, minIntervalMs: 50   },
       build_defense: { lastMs: 0, minIntervalMs: 200 },
       build_silo:    { lastMs: 0, minIntervalMs: 200 },

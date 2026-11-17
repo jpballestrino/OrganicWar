@@ -96,7 +96,7 @@ export function clearAllBuildingBits() {
   for (let i = 0; i < TOTAL_CELLS; i++) cells[i] &= keep;
 }
 
-// sim-stats: a 16-byte header then one 44-byte record per player (layout:
+// sim-stats: a 16-byte header then one 76-byte record per player (layout:
 // STATS_* consts in simulation-core/src/lib.rs — keep in sync). Returns
 // { tick, landCells, dominationShare, players } with players[1..n].
 export function decodeStats(buf) {
@@ -125,6 +125,17 @@ export function decodeStats(buf) {
       col: dv.getUint16(o + 38, true),
       alive: (flags & 1) !== 0,
       bot: (flags & 2) !== 0,
+      // What this player pays right now (prices escalate per building owned).
+      prices: {
+        defense: dv.getFloat32(o + 44, true),
+        silo: dv.getFloat32(o + 48, true),
+        mine: dv.getFloat32(o + 52, true),
+        antiair: dv.getFloat32(o + 56, true),
+        city: dv.getFloat32(o + 60, true),
+        missile: dv.getFloat32(o + 64, true),
+      },
+      blitzActive: dv.getFloat32(o + 68, true),   // seconds left
+      blitzCooldown: dv.getFloat32(o + 72, true), // seconds until ready
     });
   }
   return {

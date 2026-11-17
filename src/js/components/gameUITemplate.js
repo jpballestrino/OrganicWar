@@ -8,7 +8,7 @@ function buildBarHtml() {
                     <span class="build-key">${a.key}</span>
                     <span class="build-info">
                         <span class="build-name">${a.name}</span>
-                        <span class="build-cost text-gold">${fmtInt(a.cost)}g</span>
+                        <span class="build-cost text-gold">${a.instant ? 'Ready' : `${fmtInt(a.cost)}g`}</span>
                     </span>
                     <span class="build-count" hidden>0</span>
                 </button>`).join('');

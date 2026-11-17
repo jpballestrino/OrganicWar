@@ -270,7 +270,8 @@
     padding: 0 30px;
     box-sizing: border-box;
     font-family: 'Inter', sans-serif;
-    transition: all 0.3s ease;
+    /* Not "all": animating the bar's size made it lag behind every window resize. */
+    transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 /* Bottom variant of the HUD bar (economy / building stats) — same glass style

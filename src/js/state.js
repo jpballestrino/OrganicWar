@@ -44,6 +44,9 @@ export const state = {
   playerTroops: 0,
   playerMaxPop: 0,
   playerGold: 0,
+  prices: null,          // per-action prices from the sim (sim-stats)
+  blitzActiveUntil: 0,   // performance.now() deadlines from sim-stats
+  blitzReadyAt: 0,
   
   navalTargetingMode: false,
   selectedSiloCell: null,
@@ -97,6 +100,9 @@ export function resetGameState() {
   for (let k in state.keysPressed) {delete state.keysPressed[k];}
 
   state.playerGold = 0;
+  state.prices = null;
+  state.blitzActiveUntil = 0;
+  state.blitzReadyAt = 0;
   state.playerFaction = null;
   state.selectedSlot = null;
   state.selectedDoctrine = 'balanced';

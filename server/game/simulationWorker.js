@@ -246,6 +246,7 @@ class RoomSimWorker {
       // on the same tick has its factionId updated before the completion lookup.
       this._emitTransferredBuildings();
       this._emitCompletedBuildings();
+      this._emitPlunder();
 
       if (this.env.SIM_PROFILE === '1') {
         const now = Date.now();
@@ -363,6 +364,22 @@ class RoomSimWorker {
       parentPort.postMessage({ type: 'emit', event: 'building-completed', payload });
     }
     this.exports.simulationstate_clear_completed_buildings(this.statePtr);
+  }
+
+  // Gold seized outside the normal economy: a tower razed by conquest
+  // (salvage) or a faction eliminated (its whole treasury).
+  _emitPlunder() {
+    const count = this.exports.simulationstate_get_plunder_count(this.statePtr);
+    if (!count) return;
+    const buf = new Uint32Array(
+      this.exports.memory.buffer, this.exports.simulationstate_get_plunder_ptr(this.statePtr), count * 4);
+    for (let i = 0; i < count; i++) {
+      parentPort.postMessage({ type: 'emit', event: 'gold-seized', payload: {
+        fromId: buf[i * 4], toId: buf[i * 4 + 1], gold: buf[i * 4 + 2],
+        kind: buf[i * 4 + 3] === 0 ? 'plunder' : 'salvage',
+      } });
+    }
+    this.exports.simulationstate_clear_plunder(this.statePtr);
   }
 
   // Poll silos that changed owner (fully conquered) and broadcast so clients
@@ -608,6 +625,13 @@ class RoomSimWorker {
         parentPort.postMessage({ type: 'emit', event: 'building-placed', payload });
       } else {
         reject();
+      }
+      return;
+    }
+
+    if (input.type === 'blitz') {
+      if (this.exports.simulationstate_activate_blitz(this.statePtr, factionId)) {
+        parentPort.postMessage({ type: 'emit', event: 'blitz-started', payload: { factionId } });
       }
       return;
     }

@@ -145,6 +145,29 @@ function showMatchHud() {
   show('gameArea', 'flex');
 }
 
+// A generic kill-feed line: "<icon> <faction A> <text> [<faction B>]".
+function addFeedLine(icon, fidA, text, fidB = 0) {
+  const feed = document.getElementById('killFeed');
+  if (!feed) return;
+  const nameOf = (fid) => {
+    const slot = state.activePlayerSlots ? state.activePlayerSlots[fid] : null;
+    return fid === parseInt(state.playerFaction) ? 'You' : (slot && slot.nickname ? slot.nickname : `Player ${fid}`);
+  };
+  const entry = document.createElement('div');
+  entry.className = 'kill-feed-entry';
+  entry.innerHTML =
+    `<span class="kill-feed-skull">${icon}</span>` +
+    `<span class="kill-feed-name" style="color:${factionHexColors[fidA] || '#fff'}">${escapeHtml(nameOf(fidA))}</span>` +
+    `<span>${escapeHtml(text)}</span>` +
+    (fidB ? `<span class="kill-feed-name" style="color:${factionHexColors[fidB] || '#fff'}">${escapeHtml(nameOf(fidB))}</span>` : '');
+  feed.prepend(entry);
+  while (feed.children.length > 6) feed.removeChild(feed.lastChild);
+  setTimeout(() => {
+    entry.classList.add('fade-out');
+    setTimeout(() => entry.remove(), 500);
+  }, 6000);
+}
+
 // ── Reconnection overlay helpers ─────────────────────────────────────────────
 function showReconnecting(attempt = 0) {
   const el = document.getElementById('reconnectingOverlay');
@@ -404,6 +427,15 @@ export function initNetwork() {
 
   socket.on('notification', ({ message, type }) => {
     showToast(message, type);
+  });
+
+  socket.on('gold-seized', ({ fromId, toId, gold, kind }) => {
+    // Only treasury plunder goes in the feed; salvage is too frequent.
+    if (kind === 'plunder' && gold >= 1) addFeedLine('💰', toId, `plundered ${fmtInt(gold)} gold from`, fromId);
+  });
+
+  socket.on('blitz-started', ({ factionId }) => {
+    if (factionId !== parseInt(state.playerFaction)) addFeedLine('⚡', factionId, 'launched a Blitz');
   });
 
   socket.on('player-eliminated', ({ factionId, killerId }) => {
@@ -684,6 +716,11 @@ function applyStats({ landCells, dominationShare, players }) {
   setText('lblMyKills', window.formatAbbreviation ? window.formatAbbreviation(me.kills) : fmtInt(me.kills));
 
   // --- Bottom bar ---
+  state.prices = me.prices;
+  // Stats arrive 5×/s; keep the absolute deadline so the bar counts down smoothly.
+  const now = performance.now();
+  state.blitzActiveUntil = now + me.blitzActive * 1000;
+  state.blitzReadyAt = now + me.blitzCooldown * 1000;
   state.playerGold = Math.floor(me.gold);
   setText('lblMyGold', fmtInt(me.gold));
   setText('lblMyGoldRate', `+${fmtInt(Math.round(me.income))}/s`);
