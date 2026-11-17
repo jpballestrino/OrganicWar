@@ -84,3 +84,16 @@
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+/* Focus ring for the guild modals' inputs (was inline onfocus/onblur, which
+   the Content-Security-Policy blocks). */
+.ow-focus-input:focus {
+  border-color: #ffc107 !important;
+  box-shadow: 0 0 8px rgba(255, 193, 7, 0.3) !important;
+}
+
+#btnEmojiToggle.emoji-toggle-btn {
+  background: transparent; border: none; cursor: pointer; font-size: 18px; padding: 0;
+  filter: grayscale(0.2); transition: filter 0.2s;
+}
+#btnEmojiToggle.emoji-toggle-btn:hover { filter: grayscale(0); }

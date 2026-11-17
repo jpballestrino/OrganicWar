@@ -14,6 +14,7 @@ import { verifyToken } from './auth.js';
 import { findUserById, getUserProfile, prepareStatements, db, dbPath } from './database.js';
 import { clientIp, TRUST_PROXY } from './clientIp.js';
 import { adsConfig, adsTxt, cspDirectives, describeAds } from './ads.js';
+import { emailConfigured } from './email.js';
 import { runMigrations } from './migrate.js';
 import guildRoutes from './routes/guilds.js';
 import authRouter from './routes/authRoutes.js';
@@ -176,7 +177,12 @@ app.get('/privacy', (req, res) => {
 // What the client needs to show ads; null = ads off.
 app.get('/api/client-config', (req, res) => {
   res.set('Cache-Control', 'no-cache');
-  res.json({ ads: adsConfig() });
+  res.json({
+    ads: adsConfig(),
+    // Which sign-in buttons work on this server (hidden when not configured).
+    oauth: { google: !!process.env.GOOGLE_CLIENT_ID, discord: !!process.env.DISCORD_CLIENT_ID },
+    email: emailConfigured(),
+  });
 });
 // Google requires /ads.txt on the domain before it serves ads there.
 app.get('/ads.txt', (req, res) => {

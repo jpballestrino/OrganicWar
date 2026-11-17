@@ -20,14 +20,21 @@ function getTransporter() {
     return null;
   }
 
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
   transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: false, // STARTTLS
+    port,
+    // Port 465 is TLS from the first byte; 587/25 upgrade with STARTTLS.
+    secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === '1' : port === 465,
     auth: { user, pass },
   });
 
   return transporter;
+}
+
+// Whether outgoing email is set up (password reset needs it).
+export function emailConfigured() {
+  return !!((process.env.SMTP_USER || process.env.EMAIL_USER) && (process.env.SMTP_PASS || process.env.EMAIL_PASS));
 }
 
 /**

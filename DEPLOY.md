@@ -76,8 +76,13 @@ hour). Then change `APP_URL` to `https://yourdomain.com` (Environment tab).
 
 - **Email** (password reset, address verification): set `EMAIL_USER` /
   `EMAIL_PASS` — for Gmail, enable 2-step verification and create an *App
-  Password* at myaccount.google.com/apppasswords. ⚠️ Once email is configured,
-  **new accounts must verify their address** before they can log in.
+  Password* at myaccount.google.com/apppasswords. Other providers: also set
+  `SMTP_HOST`, `SMTP_PORT` (587, or 465 for SSL) and `SMTP_FROM`. Set
+  `APP_URL` correctly: the links in the emails point there.
+  ⚠️ Once email is configured, **new accounts must verify their address**
+  before they can log in. **Without email, "Forgot password?" tells players it
+  isn't available** — so set it up before launch if you can. After setting it,
+  register a test account and check the email arrives (and isn't in spam).
 - **Google login:** console.cloud.google.com → APIs & Services → Credentials
   → OAuth client ID (Web). Authorised redirect URI:
   `https://yourdomain.com/api/auth/google/callback`. Set
@@ -127,6 +132,11 @@ Check it from a terminal with `node scripts/smoke-ads.mjs` (see the file for
 the server settings it expects; Google's script is replaced by a stand-in).
 
 ## Running it
+
+- **Login protection:** login, registration and the password-reset /
+  verification emails are rate-limited per IP (and per email address), so
+  password guessing and email spamming are cut off with a "try again in N
+  minutes" message.
 
 - **Health & capacity:** `GET /healthz` — rooms running, `maxRooms`, CPU load,
   per-room tick cost. Upgrade the plan when rooms often reach `maxRooms`

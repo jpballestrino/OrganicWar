@@ -7,7 +7,8 @@ import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
-import { findUserById, updateLastLogin, getGuildMessages, getUserProfile, findGuildById, findGuildByTag, addGuildMessage } from '../database.js';
+import { findUserById, updateLastLogin, getUserProfile, findGuildById, findGuildByTag, addGuildMessage } from '../database.js';
+import { joinGuildRoom } from './guildRooms.js';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { createRequire } from 'module';
@@ -45,6 +46,15 @@ const createRoomSchema = z.object({
   preset: z.enum(['north_america', 'europe', 'africa']).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
+
+// Guild-war challenges sent and not yet answered: "challengerId>targetId" →
+// {teamSize, expiresAt}. The client shows a challenge for 60 s.
+const WAR_CHALLENGE_TTL_MS = 65000;
+const pendingWarChallenges = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of pendingWarChallenges) if (v.expiresAt < now) pendingWarChallenges.delete(k);
+}, 60000).unref();
 
 const guildChatSchema = z.object({
   message: z.string().min(1).max(200),
@@ -107,29 +117,7 @@ export function setupSocketHandlers(io) {
         updateLastLogin(userId);
             
         if (guildId) {
-          const guildRoom = `guild:${guildId}`;
-          socket.join(guildRoom);
-          socket.to(guildRoom).emit('guild-member-online', { userId, displayName });
-                
-          const rawHistory = getGuildMessages(guildId, 200);
-          const history = rawHistory.map(row => ({
-            id: row.id,
-            userId: row.user_id,
-            displayName: row.display_name,
-            message: row.message,
-            timestamp: row.created_at,
-          }));
-          socket.emit('guild-chat-history', history);
-                
-          const roomSockets = io.sockets.adapter.rooms.get(guildRoom);
-          const onlineIds = [];
-          if (roomSockets) {
-            for (const sid of roomSockets) {
-              const s = io.sockets.sockets.get(sid);
-              if (s && s.userId) { onlineIds.push(s.userId); }
-            }
-          }
-          socket.emit('guild-online-members', onlineIds);
+          joinGuildRoom(io, socket, guildId, displayName);
         }
       } else {
         log('warn', `Invalid token provided by socket ${socket.id}`);
@@ -548,8 +536,8 @@ export function setupSocketHandlers(io) {
       let msg = parsed.data.message.trim();
       if (msg.length === 0) { return; }
         
-      msg = msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        
+      // No HTML escaping here: the client renders chat with textContent, so
+      // escaping would show "&lt;3" instead of "<3".
       if (profanityFilter.isProfane(msg)) {
         msg = profanityFilter.clean(msg);
       }
@@ -634,6 +622,9 @@ export function setupSocketHandlers(io) {
         return;
       }
         
+      // Remember the challenge: only a challenge that was really sent (and is
+      // under a minute old) can be accepted.
+      pendingWarChallenges.set(`${profile.guild_id}>${targetGuild.id}`, { teamSize, expiresAt: Date.now() + WAR_CHALLENGE_TTL_MS });
       io.to(`guild:${targetGuild.id}`).emit('guild-war-challenge-received', {
         challengerGuild: {
           id: profile.guild_id,
@@ -646,14 +637,23 @@ export function setupSocketHandlers(io) {
       socket.emit('notification', { message: `Challenge sent to [${targetGuild.tag}]`, type: 'success' });
     });
 
-    socket.on('guild-war-accept', ({ challengerGuildId, teamSize }) => {
+    socket.on('guild-war-accept', (data) => {
       if (!userId) { return; }
       const freshGuild = getFreshGuildInfo();
       if (!freshGuild.guildId) { return; }
       let profile = getUserProfile(username);
       if (!profile) { return; }
       if (profile.guild_role !== 'leader' && profile.guild_role !== 'officer') { return; }
-        
+      const challengerGuildId = parseInt(data && data.challengerGuildId, 10);
+      const key = `${challengerGuildId}>${freshGuild.guildId}`;
+      const challenge = pendingWarChallenges.get(key);
+      pendingWarChallenges.delete(key);
+      if (!challenge || challenge.expiresAt < Date.now()) {
+        socket.emit('notification', { message: 'That challenge has expired.', type: 'error' });
+        return;
+      }
+      const teamSize = challenge.teamSize;
+
       let targetGuild = findGuildById(freshGuild.guildId);
       let challengerGuild = findGuildById(challengerGuildId);
         
@@ -707,7 +707,9 @@ export function setupSocketHandlers(io) {
     socket.on('disconnect', () => {
       log('debug', `Socket disconnected: ${socket.id}`);
         
-      if (userId) {
+      // Only if this is still the user's current socket: after a re-login the
+      // map already points at the new connection, which is online.
+      if (userId && userSocketMap.get(userId) === socket.id) {
         userSocketMap.delete(userId);
         const freshGuild = getFreshGuildInfo();
         if (freshGuild.guildId) {
