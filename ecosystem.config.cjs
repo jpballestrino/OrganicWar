@@ -22,8 +22,10 @@ module.exports = {
     env_production: {
       NODE_ENV: 'production',
       PORT: 3000,
-      MAX_CONCURRENT_ROOMS: 10,
+      // Room capacity is derived from the machine (server/game/capacity.js).
       MAX_CONNECTIONS_PER_IP: 5,
+      // Set to 1 when a reverse proxy (Caddy / nginx) sits in front.
+      TRUST_PROXY: 0,
       LOG_LEVEL: 'info',
     },
   }],

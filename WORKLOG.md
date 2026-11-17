@@ -226,3 +226,19 @@ the cap per second, so any fair exchange rate is either useless or decisive.
       end, one-time validated guest import, player-timezone days. Tests: 16
       vitest (incl. server/game/progression.test.js) + scripts/e2e-progression.mjs
       (real match eliminated / game over, import, win) + Chromium login flow.
+
+## Session 3 — going live
+
+- [x] Production fixes: proxy-aware client IP (`TRUST_PROXY`, server/clientIp.js —
+      without it all players behind Render/Caddy shared one IP and the 5-per-IP
+      limit capped the game at ~5 players), `DB_PATH` + backups on the volume,
+      container-aware capacity (cgroups), Dockerfile rewritten (was broken:
+      copied a non-existent /app/migrations; Node 22; no apt; non-root via
+      entrypoint), `.dockerignore`, Caddyfile fix (`br` crashed stock Caddy).
+- [x] `render.yaml` Blueprint (Docker, Starter, 1 GB disk at /data, health
+      check, generated JWT_SECRET, one instance) and docker-compose.yml + Caddy.
+- [x] Verified in Docker: image build, 1 CPU/1 GB container (capacity 8 rooms),
+      browser suite, persistence across container replacement, root-owned
+      disk, real-IP limits, Compose+Caddy HTTPS + full match over wss.
+- [ ] **Owner:** buy hosting (Render Starter ≈ $7.25/mo) and optionally a
+      domain, then follow DEPLOY.md.

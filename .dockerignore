@@ -1,0 +1,16 @@
+# Keep the build context small and free of local state: the image builds its
+# own dependencies and WASM, and the database lives on the /data volume.
+node_modules
+dist
+src/wasm
+server/wasm
+simulation-core/target
+server/*.db
+server/*.db-*
+backups
+logs
+.git
+.env
+.env.*
+!.env.example
+*.log
