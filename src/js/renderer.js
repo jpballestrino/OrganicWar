@@ -319,6 +319,9 @@ export class WebGLRenderer {
     setupControls() {
         window.addEventListener('keydown', (e) => {
             if (!e.key) return;
+            // Typing in a text field (guild chat, nickname…) must not move the camera.
+            const el = document.activeElement;
+            if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             if (Object.prototype.hasOwnProperty.call(this.keys, key)) this.keys[key] = true;
         });

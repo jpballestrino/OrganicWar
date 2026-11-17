@@ -131,6 +131,14 @@ export function modalsTemplate() {
                     <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against that specific enemy.</li>
                     <li><strong>Cancel All Attacks:</strong> Press <strong>Space</strong> to instantly refund and cancel all active attacks.</li>
                     <li><strong>Troops &amp; Gold:</strong> Troop cap, growth rate, and gold income all scale with territory owned.</li>
+                    <li><strong>Attack size:</strong> The Attack slider (or <strong>Shift + mouse wheel</strong>) sets what share of your troops each click commits.</li>
+                    <li><strong>Camera:</strong> Drag the map or use <strong>WASD</strong> / arrow keys to move; mouse wheel zooms.</li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🏆 How to Win</h3>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Domination:</strong> Hold 65% of all land and you win immediately. Watch the leaderboard — it shows how close the biggest empire is.</li>
+                    <li><strong>Last standing:</strong> Or simply eliminate every rival.</li>
                 </ul>
 
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🛡️ Buildings &amp; Weapons</h3>
@@ -139,7 +147,8 @@ export function modalsTemplate() {
                     <li><strong>Missile Silo (Press '4'):</strong> Costs 10,000 gold. Required to fire missiles. Takes 10s to build. Survives partial conquest.</li>
                     <li><strong>Fire Missile (Press '2'):</strong> Costs 2,000 gold. Target any enemy cell within silo range. Obliterates troops and buildings in a large radius.</li>
                     <li><strong>Gold Mine (Press '5'):</strong> Costs 3,000 gold. Boosts your global gold production by 10%.</li>
-                    <li><strong>Anti-Air Battery (Press '6'):</strong> Costs 4,000 gold. Intercepts incoming missiles. Holds 3 charges.</li>
+                    <li><strong>Anti-Air Battery (Press '6'):</strong> Costs 5,000 gold. Intercepts incoming missiles. Holds 3 charges.</li>
+                    <li><strong>City (Press '7'):</strong> Costs 2,000 gold. Each city raises your maximum population by 5%.</li>
                     <li><em>Right-click cancels any active building or targeting mode.</em></li>
                 </ul>
             </div>

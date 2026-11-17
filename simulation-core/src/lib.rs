@@ -68,6 +68,11 @@ const GROWTH_OVERSIZE_FACTOR: f32 = 0.5;  // territory beyond that produces at 5
 // the income rate without an extra wire field — keep the two in sync.
 const GOLD_PER_CELL_PER_SEC: f32 = 0.00333;
 
+// Opening truce for bots (see bot_think_all). Measured with the
+// `bot_match_report` harness: without it the first faction dies at ~57s and
+// half the lobby is gone by 90s.
+const BOT_PEACE_SECONDS: u32 = 75;
+
 // A freshly spawned faction starts with troops = this fraction of its max pop.
 const INITIAL_FILL_RATIO: f32 = 0.80;
 
@@ -648,15 +653,19 @@ impl SimulationState {
             // Attack only if it's worth it: we comfortably out-muscle the weakest
             // bordering enemy (1.5x troops-per-cell margin covers the invade cost).
             let can_overpower = has_enemy && our_strength > weakest_enemy_strength[f] * 1.5;
+            // Opening truce: bots leave other factions alone for the first
+            // BOT_PEACE_SECONDS, so nobody is wiped out before they've had a chance
+            // to claim land and learn the controls. (Humans are not bound by it.)
+            // After that bots always press the weakest neighbour once neutral land
+            // runs out — holding back instead was tried and deadlocks the endgame.
+            let peace = self.current_tick < BOT_PEACE_SECONDS * self.tick_hz;
 
-            let target_cell = if has_neutral && !can_overpower {
+            let target_cell = if has_neutral && (!can_overpower || peace) {
                 best_neutral_cell[f]
-            } else if has_enemy {
+            } else if has_enemy && !peace {
                 weakest_enemy_cell[f]
-            } else if has_neutral {
-                best_neutral_cell[f]
             } else {
-                -1 // fully walled in (only water borders) — sit tight this tick
+                -1 // walled in (only water borders) or at peace — hold this tick
             };
 
             if target_cell != -1 {
@@ -1773,8 +1782,8 @@ impl SimulationState {
             // spam towers — both for balance and to keep the per-cell building
             // radius scan in process_war_fronts cheap.
             let mut my_buildings = 0u32;
-            for &c in self.defense_buildings.iter() {
-                if self.cell_owner(c as usize) as usize == f { my_buildings += 1; }
+            for &owner in self.building_owner.iter() {
+                if owner as usize == f { my_buildings += 1; }
             }
             if my_buildings >= (cells / 4000).max(1) { continue; }
 
@@ -1966,5 +1975,42 @@ mod tests {
         s.player_last_attacker[1] = 0;
         s.detonate_missile(500, 530, 1);
         assert_eq!(s.player_last_attacker[1], 0);
+    }
+
+    // Full 20-bot match on an all-plains map, driven on the same cadence as
+    // server/game/simulationWorker.js. Not an assertion test — it prints an
+    // alive/territory timeline for tuning bot behaviour and match pacing:
+    //   cargo test --release bot_match_report -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bot_match_report() {
+        let mut s = SimulationState::new();
+        s.init_players(20, 500, 50, 5000);
+        s.set_tick_hz(25);
+        for i in 0..20u32 {
+            let row = 180 + (i as usize / 5) * 240;
+            let col = 200 + (i as usize % 5) * 380;
+            s.spawn_faction(i + 1, row, col);
+            s.set_player_is_bot(i + 1, true);
+        }
+        let mut first_death = 0u32;
+        let mut over_at = 0u32;
+        for tick in 1..=22_500u32 {
+            s.tick();
+            if tick % 37 == 0 { s.bot_think_all(45); }
+            if tick % 75 == 0 { s.bot_build_all(); }
+            if tick % 50 == 0 { s.bot_fire_missiles(); }
+            let alive = (1..PLAYER_ARRAY_SIZE).filter(|&f| s.player_owned_cells[f] > 0).count();
+            if alive < 20 && first_death == 0 { first_death = tick / 25; }
+            if tick % 750 == 0 {
+                let mut cells: Vec<u32> = (1..PLAYER_ARRAY_SIZE)
+                    .map(|f| s.player_owned_cells[f]).filter(|&c| c > 0).collect();
+                cells.sort_unstable_by(|a, b| b.cmp(a));
+                println!("t={:>3}s alive={:>2} top={:>7} median={:>7}",
+                    tick / 25, alive, cells[0], cells[cells.len() / 2]);
+            }
+            if alive <= 1 { over_at = tick / 25; break; }
+        }
+        println!("first death at {}s, match over at {}s (0 = not finished in 900s)", first_death, over_at);
     }
 }

@@ -6,7 +6,7 @@
 
 import { state } from './state.js';
 import { playSfx } from './sfx.js';
-import { applyMatchResult } from './progression.js';
+import { applyMatchResult, loadProfile } from './progression.js';
 import { escapeHtml } from './escape.js';
 import { showToast } from './guildUI.js';
 import { getCellOwner } from './simBridge.js';
@@ -53,6 +53,9 @@ function freshMatch() {
     landMilestoneIdx: 0,
     hintedTower: false,
     hintedSilo: false,
+    // domination (hold a share of all land to win)
+    dominationShare: 0,
+    dominationWarnedFid: 0,
     result: null,
   };
 }
@@ -80,6 +83,14 @@ function ensureFeelDom() {
   area.insertAdjacentHTML('beforeend', `
     <div id="dangerVignette"></div>
     <div id="announceBanner"><div class="ann-title"></div><div class="ann-sub"></div></div>
+    <div id="controlsHint" style="display:none;">
+      <span><kbd>Click</kbd> attack / expand</span>
+      <span><kbd>Right-click</kbd> cancel attack</span>
+      <span><kbd>Space</kbd> recall all</span>
+      <span><kbd>Drag</kbd> or <kbd>WASD</kbd> move</span>
+      <span><kbd>Wheel</kbd> zoom</span>
+      <span><kbd>Shift</kbd>+<kbd>Wheel</kbd> attack %</span>
+    </div>
     <div id="spectateBar" style="display:none;">
       <span class="spectate-label">👁 Spectating</span>
       <button id="btnSpectateResults" class="feel-btn feel-btn-ghost">Results</button>
@@ -153,6 +164,14 @@ function beginMatch() {
   if (bar) bar.style.display = 'none';
   const old = document.getElementById('matchEndOverlay');
   if (old) old.remove();
+
+  // New commanders get the controls on screen for the opening of the match.
+  const hint = document.getElementById('controlsHint');
+  if (hint) {
+    const isNew = loadProfile().games < 3;
+    hint.style.display = isNew ? 'flex' : 'none';
+    if (isNew) setTimeout(() => { hint.style.display = 'none'; }, 30000);
+  }
 }
 
 function playAgain() {
@@ -173,7 +192,7 @@ export function consumeAutoQuickPlay() {
 
 // Lock in the result exactly once (own elimination or game over, whichever
 // comes first), award XP, and show the recap.
-function settle({ won, placement, survivedSec, killerId = 0, final = false, winner = null }) {
+function settle({ won, placement, survivedSec, killerId = 0, final = false, winner = null, byDomination = false }) {
   if (match.settled) return;
   match.settled = true;
 
@@ -195,7 +214,7 @@ function settle({ won, placement, survivedSec, killerId = 0, final = false, winn
 
   state.activePurchaseMode = null;
   playSfx(won ? 'victory' : 'defeat');
-  showEndScreen(match.result, { final, winner, animate: true });
+  showEndScreen(match.result, { final, winner, animate: true, byDomination });
 }
 
 function enterSpectate() {
@@ -208,9 +227,11 @@ function enterSpectate() {
   }
   const bar = document.getElementById('spectateBar');
   if (bar) bar.style.display = 'flex';
+  const hint = document.getElementById('controlsHint');
+  if (hint) hint.style.display = 'none';
 }
 
-function showEndScreen(result, { final = false, winner = null, animate = false } = {}) {
+function showEndScreen(result, { final = false, winner = null, animate = false, byDomination = false } = {}) {
   const container = document.getElementById('gameArea') || document.body;
   const old = document.getElementById('matchEndOverlay');
   if (old) old.remove();
@@ -218,13 +239,18 @@ function showEndScreen(result, { final = false, winner = null, animate = false }
   // If we already lost and are spectating, the final whistle just reports the winner.
   const spectatorFinal = final && !animate;
   let title, tone, sub;
+  const how = byDomination ? 'dominated' : 'conquered';
   if (result.won) {
-    title = 'Victory'; tone = 'win'; sub = 'The map is yours, Commander.';
+    title = 'Victory'; tone = 'win';
+    sub = byDomination ? 'You dominated the map, Commander.' : 'The map is yours, Commander.';
   } else if (spectatorFinal) {
     title = 'Match over'; tone = 'lose';
-    sub = winner ? `${factionName(winner)} conquered the map.` : 'The war has ended.';
+    sub = winner ? `${factionName(winner)} ${how} the map.` : 'The war has ended.';
+  } else if (final) {
+    title = 'Defeat'; tone = 'lose';
+    sub = winner ? `${factionName(winner)} ${how} the map.` : 'The war has ended.';
   } else {
-    title = final ? 'Defeat' : 'Eliminated'; tone = 'lose';
+    title = 'Eliminated'; tone = 'lose';
     sub = result.killerName ? `Your empire fell to ${result.killerName}.` : 'Your empire has fallen.';
   }
 
@@ -320,16 +346,47 @@ function showEndScreen(result, { final = false, winner = null, animate = false }
 }
 
 // ── Per-snapshot stats (called from network.js) ──────────────────────────────
-// stats: { cells, gold, rank, alive, leaderFid }
-export function onSnapshotStats({ cells, gold, rank, alive, leaderFid }) {
+// stats: { cells, gold, rank, alive, leaderFid, landCells, dominationShare,
+//          landLeaderFid, landLeaderCells }
+export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells = 0, dominationShare = 0, landLeaderFid = 0, landLeaderCells = 0 }) {
   if (!match.active || match.settled) return;
   const now = performance.now();
   match.alive = alive;
+  match.dominationShare = dominationShare;
   if (cells > match.peakCells) match.peakCells = cells;
 
   // Rank chip in the leaderboard header.
   const chip = document.getElementById('lblMyRank');
   if (chip) chip.textContent = rank > 0 ? `#${rank} · ${alive} alive` : `${alive} alive`;
+
+  // Domination race: your share and the biggest empire's share of all land,
+  // against the share that wins outright.
+  const dom = document.getElementById('lblDomination');
+  if (dom) {
+    if (landCells > 0 && dominationShare > 0) {
+      const pct = (n) => Math.floor((n / landCells) * 100);
+      const goal = Math.round(dominationShare * 100);
+      const me = myFid();
+      dom.textContent = landLeaderFid === me
+        ? `You hold ${pct(cells)}% · ${goal}% wins`
+        : `You ${pct(cells)}% · Top ${pct(landLeaderCells)}% · ${goal}% wins`;
+      dom.classList.toggle('danger', landLeaderFid !== me && landLeaderCells / landCells >= dominationShare - 0.15);
+
+      // One warning per contender once they are within 15 points of winning.
+      if (landLeaderFid && landLeaderCells / landCells >= dominationShare - 0.15
+          && match.dominationWarnedFid !== landLeaderFid) {
+        match.dominationWarnedFid = landLeaderFid;
+        if (landLeaderFid === me) {
+          announce('Domination in reach', `Hold ${goal}% of the land to win the war`, 'gold', 'rankUp');
+        } else {
+          flashDanger();
+          announce(`${factionName(landLeaderFid)} nears domination`, `They win at ${goal}% of the land — cut them down`, 'red', 'alarm');
+        }
+      }
+    } else {
+      dom.textContent = '';
+    }
+  }
 
   // Under attack: land fell sharply over the last ~2 seconds.
   if (now - match.lastSampleAt >= 500) {
@@ -408,7 +465,7 @@ export function initMatchFeel({ socket, quit }) {
 
   socket.on('start-match-now', () => {
     beginMatch();
-    announce('Conquer the map', `${match.total} commanders · click land to expand`, 'gold', 'go');
+    announce('Conquer the map', `${match.total} commanders · hold most of the land or be the last standing`, 'gold', 'go');
   });
 
   // A page reload mid-match skips start-match-now; pick the match up from here.
@@ -441,7 +498,7 @@ export function initMatchFeel({ socket, quit }) {
     if (callout) announce(callout[0], callout[1], 'gold');
   });
 
-  socket.on('game-over', ({ winner, stats } = {}) => {
+  socket.on('game-over', ({ winner, stats, byDomination } = {}) => {
     const me = myFid();
     state.gameState = 'END_GAME';
     const bar = document.getElementById('spectateBar');
@@ -449,7 +506,7 @@ export function initMatchFeel({ socket, quit }) {
 
     if (match.settled && match.result) {
       // Already eliminated earlier: just report how the war ended.
-      showEndScreen(match.result, { final: true, winner });
+      showEndScreen(match.result, { final: true, winner, byDomination });
       return;
     }
     if (!match.active) { ensureFeelDom(); match.active = true; match.startedAt = performance.now(); }
@@ -464,6 +521,7 @@ export function initMatchFeel({ socket, quit }) {
       survivedSec: mine ? mine.survivedSec : undefined,
       final: true,
       winner,
+      byDomination,
     });
   });
 

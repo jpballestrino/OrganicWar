@@ -1,6 +1,6 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
-import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, SAFE_ZONE_RADIUS } from './roomManager.js';
-import { randomMapId } from '../../src/js/mapGen.js';
+import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns, SAFE_ZONE_RADIUS } from './roomManager.js';
+import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
@@ -67,6 +67,7 @@ export function setupSocketHandlers(io) {
       build_silo:    { lastMs: 0, minIntervalMs: 200 },
       build_mine:    { lastMs: 0, minIntervalMs: 200 },
       build_antiair: { lastMs: 0, minIntervalMs: 200 },
+      build_city:    { lastMs: 0, minIntervalMs: 200 },
       // Keep this small: WASM enforces 2s per-silo cooldown, so a global 2s
       // gate here would block a second ready silo from firing. 100ms is purely
       // anti-flood; legitimate multi-silo play fires at most once per 100ms.
@@ -405,7 +406,16 @@ export function setupSocketHandlers(io) {
 
         // Ensure within bounds
         if (typeof row !== 'number' || typeof col !== 'number') return;
+        if (!Number.isFinite(row) || !Number.isFinite(col)) return;
+        row = Math.floor(row);
+        col = Math.floor(col);
         if (row < 0 || row >= 1080 || col < 0 || col >= 1920) return;
+
+        // A spawn on water claims no cells, leaving the player dead on arrival.
+        if (terrainAt(col / 1920, row / 1080, room.preset) === TERRAIN.WATER) {
+          socket.emit('spawn-rejected', 'You cannot deploy on water. Pick a land cell.');
+          return;
+        }
 
         // Check if another player is too close
         for (let [otherFid, pos] of room.spawnSelections.entries()) {
@@ -417,13 +427,26 @@ export function setupSocketHandlers(io) {
           }
         }
 
-        // We will validate terrain properly later, for now accept the spawn
         room.spawnSelections.set(fid, { row, col });
-        
+
         // Broadcast the updated selections to everyone
         let selectionsObj = {};
         for (let [f, p] of room.spawnSelections.entries()) selectionsObj[f] = p;
         io.to(room.id).emit('spawn-selections-update', selectionsObj);
+
+        // Once every human has picked, don't make them sit through the rest of
+        // the countdown (a short beat so the last pick is visible, and still
+        // changeable, before the drop).
+        const humansReady = Object.entries(room.activePlayerSlots)
+          .filter(([, slot]) => slot && !slot.isBot)
+          .every(([f]) => room.spawnSelections.has(parseInt(f)));
+        if (humansReady && !room.spawnEarlyTimer) {
+          room.spawnEarlyTimer = setTimeout(() => {
+            if (room.phase !== 'SPAWN_SELECTION' || !activeRooms[room.id]) return;
+            if (room.countdownInterval) { clearInterval(room.countdownInterval); }
+            finalizeSpawns(room);
+          }, 1500);
+        }
         
       } catch (err) {
         log('error', `[ERROR] select-spawn failed:`, err.message);

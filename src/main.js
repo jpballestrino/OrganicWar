@@ -530,7 +530,10 @@ async function startSimulationEngine() {
       e.preventDefault();
     });
 
-    canvas.addEventListener('mousedown', (e) => {
+    // A press on the map: right button cancels, left button orders/places.
+    // Left presses are dispatched on mouse-up (see below) so a drag can pan the
+    // camera without also firing an attack.
+    const handleCanvasPress = (e) => {
       // Eliminated players watching the rest of the match can't issue orders.
       if (state.isSpectating) return;
       if (e.button === 2) { // Right click
@@ -649,7 +652,40 @@ async function startSimulationEngine() {
           }
         }
       }
+    };
+
+    // Left-drag pans the camera; a press that never moves past the threshold is
+    // a click. Spectators can still drag to look around.
+    const DRAG_THRESHOLD_PX = 6;
+    let press = null;
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2) { handleCanvasPress(e); return; }
+      if (e.button !== 0) return;
+      press = {
+        event: e, x: e.clientX, y: e.clientY,
+        camX: renderer.camera.x, camY: renderer.camera.y, dragged: false,
+      };
     });
+    window.addEventListener('mousemove', (e) => {
+      if (!press) return;
+      const dx = e.clientX - press.x;
+      const dy = e.clientY - press.y;
+      if (!press.dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      press.dragged = true;
+      state.isPanning = true;
+      // updateCamera() clamps to the map bounds on the next frame.
+      renderer.camera.x = press.camX - dx / renderer.camera.zoom;
+      renderer.camera.y = press.camY - dy / renderer.camera.zoom;
+      canvas.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!press || e.button !== 0) return;
+      const done = press;
+      press = null;
+      state.isPanning = false;
+      if (!done.dragged) handleCanvasPress(done.event);
+    });
+    window.addEventListener('blur', () => { press = null; state.isPanning = false; });
 
     // Space cancels an in-progress attack, recalling the attacking troops to defense.
     // '3' toggles defense building placement mode.
@@ -710,9 +746,14 @@ async function startSimulationEngine() {
       if (e.key === '2' && state.gameState === 'PLAYING') {
         if (inField) return;
         e.preventDefault();
-        const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;
-        if (siloCount === 0) {
+        const mySilos = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo');
+        if (mySilos.length === 0) {
           showToast('You must build a Missile Silo first.', 'error');
+          return;
+        }
+        // A silo under construction can't fire yet.
+        if (mySilos.every(b => b.constructing)) {
+          showToast('Your Missile Silo is still under construction.', 'error');
           return;
         }
         if (state.playerGold < MISSILE_COST) {
@@ -738,9 +779,13 @@ async function startSimulationEngine() {
           playSfx('select');
           if (btn.classList.contains('disabled')) {
             if (mode === 'missile') {
-              const siloCount = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo').length;
-              if (siloCount === 0) {
+              const mySilos = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo');
+              if (mySilos.length === 0) {
                 showToast('You must build a Missile Silo first.', 'error');
+                return;
+              }
+              if (mySilos.every(b => b.constructing)) {
+                showToast('Your Missile Silo is still under construction.', 'error');
                 return;
               }
             }
@@ -805,7 +850,9 @@ function gameLoop(time) {
       const overlayCanvas = document.getElementById('overlayCanvas');
       const gameCanvas = document.getElementById('gameCanvas');
       
-      if (state.gameState === 'SPAWN_SELECTION' || state.activePurchaseMode) {
+      if (state.isPanning) {
+          if (gameCanvas) gameCanvas.style.cursor = 'grabbing';
+      } else if (state.gameState === 'SPAWN_SELECTION' || state.activePurchaseMode) {
           if (gameCanvas) gameCanvas.style.cursor = 'crosshair';
       } else {
           if (gameCanvas) gameCanvas.style.cursor = 'default';

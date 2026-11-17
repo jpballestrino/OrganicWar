@@ -35,6 +35,7 @@ export class RoomSim {
           startGold: opts.startGold,
           startGrowthRate: opts.startGrowthRate,
           startMaxCap: opts.startMaxCap,
+          dominationShare: opts.dominationShare,
         },
         env: envConfig
       }
@@ -79,7 +80,7 @@ export class RoomSim {
 
       case 'gameOver':
         if (this.onGameOver) {
-          this.onGameOver(msg.winner, msg.stats);
+          this.onGameOver(msg.winner, msg.stats, !!msg.byDomination);
         }
         break;
 

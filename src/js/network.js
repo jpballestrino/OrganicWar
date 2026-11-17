@@ -451,7 +451,7 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, playerKills, playerGoldSpent, centroids }) => {
+  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, playerKills, playerGoldSpent, centroids, landCells, dominationShare }) => {
     let t0 = 0;
     if (state.debug) t0 = performance.now();
 
@@ -635,7 +635,8 @@ export function initNetwork() {
         if (btnSilo) btnSilo.classList.toggle('disabled', gold < SILO_BUILDING_COST);
 
         const btnMissile = document.getElementById('btnFireMissile');
-        if (btnMissile) btnMissile.classList.toggle('disabled', gold < MISSILE_COST || siloCount === 0);
+        const readySilos = myBuildings.filter(b => b.type === 'silo' && !b.constructing).length;
+        if (btnMissile) btnMissile.classList.toggle('disabled', gold < MISSILE_COST || readySilos === 0);
 
         const btnMine = document.getElementById('btnBuildMine');
         if (btnMine) btnMine.classList.toggle('disabled', gold < MINE_BUILDING_COST);
@@ -648,12 +649,23 @@ export function initNetwork() {
 
         // Feed the game-feel layer (rank callouts, under-attack alerts, milestones).
         const aliveBoard = state.leaderboardData.filter(lb => !lb.isEliminated);
+        // Largest territory (not the same as the score leader) for domination.
+        let landLeaderFid = 0;
+        let landLeaderCells = 0;
+        for (let i = 1; i <= 20; i++) {
+          const c = maxPopArray[i] / POP_CAP_PER_CELL;
+          if (c > landLeaderCells) { landLeaderCells = c; landLeaderFid = i; }
+        }
         onSnapshotStats({
           cells,
           gold,
           rank: aliveBoard.findIndex(lb => lb.fid === fid) + 1,
           alive: aliveBoard.length,
           leaderFid: aliveBoard.length ? aliveBoard[0].fid : 0,
+          landCells: landCells || 0,
+          dominationShare: dominationShare || 0,
+          landLeaderFid,
+          landLeaderCells,
         });
       }
     }

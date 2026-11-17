@@ -31,6 +31,7 @@ export const state = {
   selectedDoctrine: 'balanced',
   activePurchaseMode: null,
   isSpectating: false, // eliminated but still watching the match (inputs disabled)
+  isPanning: false,    // a left-drag camera pan is in progress
   isInGameMenuOpen: false,
   isRankedMatch: false,
   isGuildWar: false,
