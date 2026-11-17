@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<!--
+  Privacy policy for OrganicWar.io. DRAFT written from what the code stores —
+  the site owner must review it (ideally with legal advice) before relying on
+  it. {{…}} placeholders are filled by server/server.js (/privacy route):
+  CONTACT (CONTACT_EMAIL env var), UPDATED, ADS_SECTION (only when ads are on).
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — OrganicWar.io</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0e14; color: #cbd5e1; font: 15px/1.65 'Inter', system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { color: #ffc107; font-size: 28px; margin-bottom: 4px; }
+  h2 { color: #f1f5f9; font-size: 18px; margin-top: 32px; }
+  a { color: #4ade80; }
+  .muted { color: #64748b; font-size: 13px; }
+  ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="muted">Last updated: {{UPDATED}}</p>
+
+  <p>OrganicWar.io ("the game", "we") is a free browser game. This page explains what information the game collects, why, and the choices you have.</p>
+
+  <h2>Playing as a guest</h2>
+  <p>You can play without an account. Your callsign, settings (sound, graphics) and guest progress (XP, level, daily missions) are stored only in your own browser's local storage. Clearing your browser data removes them.</p>
+
+  <h2>If you create an account</h2>
+  <ul>
+    <li><strong>Account details:</strong> username, display name, email address and a hashed password (we never store your password in readable form). If you sign in with Google or Discord we receive your account id and email address from that service.</li>
+    <li><strong>Game records:</strong> match results, ranking (ELO), statistics, XP and daily-mission progress, and guild membership.</li>
+    <li><strong>Messages you send:</strong> guild chat messages (the most recent 200 per guild are kept) and feedback you submit through the game.</li>
+  </ul>
+  <p>We use this information only to run the game: to log you in, keep your progress, show rankings and guild features, and answer feedback. We do not sell it.</p>
+
+  <h2>Technical information</h2>
+  <p>Like any web server, ours receives your IP address. We use it to limit abuse (for example, the number of simultaneous connections from one address) and it may appear in server logs, which are kept for a limited time for security and troubleshooting.</p>
+{{ADS_SECTION}}
+  <h2>How long we keep data</h2>
+  <p>Account data is kept while your account exists. Ask us to delete your account and we will delete your account details and progress; anonymous match statistics may remain in aggregate rankings.</p>
+
+  <h2>Children</h2>
+  <p>The game is not directed at children under 13, and we do not knowingly collect personal information from them. If you believe a child has created an account, contact us and we will delete it.</p>
+
+  <h2>Your rights and contact</h2>
+  <p>You can ask for a copy of your data, its correction or its deletion at any time. Depending on where you live (for example the EU/UK under the GDPR, or California under the CCPA) you may have further rights, including objecting to processing and complaining to your data-protection authority.</p>
+  <p>Contact: {{CONTACT}}.</p>
+
+  <p class="muted"><a href="/">← Back to the game</a></p>
+</main>
+</body>
+</html>

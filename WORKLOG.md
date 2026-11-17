@@ -242,3 +242,16 @@ the cap per second, so any fair exchange rate is either useless or decisive.
       disk, real-IP limits, Compose+Caddy HTTPS + full match over wss.
 - [ ] **Owner:** buy hosting (Render Starter ≈ $7.25/mo) and optionally a
       domain, then follow DEPLOY.md.
+
+## Session 4 — Google ads option
+
+- [x] Optional AdSense (off unless ADSENSE_CLIENT): home + recap side-rail
+      units, between-match interstitials via the Ad Placement API, ads.txt,
+      CSP opened only when on, privacy policy page (/privacy, draft to review),
+      footer link. Tests: server/ads.test.js (5), scripts/smoke-ads.mjs
+      (15 checks on, 7 off), regular browser suite unchanged.
+- [x] Fixed: the production image lacked src/reset-password.html (password
+      reset links would have failed).
+- [ ] **Owner:** own domain → AdSense approval → set ADSENSE_* + CONTACT_EMAIL;
+      apply for H5 Games Ads for between-match ads; publish the GDPR message;
+      review /privacy.

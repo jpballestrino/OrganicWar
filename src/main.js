@@ -13,6 +13,7 @@ import { generateTerrain, warmMapCache } from './js/mapGen.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
 import { renderProgressCards } from './js/progression.js';
+import { initAds } from './js/ads.js';
 import { initBuildBar, handleBuildClick, cancelBuildMode, drawBuildPreview, syncBuildBarActive } from './js/buildBar.js';
 
 let wasmModule = null;
@@ -503,6 +504,7 @@ if (_isMobile) {
   initSfx();
   initNetwork();
   initMatchFeel({ socket, quit: quitAndReload });
+  initAds(); // Google ads, only if the server has them configured
   renderProgressCards();
   initAuthUI();
   initGuildUI();

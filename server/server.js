@@ -13,6 +13,7 @@ import fs from 'fs';
 import { verifyToken } from './auth.js';
 import { findUserById, getUserProfile, prepareStatements, db, dbPath } from './database.js';
 import { clientIp, TRUST_PROXY } from './clientIp.js';
+import { adsConfig, adsTxt, cspDirectives, describeAds } from './ads.js';
 import { runMigrations } from './migrate.js';
 import guildRoutes from './routes/guilds.js';
 import authRouter from './routes/authRoutes.js';
@@ -37,14 +38,15 @@ export const app = express();
 if (TRUST_PROXY > 0) app.set('trust proxy', TRUST_PROXY);
 app.use(helmet({
   contentSecurityPolicy: {
-    directives: {
+    // Google's ad domains are added only when ads are enabled (server/ads.js).
+    directives: cspDirectives({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "'wasm-unsafe-eval'", 'https://cdn.jsdelivr.net'],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       connectSrc: ["'self'", 'ws:', 'wss:', 'https://cdn.jsdelivr.net'],
       imgSrc: ["'self'", 'data:', 'https:'],
-    },
+    }),
   },
 }));
 app.use(compression());
@@ -142,6 +144,47 @@ app.get('/reset-password', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'src', 'reset-password.html'));
 });
 
+// Privacy policy (required by Google AdSense; linked from the home footer).
+// A template: the contact address comes from CONTACT_EMAIL, and the
+// advertising section is included only when ads are enabled.
+const PRIVACY_UPDATED = '17 November 2026';
+const PRIVACY_ADS_SECTION = `
+  <h2>Advertising</h2>
+  <p>The game shows ads from Google AdSense on its menus and between matches (never during a match). Google and its partners use cookies and similar technologies to serve ads, measure them and, where you allow it, personalise them based on your visits to this and other websites.</p>
+  <ul>
+    <li>How Google uses information from sites that use its services: <a href="https://policies.google.com/technologies/partner-sites" rel="noopener">policies.google.com/technologies/partner-sites</a>.</li>
+    <li>You can turn off personalised ads at <a href="https://adssettings.google.com" rel="noopener">adssettings.google.com</a>, or opt out of third-party vendors' cookies at <a href="https://www.aboutads.info/choices" rel="noopener">aboutads.info/choices</a>.</li>
+    <li>Visitors in the EEA, the UK and Switzerland are asked for consent through Google's consent message before personalised ads are shown.</li>
+  </ul>
+`;
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+app.get('/privacy', (req, res) => {
+  fs.readFile(path.join(__dirname, 'pages', 'privacy.html'), 'utf8', (err, html) => {
+    if (err) return res.status(500).send('Privacy policy unavailable');
+    const email = process.env.CONTACT_EMAIL;
+    const contact = email
+      ? `<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>`
+      : 'the “Send Feedback” form in the game';
+    res.type('html').send(html
+      .replace('{{UPDATED}}', PRIVACY_UPDATED)
+      .replace('{{CONTACT}}', contact)
+      .replace('{{ADS_SECTION}}', adsConfig() ? PRIVACY_ADS_SECTION : ''));
+  });
+});
+
+// ── Google ads (optional — server/ads.js) ──
+// What the client needs to show ads; null = ads off.
+app.get('/api/client-config', (req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.json({ ads: adsConfig() });
+});
+// Google requires /ads.txt on the domain before it serves ads there.
+app.get('/ads.txt', (req, res) => {
+  const txt = adsTxt();
+  if (!txt) return res.status(404).type('text/plain').send('ads not configured\n');
+  res.type('text/plain').send(txt);
+});
+
 // Attach guild routes
 app.use('/api/guilds', guildRoutes(io));
 
@@ -216,6 +259,7 @@ if (process.env.NODE_ENV !== 'test') {
 
 httpServer.listen(PORT, () => {
   log('info', `Server listening on port ${PORT}`);
+  log('info', describeAds());
 });
 
 function gracefulShutdown(signal) {

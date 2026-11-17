@@ -44,6 +44,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/js ./src/js
+# Standalone page the server sends from src/ (password reset links).
+COPY --from=builder /app/src/reset-password.html ./src/reset-password.html
 
 RUN mkdir -p /data /app/logs && chown -R node:node /data /app/logs
 # Runs as root only long enough to take ownership of the data volume, then

@@ -7,6 +7,7 @@
 import { state } from './state.js';
 import { playSfx } from './sfx.js';
 import { applyMatchResult, loadProfile, isServerMode, setServerProfile, renderProgressCards } from './progression.js';
+import { adBreakThen, showRecapAd } from './ads.js';
 import { escapeHtml } from './escape.js';
 import { showToast } from './guildUI.js';
 import { getCellOwner } from './simBridge.js';
@@ -217,10 +218,22 @@ function beginMatch() {
   }
 }
 
+// Leaving the recap (Play Again / Main Menu) is the one moment an
+// between-match ad may play (ads.js; a no-op when ads are off). `leaving`
+// stops a double click from starting two breaks.
+let leaving = false;
+function leaveMatch(then) {
+  if (leaving) return;
+  leaving = true;
+  adBreakThen(then);
+}
+
 function playAgain() {
-  // Remember which queue (standard / mega) to rejoin after the reload.
-  try { sessionStorage.setItem(AUTO_QUICK_PLAY_KEY, state.quickMode === 'mega' ? 'mega' : 'standard'); } catch (_) { /* storage blocked */ }
-  quitFn();
+  leaveMatch(() => {
+    // Remember which queue (standard / mega) to rejoin after the reload.
+    try { sessionStorage.setItem(AUTO_QUICK_PLAY_KEY, state.quickMode === 'mega' ? 'mega' : 'standard'); } catch (_) { /* storage blocked */ }
+    quitFn();
+  });
 }
 
 // The Quick Battle mode to rejoin ('standard' | 'mega'), once per page load,
@@ -283,6 +296,7 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
   match.endOpts = { final, winner, byDomination };
   const container = document.getElementById('gameArea') || document.body;
   const old = document.getElementById('matchEndOverlay');
+  const keptAd = old ? old.querySelector('.ad-rail[data-filled]') : null;
   if (old) old.remove();
 
   // If we already lost and are spectating, the final whistle just reports the winner.
@@ -363,9 +377,12 @@ ${progressHtml}
       </div>
     </div>`;
   container.appendChild(overlay);
+  // Keep an already-filled ad when the recap re-renders (e.g. when the server's
+  // XP arrives) instead of requesting a new one; otherwise add the unit.
+  if (keptAd) overlay.appendChild(keptAd); else showRecapAd(overlay);
 
   overlay.querySelector('#btnEndPlayAgain').onclick = playAgain;
-  overlay.querySelector('#btnEndMenu').onclick = () => quitFn();
+  overlay.querySelector('#btnEndMenu').onclick = () => leaveMatch(() => quitFn());
   const btnSpectate = overlay.querySelector('#btnEndSpectate');
   if (btnSpectate) btnSpectate.onclick = enterSpectate;
 
