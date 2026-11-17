@@ -35,7 +35,7 @@ export class RoomSim {
           startGold: opts.startGold,
           startGrowthRate: opts.startGrowthRate,
           startMaxCap: opts.startMaxCap,
-          dominationShare: opts.dominationShare,
+          domination: opts.domination,
         },
         env: envConfig
       }

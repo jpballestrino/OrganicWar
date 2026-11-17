@@ -71,7 +71,7 @@ const GOLD_PER_CELL_PER_SEC: f32 = 0.00333;
 // Opening truce for bots (see bot_think_all). Measured with the
 // `bot_match_report` harness: without it the first faction dies at ~57s and
 // half the lobby is gone by 90s.
-const BOT_PEACE_SECONDS: u32 = 75;
+const BOT_PEACE_SECONDS: u32 = 50;
 
 // A freshly spawned faction starts with troops = this fraction of its max pop.
 const INITIAL_FILL_RATIO: f32 = 0.80;
@@ -961,6 +961,9 @@ impl SimulationState {
                 let max_conquers = ((self.front_pool[fi] * EXPANSION_CELLS_PER_TROOP) as usize)
                     .clamp(MIN_CONQUERS_PER_TICK, MAX_CONQUERS_PER_TICK);
                 let mut conquers = 0;
+                // Set when a legal target was skipped only because the front
+                // couldn't pay for it (see the stalled-front check below).
+                let mut priced_out = false;
 
                 for &(_, _, n_idx) in scored.iter() {
                     if conquers >= max_conquers { break; }
@@ -1054,7 +1057,22 @@ impl SimulationState {
                         if let Some(bidx) = silo_to_check {
                             self.try_transfer_silo(bidx, f as u32);
                         }
+                    } else {
+                        priced_out = true;
                     }
+                }
+
+                // Stalled front: it took nothing this tick and every legal target
+                // costs more than it has left (e.g. 30 troops facing fortified
+                // cells at up to DIFFICULTY_CAP each). It can never advance, and it
+                // would otherwise sit open forever — stranding those troops and,
+                // because bots only think when they have no active front, freezing
+                // the bot permanently (whole matches deadlocked this way). Refund
+                // and close it so the owner can regroup and attack again.
+                if conquers == 0 && priced_out {
+                    self.player_total_troops[f] += self.front_pool[fi];
+                    self.front_pool[fi] = 0.0;
+                    continue;
                 }
 
                 // End-of-front condition: a nearly-spent front returns its scraps
@@ -1975,6 +1993,32 @@ mod tests {
         s.player_last_attacker[1] = 0;
         s.detonate_missile(500, 530, 1);
         assert_eq!(s.player_last_attacker[1], 0);
+    }
+
+    // A front too poor to buy any bordering cell must close and refund instead of
+    // sitting open forever (which froze bots and deadlocked matches).
+    #[test]
+    fn stalled_front_is_refunded_and_closed() {
+        let mut s = SimulationState::new();
+        s.init_players(2, 500, 50, 5000);
+        s.set_tick_hz(25);
+        // Nucleus radius is 12, so centres 25 apart share a border.
+        s.spawn_faction(1, 500, 500);
+        s.spawn_faction(2, 500, 525);
+        let cells2 = s.player_owned_cells[2];
+        // Keep faction 2 at its population cap (2 troops/cell, so every border
+        // cell costs at least 2) and let the per-second difficulty pass run.
+        for _ in 0..30 {
+            s.player_total_troops[2] = cells2 as f32 * 40.0;
+            s.tick();
+        }
+        let fi = PLAYER_ARRAY_SIZE + 2; // faction 1's front against faction 2
+        let reserve_before = s.player_total_troops[1];
+        s.front_pool[fi] = 1.5; // above the 1.0 auto-close scrap level, below any cell's cost
+        s.tick();
+        assert_eq!(s.player_owned_cells[2], cells2, "nothing was affordable");
+        assert_eq!(s.front_pool[fi], 0.0, "the stalled front must close");
+        assert!(s.player_total_troops[1] >= reserve_before + 1.5, "its troops are refunded");
     }
 
     // Full 20-bot match on an all-plains map, driven on the same cadence as

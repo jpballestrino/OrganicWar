@@ -124,6 +124,16 @@ body.in-match #notificationContainer {
     color: #f87171;
 }
 
+/* flashes each time the domination target drops */
+.leaderboard-domination.pulse {
+    animation: dominationPulse 1.2s ease-out;
+}
+
+@keyframes dominationPulse {
+    0%   { color: #fff; transform: scale(1.12); }
+    100% { transform: scale(1); }
+}
+
 /* --- Controls hint for a commander's first few matches --- */
 #controlsHint {
     position: absolute;

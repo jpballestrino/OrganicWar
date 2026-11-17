@@ -138,6 +138,7 @@ export function modalsTemplate() {
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🏆 How to Win</h3>
                 <ul style="padding-left: 20px; margin-bottom: 20px;">
                     <li><strong>Domination:</strong> Hold 65% of all land and you win immediately. Watch the leaderboard — it shows how close the biggest empire is.</li>
+                    <li><strong>Sudden death:</strong> After 3 minutes the domination target starts falling (5% every 30 seconds, down to 40%), so the biggest empire has to be stopped or it wins.</li>
                     <li><strong>Last standing:</strong> Or simply eliminate every rival.</li>
                 </ul>
 
