@@ -56,6 +56,9 @@ const loads = [];
 let eliminated = 0;
 let lastStats = null;
 let fullCheckDone = false;
+let bountyNow = 0;
+let bountySince = 0;
+const bountySpans = [];
 
 const elapsed = () => ((Date.now() - started) / 1000).toFixed(0).padStart(4) + 's';
 
@@ -80,6 +83,13 @@ worker.on('message', (msg) => {
     } else if (msg.event === 'sim-stats') {
       bytes['sim-stats'] += msg.payload.byteLength;
       lastStats = msg.payload;
+      // Bounty placements: how often, on whom, for how long (flicker check).
+      const b = new DataView(msg.payload).getUint32(16, true);
+      if (b !== bountyNow) {
+        if (bountyNow) bountySpans.push(`${bountyNow} for ${((Date.now() - bountySince) / 1000).toFixed(0)}s`);
+        bountyNow = b;
+        bountySince = Date.now();
+      }
     } else {
       bytes.other += JSON.stringify(msg.payload).length;
     }
@@ -133,11 +143,12 @@ const raceLog = setInterval(() => {
   let top = 0;
   let alive = 0;
   for (let f = 1; f <= n; f++) {
-    const c = dv.getUint32(16 + (f - 1) * rec + 12, true);
+    const c = dv.getUint32(20 + (f - 1) * rec + 12, true);
     if (c > top) top = c;
     if (c > 0) alive++;
   }
-  console.log(`${elapsed()}  land leader ${(100 * top / land).toFixed(1)}%, ${alive} alive, target ${(dv.getFloat32(8, true) * 100).toFixed(0)}%`);
+  const bounty = dv.getUint32(16, true);
+  console.log(`${elapsed()}  land leader ${(100 * top / land).toFixed(1)}%, ${alive} alive, target ${(dv.getFloat32(8, true) * 100).toFixed(0)}%${bounty ? `, bounty on ${bounty}` : ''}`);
 }, 60000);
 raceLog.unref();
 
@@ -165,10 +176,12 @@ function report(secs) {
   const n = dv.getUint16(12, true);
   const rec = dv.getUint16(14, true);
   const cells = [];
-  for (let f = 1; f <= n; f++) cells.push(dv.getUint32(16 + (f - 1) * rec + 12, true));
+  for (let f = 1; f <= n; f++) cells.push(dv.getUint32(20 + (f - 1) * rec + 12, true));
   cells.sort((a, b) => b - a);
   const pct = (c) => (100 * c / land).toFixed(1) + '%';
   console.log(`land race      leader ${pct(cells[0])}, 2nd ${pct(cells[1] || 0)}, 3rd ${pct(cells[2] || 0)}; ` +
     `${cells.filter(c => c > 0).length} alive; domination target ${(dv.getFloat32(8, true) * 100).toFixed(0)}%`);
+  if (bountyNow) bountySpans.push(`${bountyNow} for ${((Date.now() - bountySince) / 1000).toFixed(0)}s (until the end)`);
+  console.log(`bounties      ${bountySpans.length ? bountySpans.join(', ') : 'none'}`);
   if (!fullCheckDone) console.log('(full-state check did not run: too few eliminations)');
 }

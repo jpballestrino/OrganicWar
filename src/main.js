@@ -214,23 +214,31 @@ function initLobbyUI() {
     };
   }
 
-  const handleQuickPlay = () => {
+  // mode: 'standard' (20 players) or 'mega' (64) — two separate queues.
+  const handleQuickPlay = (mode = 'standard') => {
     let name = nickInput ? nickInput.value : 'Guest';
     state.playerNickname = name;
+    state.quickMode = mode;
     try { localStorage.setItem('ow_nickname', name); } catch (_) { /* storage blocked */ }
     if (homeScreen) homeScreen.style.display = 'none';
-    socket.emit('quick-play', { nickname: state.playerNickname });
+    socket.emit('quick-play', { nickname: state.playerNickname, mode });
   };
 
-  // "Play Again" on the recap screen reloads the page with this flag set, so the
-  // player drops straight into the next Quick Battle instead of the title screen.
-  if (consumeAutoQuickPlay()) { setTimeout(handleQuickPlay, 200); }
+  // "Play Again" on the recap screen reloads the page with the mode saved, so
+  // the player drops straight into the same kind of battle again.
+  const autoMode = consumeAutoQuickPlay();
+  if (autoMode) { setTimeout(() => handleQuickPlay(autoMode), 200); }
 
   const btnQuickPlay = document.getElementById('btn-quick-play');
-  if (btnQuickPlay) btnQuickPlay.onclick = handleQuickPlay;
+  if (btnQuickPlay) btnQuickPlay.onclick = () => handleQuickPlay('standard');
 
   const btnQuickPlayGuest = document.getElementById('btn-quick-play-guest');
-  if (btnQuickPlayGuest) btnQuickPlayGuest.onclick = handleQuickPlay;
+  if (btnQuickPlayGuest) btnQuickPlayGuest.onclick = () => handleQuickPlay('standard');
+
+  for (const id of ['btn-mega-play', 'btn-mega-play-guest']) {
+    const btn = document.getElementById(id);
+    if (btn) btn.onclick = () => handleQuickPlay('mega');
+  }
 
   // Ranked Matchmaker
   let rankedTimerInterval = null;
@@ -716,8 +724,8 @@ function gameLoop(time) {
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
         if (state.gameState === 'SPAWN_SELECTION') {
-          // SAFE_ZONE_RADIUS = 80 cells
-          renderer.drawSpawnOverlay(ctx, state.spawnSelections, parseInt(state.playerFaction), 80);
+          // The server shrinks safe zones in big rooms (spawn-selection-start).
+          renderer.drawSpawnOverlay(ctx, state.spawnSelections, parseInt(state.playerFaction), state.safeZoneRadius);
         } else if (state.gameState === 'PLAYING') {
           // Name + total troops drawn at each faction's territory centroid.
           renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));

@@ -174,6 +174,10 @@ export function homeTemplate() {
                         <span class="home-btn-icon">⚔️</span>
                         <span class="home-btn-text">Quick Battle</span>
                     </button>
+                    <button id="btn-mega-play-guest" class="home-btn home-btn-mega" title="64 commanders on one map. Ends by domination in about 4 minutes.">
+                        <span class="home-btn-icon">🌍</span>
+                        <span class="home-btn-text">Mega Battle · 64</span>
+                    </button>
                     <button id="btn-multiplayer-guest" class="home-btn home-btn-lobby">
                         <span class="home-btn-icon">🏛️</span>
                         <span class="home-btn-text">Lobby Browser</span>
@@ -199,6 +203,10 @@ export function homeTemplate() {
                     <button id="btn-quick-play" class="home-btn home-btn-play">
                         <span class="home-btn-icon">⚔️</span>
                         <span class="home-btn-text">Quick Battle</span>
+                    </button>
+                    <button id="btn-mega-play" class="home-btn home-btn-mega" title="64 commanders on one map. Ends by domination in about 4 minutes.">
+                        <span class="home-btn-icon">🌍</span>
+                        <span class="home-btn-text">Mega Battle · 64</span>
                     </button>
                     <button id="btn-ranked-play" class="home-btn home-btn-ranked">
                         <span class="home-btn-icon">🌟</span>

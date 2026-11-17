@@ -15,7 +15,12 @@ import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST } from './constants.js';
 const AUTO_QUICK_PLAY_KEY = 'ow_auto_quick_play';
 // A fair share of a 20-player map is ~63k land (everyone passes 50k in the first
 // 30s), so milestones start above that: each one marks a real power spike.
-const LAND_MILESTONES = [100000, 250000, 500000, 1000000];
+// Bigger rooms have a smaller fair share, so the milestones scale with it.
+const LAND_MILESTONES_20 = [100000, 250000, 500000, 1000000];
+const landMilestones = () => {
+  const scale = Math.min(1, 20 / Math.max(1, match.total || 20));
+  return LAND_MILESTONES_20.map(m => Math.round(m * scale / 5000) * 5000);
+};
 const ALIVE_CALLOUTS = {
   10: ['10 remain', 'The map is getting crowded'],
   5: ['Final 5', 'Every border is a front line'],
@@ -32,6 +37,10 @@ function freshMatch() {
     settled: false,
     startedAt: 0,
     total: 0,
+    bountyFid: 0,
+    bountyAnnouncedAt: {},
+    bountyEarnedShown: 0,
+    lastBountyToastAt: 0,
     alive: 0,
     eliminations: 0,
     towers: 0,
@@ -127,6 +136,34 @@ function nextBanner() {
   }, 2100);
 }
 
+// Bounty on a runaway leader: announce when it is placed (on you or a rival)
+// and show what you have earned from it, at most every few seconds.
+function announceBounty(bountyFid, earned) {
+  if (!match.active || match.settled) return;
+  const me = myFid();
+  if (bountyFid !== match.bountyFid) {
+    match.bountyFid = bountyFid;
+    // Rivals gang up fast, so a bounty can lapse and return within seconds:
+    // announce the same target at most once every 30 s.
+    const now = performance.now();
+    const last = match.bountyAnnouncedAt[bountyFid] || 0;
+    if (!bountyFid || now - last < 30000) return;
+    match.bountyAnnouncedAt[bountyFid] = now;
+    if (bountyFid === me) {
+      announce('Bounty on your head', 'Rivals pay less to take your land and earn gold for it', 'red', 'alarm');
+    } else if (bountyFid) {
+      announce(`Bounty on ${factionName(bountyFid)}`, 'Their land is 25% cheaper to take and pays gold', 'gold', 'go');
+    }
+  }
+  const now = performance.now();
+  const gain = earned - (match.bountyEarnedShown || 0);
+  if (gain >= 250 && now - (match.lastBountyToastAt || 0) > 4000) {
+    match.bountyEarnedShown = earned;
+    match.lastBountyToastAt = now;
+    showToast(`Bounty +${Math.floor(gain).toLocaleString('en-US')} gold`, 'success');
+  }
+}
+
 function flashDanger() {
   const v = document.getElementById('dangerVignette');
   if (!v) return;
@@ -177,19 +214,22 @@ function beginMatch() {
 }
 
 function playAgain() {
-  try { sessionStorage.setItem(AUTO_QUICK_PLAY_KEY, '1'); } catch (_) { /* storage blocked */ }
+  // Remember which queue (standard / mega) to rejoin after the reload.
+  try { sessionStorage.setItem(AUTO_QUICK_PLAY_KEY, state.quickMode === 'mega' ? 'mega' : 'standard'); } catch (_) { /* storage blocked */ }
   quitFn();
 }
 
-// True once per page load if the previous page asked for an instant requeue.
+// The Quick Battle mode to rejoin ('standard' | 'mega'), once per page load,
+// if the previous page asked for an instant requeue; otherwise null.
 export function consumeAutoQuickPlay() {
   try {
-    if (sessionStorage.getItem(AUTO_QUICK_PLAY_KEY) === '1') {
+    const mode = sessionStorage.getItem(AUTO_QUICK_PLAY_KEY);
+    if (mode) {
       sessionStorage.removeItem(AUTO_QUICK_PLAY_KEY);
-      return true;
+      return mode === 'mega' ? 'mega' : 'standard'; // '1' from older pages = standard
     }
   } catch (_) { /* storage blocked */ }
-  return false;
+  return null;
 }
 
 // Lock in the result exactly once (own elimination or game over, whichever
@@ -350,7 +390,8 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
 // ── Per-snapshot stats (called from network.js) ──────────────────────────────
 // stats: { cells, gold, rank, alive, leaderFid, landCells, dominationShare,
 //          landLeaderFid, landLeaderCells }
-export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells = 0, dominationShare = 0, landLeaderFid = 0, landLeaderCells = 0 }) {
+export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells = 0, dominationShare = 0, landLeaderFid = 0, landLeaderCells = 0, bountyFid = 0, bountyEarned = 0 }) {
+  announceBounty(bountyFid, bountyEarned);
   if (!match.active || match.settled) return;
   const now = performance.now();
   match.alive = alive;
@@ -449,9 +490,10 @@ export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells
   }
 
   // Land milestones.
-  while (match.landMilestoneIdx < LAND_MILESTONES.length && cells >= LAND_MILESTONES[match.landMilestoneIdx]) {
-    const reached = LAND_MILESTONES[match.landMilestoneIdx++];
-    if (cells < (LAND_MILESTONES[match.landMilestoneIdx] ?? Infinity)) {
+  const milestones = landMilestones();
+  while (match.landMilestoneIdx < milestones.length && cells >= milestones[match.landMilestoneIdx]) {
+    const reached = milestones[match.landMilestoneIdx++];
+    if (cells < (milestones[match.landMilestoneIdx] ?? Infinity)) {
       showToast(`🏴 ${reached.toLocaleString()} land — your empire is growing`, 'success');
       playSfx('milestone');
     }
