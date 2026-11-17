@@ -62,7 +62,7 @@ exactly after a pure-performance change (the sim is deterministic):
 - [x] 3.2 Plunder: eliminating a faction takes its treasury; destroying an enemy building by conquest pays salvage.
 - [x] 3.3 Blitz (key `1`): active ability on a cooldown — fronts advance faster and cheaper for a few seconds.
 - [x] 3.4 Bots use the new economy (spend gold, build cities).
-- [ ] 3.5 Written proposals for what is NOT implemented (below).
+- [x] 3.5 Written proposals for what is NOT implemented (below).
 
 ### Phase 4 — Building synergies
 - [ ] 4.1 Link system in the sim (`building_links` parallel vec, recomputed on complete/destroy/transfer): Walled City (city+tower), Workforce (mine+city), Radar Guidance (silo+anti-air), Flak Tower (anti-air+tower), Arms Industry (silo+mine).
@@ -137,7 +137,34 @@ for towers (radius) and silos (range).
 
 ## Proposals not implemented (for the owner to decide)
 
-_(written in Phase 3.5)_
+Ordered by expected fun per effort. None needs a wire-format change beyond
+what Phases 2–3 added, except where noted.
+
+1. **Bounty on the leader.** Cells taken from the current #1 (by land) cost
+   the attacker 20% less and pay a little gold. The anti-snowball throttle is
+   invisible today; this turns "stop the leader" into a visible, rewarded goal
+   and makes the domination race dramatic. ~40 lines in `process_war_fronts`;
+   show a crown + "BOUNTY" on the leader's label.
+2. **Neutral hotspots.** 5–8 marked map cells (oil, gold, ports) that pay +X
+   gold/s to whoever holds them. Gives the opening a shape (race for the
+   hotspot) and the mid-game objectives to fight over. Needs a per-match
+   hotspot list in the sim and one more icon type.
+3. **Underdog surge.** A faction under ⅓ of the fair share regrows 50% faster.
+   Keeps late joiners / losers in the fight longer (retention), cheap to add
+   in `apply_production`. Risk: slower matches — measure with the bot report.
+4. **Momentum.** A front that keeps conquering for 5 s without stalling gets
+   +25% speed until it stalls. Rewards committing to an attack; Blitz is the
+   active version, this the passive one. Try one of the two first, not both.
+5. **Truces / alliances.** The client already has dormant alliance-proposal
+   DOM. A mutual non-aggression pact for 60 s (cannot target each other)
+   creates diplomacy and betrayal moments — the most "social" feature for an
+   MMO, but needs UI, server validation and bot rules. Largest item.
+6. **Interest on banked gold** (e.g. 1%/10 s up to a cap). Makes hoarding a
+   choice; with plunder it becomes risk-vs-reward. Cheap, but it fights the
+   escalating prices — only if gold still feels pointless after Phase 3.
+
+Not recommended: converting gold into troops. Troops regenerate at up to 5% of
+the cap per second, so any fair exchange rate is either useless or decisive.
 
 ## Status log
 
