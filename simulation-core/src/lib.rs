@@ -148,6 +148,48 @@ const DIFFICULTY_CAP: f32 = 50.0;
 // difficulty_to_invade buffer — it is applied directly in process_war_fronts.
 const NEUTRAL_INVADE_COST: f32 = 0.2;
 
+// ── Binary exports for the server (see the "Wire format" section of CLAUDE.md) ─
+// write_stats() packs one record per player behind a small header, so the
+// server ships a single buffer instead of one per field and the client never
+// has to re-derive economy numbers. All little-endian.
+//   header (STATS_HEADER_BYTES): u32 tick, u32 land_cells, f32 domination_share,
+//                                u16 num_players, u16 record_bytes
+//   record (STATS_RECORD_BYTES), players 1..=num_players:
+//     f32 home troops, f32 troops on attack, f32 effective max population,
+//     u32 owned cells, f32 gold, f32 gold income /s, f32 troop growth /s,
+//     f32 kills, f32 gold spent, u16 centroid row, u16 centroid col, u32 flags
+// Decoded by src/js/simBridge.js (decodeStats) — change both together.
+const STATS_HEADER_BYTES: usize = 16;
+const STATS_RECORD_BYTES: usize = 44;
+const STAT_FLAG_ALIVE: u32 = 1;
+const STAT_FLAG_BOT: u32 = 2;
+// write_buildings() emits this many u32s per building.
+const BUILDING_EXPORT_FIELDS: usize = 6;
+
+// ── Block index for the per-tick border scans ────────────────────────────────
+// The war-front and bot scans only care about BORDER cells (an owned cell with a
+// differently-owned neighbour). Walking all 2M cells every tick to find them was
+// the sim's dominant cost. The map is divided into BLOCK_SIZE² blocks; a block
+// is "quiet" when every cell in it AND in the 1-cell ring around it has the same
+// owner — then it cannot contain a border cell and is skipped whole. A block's
+// state is invalidated in set_cell_owner (the single choke point for ownership
+// changes) and lazily re-classified by the next scan.
+// 8×8 measured best on 20-bot matches (4×4 and 16×16 were both slower).
+const BLOCK_SHIFT: usize = 3;
+const BLOCK_SIZE: usize = 1 << BLOCK_SHIFT; // 8
+const BLOCKS_W: usize = (MAP_WIDTH + BLOCK_SIZE - 1) / BLOCK_SIZE;
+const BLOCKS_H: usize = (MAP_HEIGHT + BLOCK_SIZE - 1) / BLOCK_SIZE;
+const BLOCK_UNKNOWN: u8 = 0;
+const BLOCK_QUIET: u8 = 1;
+const BLOCK_ACTIVE: u8 = 2;
+
+// The 8 neighbour offsets (row, col), in the same order as get_neighbor's
+// direction index: 0-3 cardinal (up, right, down, left), 4-7 diagonal.
+const NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
+    (-1, 0), (0, 1), (1, 0), (0, -1),
+    (-1, -1), (-1, 1), (1, 1), (1, -1),
+];
+
 /// The Core Simulation State using a Structure of Arrays (SoA) Layout.
 /// This completely avoids OOP overhead and GC pressure.
 #[wasm_bindgen]
@@ -155,14 +197,19 @@ pub struct SimulationState {
     // --- Map Cell Data ---
     // Packed per-cell field: owner / terrain / defense / has_building (see layout above).
     cell_data: Vec<u16>,
-    troops: Vec<u32>,
-    difficulty_to_invade: Vec<u32>,
-    last_modified_tick: Vec<u32>,
-    
+    // Troops an attacker pays to take each cell, 0..=DIFFICULTY_CAP (fits a u8).
+    difficulty_to_invade: Vec<u8>,
+    // Per-block scan state (BLOCK_UNKNOWN / QUIET / ACTIVE) — see the block index
+    // consts above.
+    block_state: Vec<u8>,
 
-    // Scratch buffer for delta export: interleaved (cell_id, owner_id) u32 pairs.
-    // Sized to worst case so we never reallocate during a tick.
+    // Scratch buffer for delta export: one u32 per changed cell, already in the
+    // wire format `cell_id (21 bits) | owner << 21`. Grows on demand (it used to
+    // be a fixed 16 MB), so JS must re-read the pointer after each collect.
     delta_scratch: Vec<u32>,
+    // Per-front candidate lists for process_war_fronts, kept between ticks so
+    // their allocations are reused. Indexed attacker * PLAYER_ARRAY_SIZE + target.
+    front_candidates: Vec<Vec<u32>>,
     
     // Incremental dirty list of cell_ids whose ownership changed since the last snapshot clear.
     dirty_cells: Vec<u32>,
@@ -244,6 +291,14 @@ pub struct SimulationState {
     player_last_attacker: Vec<u32>,
     player_gold_spent: Vec<f32>,
     player_population_growth_rate: Vec<u32>,
+    // Per-second rates and the effective population cap (territory cap × city
+    // bonus), refreshed every tick by apply_production. Exported in the stats
+    // buffer so the HUD shows the sim's own numbers.
+    player_income_per_sec: Vec<f32>,
+    player_growth_per_sec: Vec<f32>,
+    player_effective_cap: Vec<f32>,
+    // Scratch for write_stats().
+    stats_buf: Vec<u8>,
     player_is_alive: Vec<u8>,
     // 1 = server-driven bot (gets a heuristic target each think tick), 0 = human.
     player_is_bot: Vec<u8>,
@@ -276,10 +331,10 @@ impl SimulationState {
         let state = SimulationState {
             // Map Initializers
             cell_data: vec![0; TOTAL_CELLS],
-            troops: vec![0; TOTAL_CELLS],
             difficulty_to_invade: vec![0; TOTAL_CELLS],
-            last_modified_tick: vec![0; TOTAL_CELLS],
-            delta_scratch: vec![0; TOTAL_CELLS * 2],
+            block_state: vec![BLOCK_UNKNOWN; BLOCKS_W * BLOCKS_H],
+            delta_scratch: Vec::new(),
+            front_candidates: vec![Vec::new(); PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
             dirty_cells: Vec::new(),
             defense_buildings: Vec::new(),
             defense_build_complete: Vec::new(),
@@ -305,6 +360,10 @@ impl SimulationState {
             player_last_attacker: vec![0; PLAYER_ARRAY_SIZE],
             player_gold_spent: vec![0.0; PLAYER_ARRAY_SIZE],
             player_population_growth_rate: vec![0; PLAYER_ARRAY_SIZE],
+            player_income_per_sec: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_growth_per_sec: vec![0.0; PLAYER_ARRAY_SIZE],
+            player_effective_cap: vec![0.0; PLAYER_ARRAY_SIZE],
+            stats_buf: Vec::new(),
             player_is_alive: vec![0; PLAYER_ARRAY_SIZE],
             player_is_bot: vec![0; PLAYER_ARRAY_SIZE],
             player_account_id: vec![0; PLAYER_ARRAY_SIZE],
@@ -338,6 +397,67 @@ impl SimulationState {
         if old_owner != new_owner {
             self.cell_data[i] = (self.cell_data[i] & !OWNER_MASK) | new_owner;
             self.dirty_cells.push(i as u32);
+            self.invalidate_blocks_around(i);
+        }
+    }
+
+    /// Mark every block whose cells-plus-ring include cell `i` as needing
+    /// re-classification: the blocks covering the 3×3 neighbourhood of `i`
+    /// (1 block normally, up to 4 at a block corner).
+    #[inline]
+    fn invalidate_blocks_around(&mut self, i: usize) {
+        let r = i / MAP_WIDTH;
+        let c = i % MAP_WIDTH;
+        let br0 = r.saturating_sub(1) >> BLOCK_SHIFT;
+        let br1 = (r + 1).min(MAP_HEIGHT - 1) >> BLOCK_SHIFT;
+        let bc0 = c.saturating_sub(1) >> BLOCK_SHIFT;
+        let bc1 = (c + 1).min(MAP_WIDTH - 1) >> BLOCK_SHIFT;
+        self.block_state[br0 * BLOCKS_W + bc0] = BLOCK_UNKNOWN;
+        self.block_state[br0 * BLOCKS_W + bc1] = BLOCK_UNKNOWN;
+        self.block_state[br1 * BLOCKS_W + bc0] = BLOCK_UNKNOWN;
+        self.block_state[br1 * BLOCKS_W + bc1] = BLOCK_UNKNOWN;
+    }
+
+    /// True if all 8 neighbours of interior cell `i` (= row `r`, col `c`) have
+    /// the same owner as `i` itself. Map-edge cells return false (the caller's
+    /// general neighbour loop handles them).
+    #[inline]
+    fn is_enclosed_by_owner(&self, i: usize, r: usize, c: usize) -> bool {
+        if r == 0 || r + 1 >= MAP_HEIGHT || c == 0 || c + 1 >= MAP_WIDTH { return false; }
+        let d = &self.cell_data;
+        let o = d[i] & OWNER_MASK;
+        let up = &d[i - MAP_WIDTH - 1..i - MAP_WIDTH + 2];
+        let down = &d[i + MAP_WIDTH - 1..i + MAP_WIDTH + 2];
+        (up[0] & OWNER_MASK) == o && (up[1] & OWNER_MASK) == o && (up[2] & OWNER_MASK) == o
+            && (d[i - 1] & OWNER_MASK) == o && (d[i + 1] & OWNER_MASK) == o
+            && (down[0] & OWNER_MASK) == o && (down[1] & OWNER_MASK) == o && (down[2] & OWNER_MASK) == o
+    }
+
+    /// True if block (`br`, `bc`) may contain a border cell. Re-classifies the
+    /// block if an ownership change invalidated it since the last scan.
+    #[inline]
+    fn block_is_active(&mut self, br: usize, bc: usize) -> bool {
+        let b = br * BLOCKS_W + bc;
+        match self.block_state[b] {
+            BLOCK_QUIET => false,
+            BLOCK_ACTIVE => true,
+            _ => {
+                // Uniform owner across the block and its 1-cell ring → quiet.
+                let r0 = (br << BLOCK_SHIFT).saturating_sub(1);
+                let r1 = (((br + 1) << BLOCK_SHIFT) + 1).min(MAP_HEIGHT);
+                let c0 = (bc << BLOCK_SHIFT).saturating_sub(1);
+                let c1 = (((bc + 1) << BLOCK_SHIFT) + 1).min(MAP_WIDTH);
+                let first = self.cell_data[r0 * MAP_WIDTH + c0] & OWNER_MASK;
+                let mut active = false;
+                'rows: for r in r0..r1 {
+                    let row = &self.cell_data[r * MAP_WIDTH + c0..r * MAP_WIDTH + c1];
+                    for &cell in row {
+                        if cell & OWNER_MASK != first { active = true; break 'rows; }
+                    }
+                }
+                self.block_state[b] = if active { BLOCK_ACTIVE } else { BLOCK_QUIET };
+                active
+            }
         }
     }
 
@@ -390,29 +510,6 @@ impl SimulationState {
             if self.front_pool[base + t] > FRONT_EPS { return true; }
         }
         false
-    }
-
-    /// Returns the neighbor of a cell in a given direction (0-7), or -1 if none.
-    #[inline(always)]
-    fn get_neighbor(cell: usize, dir: usize) -> i32 {
-        let row = cell / MAP_WIDTH;
-        let col = cell % MAP_WIDTH;
-        let has_up = row > 0;
-        let has_down = row < MAP_HEIGHT - 1;
-        let has_left = col > 0;
-        let has_right = col < MAP_WIDTH - 1;
-
-        match dir {
-            0 => if has_up { ((row - 1) * MAP_WIDTH + col) as i32 } else { -1 },
-            1 => if has_right { (row * MAP_WIDTH + col + 1) as i32 } else { -1 },
-            2 => if has_down { ((row + 1) * MAP_WIDTH + col) as i32 } else { -1 },
-            3 => if has_left { (row * MAP_WIDTH + col - 1) as i32 } else { -1 },
-            4 => if has_up && has_left { ((row - 1) * MAP_WIDTH + col - 1) as i32 } else { -1 },
-            5 => if has_up && has_right { ((row - 1) * MAP_WIDTH + col + 1) as i32 } else { -1 },
-            6 => if has_down && has_right { ((row + 1) * MAP_WIDTH + col + 1) as i32 } else { -1 },
-            7 => if has_down && has_left { ((row + 1) * MAP_WIDTH + col - 1) as i32 } else { -1 },
-            _ => -1,
-        }
     }
 
     /// Initialize the players with their starting resources.
@@ -489,7 +586,6 @@ impl SimulationState {
                         // Ignore water (3)
                         if self.cell_terrain(idx) != 3 && self.cell_owner(idx) == 0 {
                             self.set_cell_owner(idx, faction_id);
-                            self.last_modified_tick[idx] = self.current_tick;
                             self.player_row_sum[f] += rr as f32;
                             self.player_col_sum[f] += cc as f32;
                             cells_claimed += 1;
@@ -600,43 +696,63 @@ impl SimulationState {
         }
         if !any { return; }
 
-        // Per-bot accumulators, filled in one pass over the grid.
+        // Per-bot accumulators, filled in one pass over the border blocks.
         let mut best_neutral_cost = [f32::INFINITY; PLAYER_ARRAY_SIZE];
         let mut best_neutral_cell = [-1i64; PLAYER_ARRAY_SIZE];
         let mut weakest_enemy_strength = [f32::INFINITY; PLAYER_ARRAY_SIZE];
         let mut weakest_enemy_cell = [-1i64; PLAYER_ARRAY_SIZE];
+        // Tie-break for equally weak enemies: the lowest (cell, direction) key,
+        // i.e. what a plain row-major scan would have met first. Keeps the choice
+        // independent of the order blocks are visited in.
+        let mut weakest_enemy_key = [u64::MAX; PLAYER_ARRAY_SIZE];
 
-        for cell in 0..TOTAL_CELLS {
-            let o = self.cell_owner(cell) as usize;
-            if o == 0 || o >= PLAYER_ARRAY_SIZE || !consider[o] {
-                continue;
-            }
-            for i in 0..8 {
-                let n = Self::get_neighbor(cell, i);
-                if n == -1 { continue; }
-                let n_idx = n as usize;
-                let terrain = self.cell_terrain(n_idx);
-                if terrain == 3 { continue; } // water is never conquerable
-                let n_owner = self.cell_owner(n_idx) as usize;
-                if n_owner == o { continue; }
+        for br in 0..BLOCKS_H {
+            for bc in 0..BLOCKS_W {
+                if !self.block_is_active(br, bc) { continue; }
+                let r_end = ((br + 1) << BLOCK_SHIFT).min(MAP_HEIGHT);
+                let c_end = ((bc + 1) << BLOCK_SHIFT).min(MAP_WIDTH);
+                for r in (br << BLOCK_SHIFT)..r_end {
+                    for c in (bc << BLOCK_SHIFT)..c_end {
+                        let cell = r * MAP_WIDTH + c;
+                        let o = self.cell_owner(cell) as usize;
+                        if o == 0 || o >= PLAYER_ARRAY_SIZE || !consider[o] {
+                            continue;
+                        }
+                        if self.is_enclosed_by_owner(cell, r, c) { continue; }
+                        for (dir, &(dr, dc)) in NEIGHBOR_OFFSETS.iter().enumerate() {
+                            let nr = r as i32 + dr;
+                            let nc = c as i32 + dc;
+                            if nr < 0 || nr >= MAP_HEIGHT as i32 || nc < 0 || nc >= MAP_WIDTH as i32 { continue; }
+                            let n_idx = nr as usize * MAP_WIDTH + nc as usize;
+                            let terrain = self.cell_terrain(n_idx);
+                            if terrain == 3 { continue; } // water is never conquerable
+                            let n_owner = self.cell_owner(n_idx) as usize;
+                            if n_owner == o { continue; }
 
-                if n_owner == 0 {
-                    let cost = match terrain {
-                        0 => 1.0, // Plains
-                        1 => 3.0, // Highlands
-                        2 => 6.0, // Mountains
-                        _ => 99.0,
-                    };
-                    if cost < best_neutral_cost[o] {
-                        best_neutral_cost[o] = cost;
-                        best_neutral_cell[o] = n_idx as i64;
-                    }
-                } else if n_owner < PLAYER_ARRAY_SIZE {
-                    let cells = self.player_owned_cells[n_owner].max(1) as f32;
-                    let strength = self.player_total_troops[n_owner] / cells;
-                    if strength < weakest_enemy_strength[o] {
-                        weakest_enemy_strength[o] = strength;
-                        weakest_enemy_cell[o] = n_idx as i64;
+                            if n_owner == 0 {
+                                let cost = match terrain {
+                                    0 => 1.0, // Plains
+                                    1 => 3.0, // Highlands
+                                    2 => 6.0, // Mountains
+                                    _ => 99.0,
+                                };
+                                if cost < best_neutral_cost[o] {
+                                    best_neutral_cost[o] = cost;
+                                    best_neutral_cell[o] = n_idx as i64;
+                                }
+                            } else if n_owner < PLAYER_ARRAY_SIZE {
+                                let cells = self.player_owned_cells[n_owner].max(1) as f32;
+                                let strength = self.player_total_troops[n_owner] / cells;
+                                let key = (cell * 8 + dir) as u64;
+                                if strength < weakest_enemy_strength[o]
+                                    || (strength == weakest_enemy_strength[o] && key < weakest_enemy_key[o])
+                                {
+                                    weakest_enemy_strength[o] = strength;
+                                    weakest_enemy_cell[o] = n_idx as i64;
+                                    weakest_enemy_key[o] = key;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -735,7 +851,7 @@ impl SimulationState {
             };
 
             let difficulty = ((player_density + terrain_cost) * def_tier).min(DIFFICULTY_CAP);
-            self.difficulty_to_invade[cell] = difficulty as u32;
+            self.difficulty_to_invade[cell] = difficulty as u8;
         }
     }
 
@@ -746,6 +862,9 @@ impl SimulationState {
                 let cells = self.player_owned_cells[i];
                 if cells == 0 {
                     self.player_is_alive[i] = 0;
+                    self.player_income_per_sec[i] = 0.0;
+                    self.player_growth_per_sec[i] = 0.0;
+                    self.player_effective_cap[i] = 0.0;
                     continue;
                 }
 
@@ -763,8 +882,9 @@ impl SimulationState {
                     }
                 }
                 
-                let base_income = (cells as f32 * GOLD_PER_CELL_PER_SEC) / tick_hz;
-                self.player_gold[i] += base_income * (1.0 + mine_count * 0.10);
+                let income_per_sec = cells as f32 * GOLD_PER_CELL_PER_SEC * (1.0 + mine_count * 0.10);
+                self.player_income_per_sec[i] = income_per_sec;
+                self.player_gold[i] += income_per_sec / tick_hz;
 
                 // Each completed City building grants +CITY_POP_BONUS to max pop.
                 let mut city_count = 0.0_f32;
@@ -808,6 +928,9 @@ impl SimulationState {
                 // Cap home reserves so that home + attacking never exceeds effective cap.
                 let home_cap = (effective_cap_f - attack).max(0.0);
                 self.player_total_troops[i] = new_troops.min(home_cap);
+                self.player_effective_cap[i] = effective_cap_f;
+                // What the player actually gains: nothing once the cap is hit.
+                self.player_growth_per_sec[i] = if new_troops < home_cap { growth_per_sec } else { 0.0 };
             }
         }
     }
@@ -827,10 +950,14 @@ impl SimulationState {
     /// Higher = more enclosed by our territory; used to fill concavities first.
     #[inline]
     fn owned_neighbor_count(&self, cell: usize, f: usize) -> u8 {
+        let r = (cell / MAP_WIDTH) as i32;
+        let c = (cell % MAP_WIDTH) as i32;
         let mut count = 0u8;
-        for i in 0..8 {
-            let nb = Self::get_neighbor(cell, i);
-            if nb != -1 && self.cell_owner(nb as usize) as usize == f {
+        for &(dr, dc) in NEIGHBOR_OFFSETS.iter() {
+            let nr = r + dr;
+            let nc = c + dc;
+            if nr < 0 || nr >= MAP_HEIGHT as i32 || nc < 0 || nc >= MAP_WIDTH as i32 { continue; }
+            if self.cell_owner(nr as usize * MAP_WIDTH + nc as usize) as usize == f {
                 count += 1;
             }
         }
@@ -885,29 +1012,51 @@ impl SimulationState {
         // Indexed per FRONT: `candidates[attacker * PLAYER_ARRAY_SIZE + target]`,
         // so an owned cell bordering both neutral land and an attacked enemy feeds
         // each of that faction's active fronts independently.
-        let mut candidates: Vec<Vec<usize>> = vec![Vec::new(); PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE];
+        //
+        // Only blocks that can contain a border cell are walked (see the block
+        // index consts); the lists are sorted + deduped below, so the visiting
+        // order here never affects the outcome.
+        let mut candidates = std::mem::take(&mut self.front_candidates);
+        for list in candidates.iter_mut() { list.clear(); }
 
-        for cell_id in 0..TOTAL_CELLS {
-            let owner = self.cell_owner(cell_id) as usize;
-            if owner == 0 || !any_front[owner] { continue; }
+        if any_front.iter().any(|&a| a) {
+            for br in 0..BLOCKS_H {
+                for bc in 0..BLOCKS_W {
+                    if !self.block_is_active(br, bc) { continue; }
+                    let r_end = ((br + 1) << BLOCK_SHIFT).min(MAP_HEIGHT);
+                    let c_end = ((bc + 1) << BLOCK_SHIFT).min(MAP_WIDTH);
+                    for r in (br << BLOCK_SHIFT)..r_end {
+                        for c in (bc << BLOCK_SHIFT)..c_end {
+                            let i = r * MAP_WIDTH + c;
+                            let owner = self.cell_owner(i) as usize;
+                            if owner == 0 || !any_front[owner] { continue; }
+                            // Most owned cells, even in a border block, are fully
+                            // surrounded by their own faction: reject those with a
+                            // straight 8-compare before the general neighbour loop.
+                            if self.is_enclosed_by_owner(i, r, c) { continue; }
 
-            let owner_base = owner * PLAYER_ARRAY_SIZE;
-            for i in 0..8 {
-                let n = Self::get_neighbor(cell_id, i);
-                if n != -1 {
-                    let n_idx = n as usize;
-                    let n_owner = self.cell_owner(n_idx) as usize;
-                    if n_owner == owner { continue; }
-                    // A neighbor is conquerable only if we have an active front
-                    // aimed at its owner (target 0 = neutral, target X = enemy X).
-                    // Other players' cells without a matching front stay a hard
-                    // boundary, so expansion never bleeds where we didn't commit.
-                    if self.front_pool[owner_base + n_owner] > FRONT_EPS
-                        && self.cell_terrain(n_idx) != 3
-                    {
-                        // May be pushed by several owned neighbors; dupes are
-                        // harmless (collapsed below).
-                        candidates[owner_base + n_owner].push(n_idx);
+                            let owner_base = owner * PLAYER_ARRAY_SIZE;
+                            for &(dr, dc) in NEIGHBOR_OFFSETS.iter() {
+                                let nr = r as i32 + dr;
+                                let nc = c as i32 + dc;
+                                if nr < 0 || nr >= MAP_HEIGHT as i32 || nc < 0 || nc >= MAP_WIDTH as i32 { continue; }
+                                let n_idx = nr as usize * MAP_WIDTH + nc as usize;
+                                let n_owner = self.cell_owner(n_idx) as usize;
+                                if n_owner == owner { continue; }
+                                // A neighbor is conquerable only if we have an active
+                                // front aimed at its owner (target 0 = neutral, target X
+                                // = enemy X). Other players' cells without a matching
+                                // front stay a hard boundary, so expansion never bleeds
+                                // where we didn't commit.
+                                if self.front_pool[owner_base + n_owner] > FRONT_EPS
+                                    && self.cell_terrain(n_idx) != 3
+                                {
+                                    // May be pushed by several owned neighbors; dupes
+                                    // are harmless (collapsed below).
+                                    candidates[owner_base + n_owner].push(n_idx as u32);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -924,9 +1073,9 @@ impl SimulationState {
                 let fi = f * PLAYER_ARRAY_SIZE + t;
                 if self.front_pool[fi] <= FRONT_EPS { continue; }
 
-                // Take ownership of this front's candidate list so the conquest
-                // loop can freely borrow &mut self.
-                let mut cells = std::mem::take(&mut candidates[fi]);
+                // `candidates` was taken out of self above, so the conquest loop
+                // can freely borrow &mut self while reading this front's list.
+                let cells = &mut candidates[fi];
 
                 // Nothing legal to conquer (walled in by water / non-targeted
                 // players, or the target was just eliminated): refund and close.
@@ -948,6 +1097,7 @@ impl SimulationState {
                 // a random tiebreak keeps same-enclosure growth radial in all dirs.
                 let mut scored: Vec<(u8, u32, usize)> = Vec::with_capacity(cells.len());
                 for &c in cells.iter() {
+                    let c = c as usize;
                     let enclosure = self.owned_neighbor_count(c, f);
                     let tiebreak = self.next_rand();
                     scored.push((enclosure, tiebreak, c));
@@ -1035,7 +1185,6 @@ impl SimulationState {
                         }
 
                         self.set_cell_owner(n_idx, f as u32);
-                        self.last_modified_tick[n_idx] = self.current_tick;
                         // Freshly taken cell has no fortification yet; enclosure for the
                         // new owner builds up within one second via update_cell_difficulties.
                         self.difficulty_to_invade[n_idx] = 0;
@@ -1084,6 +1233,9 @@ impl SimulationState {
             }
         }
 
+        // Hand the candidate lists back so their allocations are reused next tick.
+        self.front_candidates = candidates;
+
         // Refresh the per-player aggregate (sum of all fronts) for the HUD export.
         for f in 1..PLAYER_ARRAY_SIZE {
             let base = f * PLAYER_ARRAY_SIZE;
@@ -1104,13 +1256,7 @@ impl SimulationState {
     pub fn get_cell_data_ptr(&self) -> *const u16 { self.cell_data.as_ptr() }
 
     #[wasm_bindgen]
-    pub fn get_troops_ptr(&self) -> *const u32 { self.troops.as_ptr() }
-
-    #[wasm_bindgen]
-    pub fn get_difficulty_to_invade_ptr(&self) -> *const u32 { self.difficulty_to_invade.as_ptr() }
-
-    #[wasm_bindgen]
-    pub fn get_last_modified_tick_ptr(&self) -> *const u32 { self.last_modified_tick.as_ptr() }
+    pub fn get_difficulty_to_invade_ptr(&self) -> *const u8 { self.difficulty_to_invade.as_ptr() }
 
 
     
@@ -1161,32 +1307,120 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn get_current_tick(&self) -> u32 { self.current_tick }
 
+    /// Pack every cell whose owner changed since the previous call into the
+    /// delta scratch buffer and return how many there are. Each entry is one u32
+    /// already in the snapshot wire format: `cell_id (21 bits) | owner << 21`.
+    /// The buffer may be reallocated here, so read get_delta_scratch_ptr AFTER
+    /// this call.
     #[wasm_bindgen]
-    pub fn collect_dirty_cells(&mut self, since_tick: u32) -> u32 {
+    pub fn collect_dirty_cells(&mut self) -> u32 {
         self.dirty_cells.sort_unstable();
         self.dirty_cells.dedup();
 
-        let mut count: usize = 0;
-        let cap = self.delta_scratch.len() / 2;
-        
+        self.delta_scratch.clear();
+        self.delta_scratch.reserve(self.dirty_cells.len());
         for &cell_idx in &self.dirty_cells {
-            if count >= cap { break; }
-            let cell_id = cell_idx as usize;
-            
-            if self.last_modified_tick[cell_id] >= since_tick {
-                let owner = self.cell_owner(cell_id);
-                self.delta_scratch[count * 2] = cell_idx;
-                self.delta_scratch[count * 2 + 1] = owner;
-                count += 1;
-            }
+            let owner = self.cell_owner(cell_idx as usize);
+            self.delta_scratch.push((cell_idx & 0x1F_FFFF) | ((owner & 0x7F) << 21));
         }
-        
+
         self.dirty_cells.clear();
-        count as u32
+        self.delta_scratch.len() as u32
     }
 
     #[wasm_bindgen]
     pub fn get_delta_scratch_ptr(&self) -> *const u32 { self.delta_scratch.as_ptr() }
+
+    /// Run-length encode the owner of EVERY cell into the delta scratch buffer
+    /// and return the number of runs. Each run is one u32:
+    /// `run_length (24 bits) | owner << 24`, in row-major order. Used to bring a
+    /// (re)joining client fully up to date — territory is large uniform regions,
+    /// so this is a few hundred KB at worst instead of a 4 MB raw dump. Does not
+    /// touch the dirty list. Read get_delta_scratch_ptr AFTER this call.
+    #[wasm_bindgen]
+    pub fn write_full_owners(&mut self) -> u32 {
+        const MAX_RUN: u32 = 0x00FF_FFFF;
+        self.delta_scratch.clear();
+        let mut run_owner = self.cell_owner(0);
+        let mut run_len: u32 = 0;
+        for i in 0..TOTAL_CELLS {
+            let owner = (self.cell_data[i] & OWNER_MASK) as u32;
+            if owner != run_owner || run_len == MAX_RUN {
+                self.delta_scratch.push(run_len | (run_owner << 24));
+                run_owner = owner;
+                run_len = 0;
+            }
+            run_len += 1;
+        }
+        self.delta_scratch.push(run_len | (run_owner << 24));
+        self.delta_scratch.len() as u32
+    }
+
+    /// Export every building into the delta scratch buffer and return how many
+    /// there are. BUILDING_EXPORT_FIELDS u32s each: center cell, owner faction,
+    /// type (BTYPE_*), completion tick (0 = complete), anti-air charges left,
+    /// silo cooldown tick. For the full-state sync of a (re)joining client.
+    #[wasm_bindgen]
+    pub fn write_buildings(&mut self) -> u32 {
+        self.delta_scratch.clear();
+        for i in 0..self.defense_buildings.len() {
+            self.delta_scratch.push(self.defense_buildings[i]);
+            self.delta_scratch.push(self.building_owner[i]);
+            self.delta_scratch.push(self.building_type[i] as u32);
+            self.delta_scratch.push(self.defense_build_complete[i]);
+            self.delta_scratch.push(self.building_charges[i] as u32);
+            self.delta_scratch.push(self.building_cooldown[i]);
+        }
+        (self.delta_scratch.len() / BUILDING_EXPORT_FIELDS) as u32
+    }
+
+    /// Pack the per-player stats record (see the STATS_* consts for the layout)
+    /// and return its length in bytes. `land_cells` and `domination_share` are
+    /// match-level values the server owns; they are echoed in the header.
+    #[wasm_bindgen]
+    pub fn write_stats(&mut self, land_cells: u32, domination_share: f32) -> u32 {
+        let buf = &mut self.stats_buf;
+        buf.clear();
+        buf.extend_from_slice(&self.current_tick.to_le_bytes());
+        buf.extend_from_slice(&land_cells.to_le_bytes());
+        buf.extend_from_slice(&domination_share.to_le_bytes());
+        buf.extend_from_slice(&(MAX_PLAYERS as u16).to_le_bytes());
+        buf.extend_from_slice(&(STATS_RECORD_BYTES as u16).to_le_bytes());
+        debug_assert_eq!(buf.len(), STATS_HEADER_BYTES);
+        for f in 1..PLAYER_ARRAY_SIZE {
+            let cells = self.player_owned_cells[f];
+            let (crow, ccol) = if cells > 0 {
+                ((self.player_row_sum[f] / cells as f32).round() as u16,
+                 (self.player_col_sum[f] / cells as f32).round() as u16)
+            } else {
+                (0, 0)
+            };
+            let mut flags = 0u32;
+            if self.player_is_alive[f] == 1 && cells > 0 { flags |= STAT_FLAG_ALIVE; }
+            if self.player_is_bot[f] == 1 { flags |= STAT_FLAG_BOT; }
+            buf.extend_from_slice(&self.player_total_troops[f].to_le_bytes());
+            buf.extend_from_slice(&self.player_attack_pool[f].to_le_bytes());
+            buf.extend_from_slice(&self.player_effective_cap[f].to_le_bytes());
+            buf.extend_from_slice(&cells.to_le_bytes());
+            buf.extend_from_slice(&self.player_gold[f].to_le_bytes());
+            buf.extend_from_slice(&self.player_income_per_sec[f].to_le_bytes());
+            buf.extend_from_slice(&self.player_growth_per_sec[f].to_le_bytes());
+            buf.extend_from_slice(&self.player_kill_count[f].to_le_bytes());
+            buf.extend_from_slice(&self.player_gold_spent[f].to_le_bytes());
+            buf.extend_from_slice(&crow.to_le_bytes());
+            buf.extend_from_slice(&ccol.to_le_bytes());
+            buf.extend_from_slice(&flags.to_le_bytes());
+        }
+        debug_assert_eq!(buf.len(), STATS_HEADER_BYTES + MAX_PLAYERS * STATS_RECORD_BYTES);
+        buf.len() as u32
+    }
+
+    #[wasm_bindgen]
+    pub fn get_stats_ptr(&self) -> *const u8 { self.stats_buf.as_ptr() }
+
+    /// The simulation's player capacity (factions 1..=N), so JS never hard-codes it.
+    #[wasm_bindgen]
+    pub fn max_players() -> u32 { MAX_PLAYERS as u32 }
 
     /// Place a defense building centered at (center_row, center_col).
     ///
@@ -1264,7 +1498,6 @@ impl SimulationState {
             for dc in -half..half {
                 let cell = (center_row + dr) as usize * MAP_WIDTH + (center_col + dc) as usize;
                 self.cell_data[cell] |= BUILDING_MASK;
-                self.last_modified_tick[cell] = self.current_tick;
             }
         }
 
@@ -1514,7 +1747,6 @@ impl SimulationState {
                 }
                 self.set_cell_owner(cell, 0);
                 self.set_cell_defense(cell, 0);
-                self.last_modified_tick[cell] = self.current_tick;
             }
         }
     }
@@ -1651,7 +1883,6 @@ impl SimulationState {
                 if r >= 0 && r < MAP_HEIGHT as i32 && c >= 0 && c < MAP_WIDTH as i32 {
                     let cell = r as usize * MAP_WIDTH + c as usize;
                     self.cell_data[cell] &= !BUILDING_MASK;
-                    self.last_modified_tick[cell] = self.current_tick;
                 }
             }
         }
@@ -1670,7 +1901,6 @@ impl SimulationState {
                 if dr * dr + dc * dc <= radius * radius {
                     let cell = r * MAP_WIDTH + c;
                     self.set_cell_defense(cell, 0);
-                    self.last_modified_tick[cell] = self.current_tick;
                 }
             }
         }
@@ -2021,6 +2251,67 @@ mod tests {
         assert!(s.player_total_troops[1] >= reserve_before + 1.5, "its troops are refunded");
     }
 
+    // The delta, full-owner and stats exports must describe the same world the
+    // sim holds — a (re)joining client is rebuilt from nothing but these.
+    #[test]
+    fn exports_round_trip() {
+        let mut s = SimulationState::new();
+        s.init_players(3, 500, 50, 5000);
+        s.set_tick_hz(25);
+        s.spawn_faction(1, 300, 300);
+        s.spawn_faction(2, 300, 700);
+        s.collect_dirty_cells(); // drain the spawn changes
+
+        s.execute_expansion(1, (300 * MAP_WIDTH + 300) as u32, 50);
+        for _ in 0..50 { s.tick(); }
+
+        // Delta: every entry names a cell and its CURRENT owner.
+        let n = s.collect_dirty_cells() as usize;
+        assert!(n > 0, "expansion should have changed cells");
+        for &v in &s.delta_scratch[..n] {
+            let cell = (v & 0x1F_FFFF) as usize;
+            assert_eq!(v >> 21, s.cell_owner(cell));
+        }
+        assert_eq!(s.collect_dirty_cells(), 0, "the dirty list is drained");
+
+        // Full owners: the runs rebuild the whole grid exactly.
+        let runs = s.write_full_owners() as usize;
+        let mut rebuilt: Vec<u32> = Vec::with_capacity(TOTAL_CELLS);
+        for &v in &s.delta_scratch[..runs] {
+            for _ in 0..(v & 0x00FF_FFFF) { rebuilt.push(v >> 24); }
+        }
+        assert_eq!(rebuilt.len(), TOTAL_CELLS);
+        for i in 0..TOTAL_CELLS { assert_eq!(rebuilt[i], s.cell_owner(i)); }
+
+        // Stats: header + one record per player, values straight from the sim.
+        let len = s.write_stats(1234, 0.65) as usize;
+        assert_eq!(len, STATS_HEADER_BYTES + MAX_PLAYERS * STATS_RECORD_BYTES);
+        let b = &s.stats_buf;
+        let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        let f32_at = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        assert_eq!(u32_at(0), s.current_tick);
+        assert_eq!(u32_at(4), 1234);
+        assert_eq!(f32_at(8), 0.65);
+        let rec = STATS_HEADER_BYTES; // player 1
+        assert_eq!(f32_at(rec), s.player_total_troops[1]);
+        assert_eq!(u32_at(rec + 12), s.player_owned_cells[1]);
+        assert!(f32_at(rec + 20) > 0.0, "income per second is reported");
+        assert_eq!(u32_at(rec + 40) & STAT_FLAG_ALIVE, STAT_FLAG_ALIVE);
+        let rec3 = STATS_HEADER_BYTES + 2 * STATS_RECORD_BYTES; // player 3 never spawned
+        assert_eq!(u32_at(rec3 + 40) & STAT_FLAG_ALIVE, 0);
+
+        // Buildings: one record per building, complete-tick 0 once built.
+        s.player_gold[1] = 1.0e6;
+        assert!(s.place_defense_building(1, 300, 300));
+        assert_eq!(s.write_buildings(), 1);
+        assert_eq!(s.delta_scratch[0], (300 * MAP_WIDTH + 300) as u32);
+        assert_eq!(s.delta_scratch[1], 1);
+        assert!(s.delta_scratch[3] > s.current_tick, "still under construction");
+        for _ in 0..200 { s.tick(); }
+        assert_eq!(s.write_buildings(), 1);
+        assert_eq!(s.delta_scratch[3], 0, "construction finished");
+    }
+
     // Full 20-bot match on an all-plains map, driven on the same cadence as
     // server/game/simulationWorker.js. Not an assertion test — it prints an
     // alive/territory timeline for tuning bot behaviour and match pacing:
@@ -2039,7 +2330,10 @@ mod tests {
         }
         let mut first_death = 0u32;
         let mut over_at = 0u32;
+        let mut ticks_run = 0u32;
+        let started = std::time::Instant::now();
         for tick in 1..=22_500u32 {
+            ticks_run = tick;
             s.tick();
             if tick % 37 == 0 { s.bot_think_all(45); }
             if tick % 75 == 0 { s.bot_build_all(); }
@@ -2056,5 +2350,8 @@ mod tests {
             if alive <= 1 { over_at = tick / 25; break; }
         }
         println!("first death at {}s, match over at {}s (0 = not finished in 900s)", first_death, over_at);
+        // Cost of the sim itself (native build; the WASM build is somewhat slower).
+        println!("{:.2} ms per tick over {} ticks",
+            started.elapsed().as_secs_f64() * 1000.0 / ticks_run as f64, ticks_run);
     }
 }

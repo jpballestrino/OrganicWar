@@ -28,7 +28,9 @@ const check = (name, ok, detail = '') => {
 const shot = async (page, name) => {
   if (!SHOTS) return;
   fs.mkdirSync(SHOTS, { recursive: true });
-  await page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
+  // Software GL can be slow to produce a frame; a missing picture is not a failure.
+  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 90000 })
+    .catch((e) => console.log(`(screenshot ${name} skipped: ${e.message.split('\n')[0]})`));
 };
 
 const browser = await chromium.launch({
@@ -133,6 +135,32 @@ const hud = await page.evaluate(() => ({
   leaderboardRows: document.getElementById('leaderboardList').children.length,
 }));
 check('HUD shows live numbers', parseInt(hud.land.replace(/,/g, '')) > 0 && hud.leaderboardRows > 0, JSON.stringify(hud));
+
+// --- Reload mid-match: the reconnect token must bring back map, HUD, buildings ---
+const ownedBefore = await page.evaluate(() => window.__owCountOwned(parseInt(window.__owState.playerFaction)));
+const buildingsBefore = await page.evaluate(() => window.__owState.buildings.length);
+await page.reload({ waitUntil: 'load' });
+await page.waitForFunction(() => document.getElementById('gameHUD')?.style.display === 'flex', null, { timeout: 40000 })
+  .catch(() => {});
+await page.waitForTimeout(4000);
+const after = await page.evaluate(() => {
+  const st = window.__owState;
+  const fid = parseInt(st.playerFaction);
+  return {
+    hud: document.getElementById('gameHUD').style.display,
+    bar: document.getElementById('gameEconomyHUD').style.display,
+    owned: fid ? window.__owCountOwned(fid) : 0,
+    land: parseInt(document.getElementById('lblMyCells').textContent.replace(/,/g, '')) || 0,
+    others: [...Array(20).keys()].reduce((n, i) => n + (i + 1 !== fid && window.__owCountOwned(i + 1) > 0 ? 1 : 0), 0),
+    buildings: st.buildings.length,
+  };
+});
+await shot(page, '05-after-reload');
+check('reload: HUD and build bar are back', after.hud === 'flex' && after.bar === 'flex', JSON.stringify(after));
+check('reload: own territory is back on the map', after.owned > 0 && Math.abs(after.owned - after.land) <= Math.max(50, after.land * 0.05),
+  `before ${ownedBefore}, after ${after.owned}, HUD land ${after.land}`);
+check('reload: rival territories are back on the map', after.others >= 5, `${after.others} rivals visible`);
+check('reload: buildings are back', buildingsBefore === 0 || after.buildings > 0, `before ${buildingsBefore}, after ${after.buildings}`);
 
 check('no page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 

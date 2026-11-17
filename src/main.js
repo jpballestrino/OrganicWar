@@ -8,7 +8,7 @@ import { state } from './js/state.js';
 import initWasm, { SimulationState } from './wasm/simulation_core.js';
 import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
-import { registerSim, getCellOwner } from './js/simBridge.js';
+import { registerSim, getCellOwner, countOwnedCells } from './js/simBridge.js';
 import { generateTerrain, warmMapCache } from './js/mapGen.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
@@ -60,13 +60,16 @@ window.addEventListener('error', (e) => {
   const ctx = canvas.getContext('2d');
   const CELL = 6;
   let cols, rows, grid, factions, animId;
+  // The grid is painted into a cols×rows bitmap (one pixel per cell) and
+  // scaled up in a single drawImage — instead of one fillRect per cell per
+  // frame (~57k at 1080p), which pinned a CPU core on software rendering.
+  let bitmap, bitmapCtx, image;
 
+  // RGBA, alpha 0.7. Index 0 (empty) stays transparent.
   const FACTION_COLORS = [
     null,
-    'rgba(220, 60, 60, 0.7)',   'rgba(60, 140, 220, 0.7)',
-    'rgba(60, 200, 80, 0.7)',    'rgba(220, 180, 40, 0.7)',
-    'rgba(180, 60, 220, 0.7)',   'rgba(220, 120, 40, 0.7)',
-    'rgba(40, 200, 200, 0.7)',   'rgba(220, 80, 160, 0.7)',
+    [220, 60, 60], [60, 140, 220], [60, 200, 80], [220, 180, 40],
+    [180, 60, 220], [220, 120, 40], [40, 200, 200], [220, 80, 160],
   ];
   const NUM_FACTIONS = FACTION_COLORS.length - 1;
 
@@ -75,6 +78,12 @@ window.addEventListener('error', (e) => {
     canvas.height = window.innerHeight;
     cols = Math.ceil(canvas.width / CELL);
     rows = Math.ceil(canvas.height / CELL);
+    bitmap = document.createElement('canvas');
+    bitmap.width = cols;
+    bitmap.height = rows;
+    bitmapCtx = bitmap.getContext('2d');
+    image = bitmapCtx.createImageData(cols, rows);
+    ctx.imageSmoothingEnabled = false;
     initGrid();
   }
 
@@ -123,16 +132,19 @@ window.addEventListener('error', (e) => {
   }
 
   function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const fid = grid[r * cols + c];
-        if (fid > 0) {
-          ctx.fillStyle = FACTION_COLORS[fid];
-          ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
-        }
+    const px = image.data;
+    for (let i = 0; i < grid.length; i++) {
+      const color = FACTION_COLORS[grid[i]];
+      const o = i * 4;
+      if (color) {
+        px[o] = color[0]; px[o + 1] = color[1]; px[o + 2] = color[2]; px[o + 3] = 178;
+      } else {
+        px[o + 3] = 0;
       }
     }
+    bitmapCtx.putImageData(image, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, cols * CELL, rows * CELL);
   }
 
   let lastStep = 0;
@@ -143,11 +155,12 @@ window.addEventListener('error', (e) => {
       return;
     }
     canvas.style.display = 'block';
+    // The picture only changes when the automaton steps, so only redraw then.
     if (ts - lastStep > 50) {
       step();
+      draw();
       lastStep = ts;
     }
-    draw();
     animId = requestAnimationFrame(animate);
   }
 
@@ -496,7 +509,9 @@ if (_isMobile) {
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.has('debug')) {
   state.debug = true;
-  window.__owState = state; // lets scripts/smoke-browser.mjs inspect client state
+  // Lets scripts/smoke-browser.mjs inspect the client.
+  window.__owState = state;
+  window.__owCountOwned = countOwnedCells;
   const debugDiv = document.createElement('div');
   debugDiv.id = 'debugUI';
   debugDiv.style.position = 'absolute';

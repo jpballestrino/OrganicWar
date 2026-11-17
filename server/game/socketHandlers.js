@@ -471,9 +471,7 @@ export function setupSocketHandlers(io) {
         // Use server-stored faction; never trust a client-supplied factionId.
         const fid = socket.assignedFaction || getFactionForSocket(room, socket.id);
         if (!fid) { return; }
-        room.simReal.handleInput(fid, input, () => {
-          socket.emit('build-rejected', { type: input.type });
-        });
+        room.simReal.handleInput(fid, input);
       } catch (err) {
         log('error', `[ERROR] sim-input failed for socket ${socket.id}:`, err.message);
       }
@@ -754,7 +752,12 @@ export function setupSocketHandlers(io) {
               socket.join(room.id);
                         
               sendInitConfig(socket, room);
-              socket.emit('reconnect-success', { factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay });
+              socket.emit('reconnect-success', {
+                factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay,
+                inMatch: !!(room.matchStarted && room.simReal),
+              });
+              // Deltas only carry changes: bring this client fully up to date.
+              if (room.matchStarted && room.simReal) room.simReal.sendFullState(socket.id);
               io.to(room.id).emit('slots-update', room.activePlayerSlots);
               found = true;
               log('info', `[RECONNECT] Success for ${fid}`);

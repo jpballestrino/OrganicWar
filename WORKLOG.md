@@ -49,13 +49,13 @@ exactly after a pure-performance change (the sim is deterministic):
 - [x] 1.10 Verify in a real browser (Playwright, headless Chromium) and screenshot.
 
 ### Phase 2 — MMO / scalability
-- [ ] 2.1 Sim CPU: skip uniform 16×16 blocks in the per-tick border scan (`process_war_fronts`, `bot_think_all`); no div/mod per neighbour. Must reproduce the baseline timeline exactly.
-- [ ] 2.2 Sim memory: drop dead per-cell buffers (`troops` 8 MB, `last_modified_tick` 8 MB), shrink `difficulty_to_invade` to u8, size `delta_scratch` on demand (16 MB). ~44 MB → ~8 MB per room (and per browser tab).
-- [ ] 2.3 Wire: one binary frame per snapshot (today 7 attachments = 8 WS frames, 20×/s); per-player stats at 5 Hz; skip empty snapshots; authoritative income / growth / effective cap in the stats so the client stops mirroring the economy.
-- [ ] 2.4 Full-state sync for reconnect / page reload / late join (today the map is blank, buildings missing, HUD hidden).
+- [x] 2.1 Sim CPU: skip uniform 16×16 blocks in the per-tick border scan (`process_war_fronts`, `bot_think_all`); no div/mod per neighbour. Must reproduce the baseline timeline exactly.
+- [x] 2.2 Sim memory: drop dead per-cell buffers (`troops` 8 MB, `last_modified_tick` 8 MB), shrink `difficulty_to_invade` to u8, size `delta_scratch` on demand (16 MB). ~44 MB → ~8 MB per room (and per browser tab).
+- [x] 2.3 Wire: one binary frame per snapshot (today 7 attachments = 8 WS frames, 20×/s); per-player stats at 5 Hz; skip empty snapshots; authoritative income / growth / effective cap in the stats so the client stops mirroring the economy.
+- [x] 2.4 Full-state sync for reconnect / page reload / late join (today the map is blank, buildings missing, HUD hidden).
 - [ ] 2.5 Capacity: room cap derived from CPU cores, load in `/healthz`, websocket compression tuned, "server full" handled.
 - [ ] 2.6 Player cap: single source of truth for max players (no scattered `20`/`21`), raise engine cap; measure pacing before changing the Quick Battle default.
-- [ ] 2.7 `scripts/bench-room.mjs` (spawn the real worker with bots; tick ms, KB/s, RSS).
+- [x] 2.7 `scripts/bench-room.mjs` (spawn the real worker with bots; tick ms, KB/s, RSS).
 
 ### Phase 3 — Economy & troops
 - [ ] 3.1 Escalating building prices (+25% per building of that type already owned) — fixes the gold flood / tower spam.
@@ -110,6 +110,18 @@ re-derives economy numbers the server already knows.
 No building interacts with any other today. Placement position only matters
 for towers (radius) and silos (range).
 
+### Phase 2 results (measured)
+- Native 20-bot match (`bot_match_report`): **11.9 → 1.04 ms/tick** (11×), identical
+  timeline (deterministic). Real worker / WASM (`scripts/bench-room.mjs`): avg
+  2.5 ms/tick = **6% of a core per room** at 25 Hz; worst tick 23 ms.
+- Per-cell memory 44 MB → ~6 MB (dropped `troops`, `last_modified_tick`,
+  u8 difficulty, on-demand delta buffer).
+- Wire per client: stats ~30 KB/s → **4.3 KB/s** (one 896-byte binary record 5×/s
+  replaces 7 attachments + JSON centroids 20×/s); empty deltas not sent.
+- Reload mid-match restores map / buildings / HUD (`sim-full`, 45 KB RLE).
+- This container renders headless Chromium at ~2 FPS (software compositor);
+  `smoke-browser.mjs` tolerates slow screenshots.
+
 ## Proposals not implemented (for the owner to decide)
 
 _(written in Phase 3.5)_
@@ -121,3 +133,5 @@ _(written in Phase 3.5)_
 - Phase 1 done: `src/js/buildBar.js` + `BUILD_ACTIONS` table; verified with
   `scripts/smoke-browser.mjs` (17 checks, headless Chromium, needs the server
   on :3000). Lint is clean. Next: Phase 2.1.
+- Phase 2.1–2.4 + 2.7 done (sim block index, exports, worker/runner/client
+  rewire, full-state sync, bench script). Next: 2.5 capacity, 2.6 player cap.

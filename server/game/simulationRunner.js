@@ -17,6 +17,7 @@ export class RoomSim {
     this.onReady = opts.onReady || null;
     this.onError = opts.onError || null;
     this.destroyed = false;
+    this.load = null; // latest load-report from the worker
 
     // Serialize environment variables needed by the worker
     const envConfig = {
@@ -66,6 +67,11 @@ export class RoomSim {
         this.io.to(this.roomId).emit(msg.event, msg.payload);
         break;
 
+      case 'emitToSocket':
+        // Full-state sync for one (re)joining client.
+        this.io.to(msg.socketId).emit(msg.event, msg.payload);
+        break;
+
       case 'emitToFaction': {
         // Find the specific faction's socket and emit directly to them
         const room = activeRooms[this.roomId];
@@ -90,8 +96,15 @@ export class RoomSim {
         }
         break;
 
-      case 'mem-report':
-        this._workerRssMB = msg.rssMB;
+      case 'load-report':
+        // Polled by /healthz and the room-capacity check (see capacity.js).
+        this.load = {
+          rssMB: msg.rssMB,
+          avgTickMs: msg.avgTickMs,
+          maxTickMs: msg.maxTickMs,
+          tickBudgetUsed: msg.tickBudgetUsed,
+          kbPerSec: msg.kbPerSec,
+        };
         break;
 
       case 'room-error':
@@ -117,9 +130,15 @@ export class RoomSim {
 
   handleInput(factionId, input) {
     if (this.destroyed) return;
-    // Note: onReject cannot be serialized. The worker will handle rejections
-    // by posting an 'emitToFaction' message back to us, which we handle above.
+    // Rejections come back from the worker as 'emitToFaction' messages.
     this.worker.postMessage({ type: 'handleInput', factionId, input });
+  }
+
+  // Send the complete match state (owners, buildings, stats) to one socket.
+  // Call after the socket has joined the room, so no later delta is missed.
+  sendFullState(socketId) {
+    if (this.destroyed) return;
+    this.worker.postMessage({ type: 'fullState', socketId });
   }
 
   spawnFaction(factionId, row, col) {

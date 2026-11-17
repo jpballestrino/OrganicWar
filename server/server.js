@@ -155,9 +155,9 @@ app.get('/healthz', (_req, res) => {
   const roomDetails = rooms.map(r => ({
     id: r.id,
     humans: Object.values(r.activePlayerSlots).filter(s => s && !s.isBot).length,
-    rssMB: r.simReal?._workerRssMB ?? null,
+    load: r.simReal?.load ?? null,
   }));
-  const totalWorkerRssMB = roomDetails.reduce((s, r) => s + (r.rssMB || 0), 0);
+  const totalWorkerRssMB = roomDetails.reduce((s, r) => s + (r.load?.rssMB || 0), 0);
   res.json({
     status: 'ok',
     nodeEnv: process.env.NODE_ENV || 'development',

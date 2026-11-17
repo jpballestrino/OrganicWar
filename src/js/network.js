@@ -2,10 +2,10 @@ import { io } from 'socket.io-client';
 import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken } from './auth.js';
-import { applyOwnerSnapshot, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
+import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { onSnapshotStats } from './matchFeel.js';
-import { troopGrowthPerSec, GROWTH_PEAK_RATIO, POP_CAP_PER_CELL, BUILDING_RADIUS, GOLD_PER_CELL_PER_SEC, DEFENSE_BUILD_MS, CITY_POP_BONUS, factionHexColors, fmtInt } from './constants.js';
+import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt } from './constants.js';
 import { updateBuildBar, rejectMessage } from './buildBar.js';
 
 export const socket = io({
@@ -124,6 +124,27 @@ function addKillFeedEntry(factionId, killerId = 0) {
   }, 6000);
 }
 
+// Zoom in on a map cell (spawn at match start, own territory after a reload).
+function centerCamera(row, col, zoom = 2.5) {
+  const r = window.renderer;
+  r.camera.zoom = zoom;
+  r.camera.x = col - r.canvas.width / zoom / 2;
+  r.camera.y = row - r.canvas.height / zoom / 2;
+}
+
+// Show the in-match HUD (top bar, leaderboard, build bar, kill feed) and the
+// map. Used when a match starts and when a reload / reconnect lands mid-match.
+function showMatchHud() {
+  const show = (id, display) => { const el = document.getElementById(id); if (el) el.style.display = display; };
+  show('gameHUD', 'flex');
+  show('gameLeaderboard', 'block');
+  show('gameEconomyHUD', 'flex');
+  show('killFeed', 'flex');
+  show('waitingOverlay', 'none');
+  show('spawnOverlay', 'none');
+  show('gameArea', 'flex');
+}
+
 // ── Reconnection overlay helpers ─────────────────────────────────────────────
 function showReconnecting(attempt = 0) {
   const el = document.getElementById('reconnectingOverlay');
@@ -183,7 +204,7 @@ export function initNetwork() {
     socket.emit('reconnect-to-game', { token: savedToken });
   }
 
-  socket.on('reconnect-success', ({ factionId, nickname }) => {
+  socket.on('reconnect-success', ({ factionId, nickname, inMatch }) => {
     state.playerFaction = factionId;
     state.playerNickname = nickname;
     state.gameState = 'PLAYING';
@@ -201,8 +222,9 @@ export function initNetwork() {
     // doesn't flash the default map. (init-config, sent on reconnect, sets this.)
     if (state.currentPreset) repaintTerrain(state.currentPreset);
 
-    const gameArea = document.getElementById('gameArea');
-    if (gameArea) gameArea.style.display = 'flex';
+    // The full map, buildings and stats follow in `sim-full`.
+    if (inMatch !== false) showMatchHud();
+    else document.getElementById('gameArea').style.display = 'flex';
 
     updateDevDashboard();
   });
@@ -302,31 +324,13 @@ export function initNetwork() {
     
     if (window.renderer && state.spawnSelections && state.spawnSelections[state.playerFaction]) {
       const spawn = state.spawnSelections[state.playerFaction];
-      const targetZoom = 2.5;
-      window.renderer.camera.zoom = targetZoom;
-      const viewW = window.renderer.canvas.width / targetZoom;
-      const viewH = window.renderer.canvas.height / targetZoom;
-      window.renderer.camera.x = spawn.col - (viewW / 2);
-      window.renderer.camera.y = spawn.row - (viewH / 2);
+      centerCamera(spawn.row, spawn.col);
     }
     
-    const gameHUD = document.getElementById('gameHUD');
-    if (gameHUD) gameHUD.style.display = 'flex';
-    const gameLeaderboard = document.getElementById('gameLeaderboard');
-    if (gameLeaderboard) gameLeaderboard.style.display = 'block';
-    const economyHUD = document.getElementById('gameEconomyHUD');
-    if (economyHUD) economyHUD.style.display = 'flex';
     const killFeed = document.getElementById('killFeed');
-    if (killFeed) { killFeed.innerHTML = ''; killFeed.style.display = 'flex'; }
+    if (killFeed) killFeed.innerHTML = '';
+    showMatchHud();
 
-    const waitingOverlay = document.getElementById('waitingOverlay');
-    if (waitingOverlay) waitingOverlay.style.display = 'none';
-    const spawnOverlay = document.getElementById('spawnOverlay');
-    if (spawnOverlay) spawnOverlay.style.display = 'none';
-    
-    const gameArea = document.getElementById('gameArea');
-    if (gameArea) gameArea.style.display = 'flex';
-    
     updateDevDashboard();
   });
 
@@ -445,197 +449,44 @@ export function initNetwork() {
     });
   });
 
-  socket.on('sim-snapshot', ({ ownerDelta, playerTroops, playerMaxPop, playerAttack, playerGold, playerKills, playerGoldSpent, centroids, landCells, dominationShare }) => {
-    let t0 = 0;
-    if (state.debug) t0 = performance.now();
-
-    if (ownerDelta) {
-      applyOwnerSnapshot(ownerDelta);
-      // Owner bits just changed; re-derive fort zones so newly-conquered cells
-      // inside a building radius gain (and cells lost out of it drop) tier 10.
-      resyncBuildingZones(state.buildings);
+  // Owner changes, ~20×/s.
+  socket.on('sim-delta', (buf) => {
+    const t0 = state.debug ? performance.now() : 0;
+    applyOwnerDelta(buf);
+    // Owner bits changed; re-derive fort zones so newly-conquered cells inside
+    // a tower radius gain (and cells lost out of it drop) tier 10.
+    resyncBuildingZones(state.buildings);
+    if (state.debug) {
+      const ms = performance.now() - t0;
+      state.lastApplyMs = ms;
+      state.avgApplyMs = state.avgApplyMs === 0 ? ms : state.avgApplyMs * 0.9 + ms * 0.1;
     }
+  });
 
-    if (state.debug && ownerDelta) {
-      const t1 = performance.now();
-      state.lastApplyMs = t1 - t0;
-      if (state.avgApplyMs === 0) state.avgApplyMs = state.lastApplyMs;
-      else state.avgApplyMs = state.avgApplyMs * 0.9 + state.lastApplyMs * 0.1;
-    }
+  // Per-player numbers, ~5×/s.
+  socket.on('sim-stats', (buf) => applyStats(decodeStats(buf)));
 
-    // Per-faction territory centroids + troops, for the in-territory labels.
-    if (centroids) { state.factionCentroids = centroids; }
-
-    if (playerTroops && playerMaxPop) {
-      const troopsArray = new Float32Array(playerTroops);
-      const maxPopArray = new Uint32Array(playerMaxPop);
-
-
-      // Per-faction troop density ratio sent to the shader as u_player_opacity.
-      // The shader multiplies this by the per-cell enclosure ratio (0=border,
-      // 1=interior) to produce per-cell opacity: dense interiors solid, new borders
-      // faint. A 0.12 opacity floor is applied in GLSL so owned cells stay visible.
-      const opacity = state.factionOpacity || (state.factionOpacity = new Float32Array(21));
-      for (let i = 1; i <= 20; i++) {
-        const mp = maxPopArray[i];
-        if (mp > 0) {
-          const ownedCells = mp / POP_CAP_PER_CELL;
-          const density = ownedCells > 0 ? troopsArray[i] / ownedCells : 0;
-          opacity[i] = Math.min(density / 25, 1.0);
-        } else {
-          opacity[i] = 0;
-        }
+  // Everything at once, for a client that (re)joined a running match.
+  socket.on('sim-full', ({ owners, buildings, stats }) => {
+    applyOwnerRuns(owners);
+    clearAllBuildingBits();
+    const now = performance.now();
+    state.buildings = (buildings || []).map((b) => ({
+      ...b,
+      // Back-date the start so the progress bar shows the real time left.
+      builtAt: b.constructing ? now - (b.buildMs - b.remainingMs) : now,
+    }));
+    for (const b of state.buildings) {
+      if (b.type === 'defense' && !b.constructing) {
+        applyDefenseBuilding(b.row, b.col, b.radius ?? BUILDING_RADIUS, b.defTier ?? 10, b.factionId);
       }
     }
-
-    if (playerTroops && playerMaxPop && state.playerFaction) {
-      const troopsArray = new Float32Array(playerTroops);
-      const maxPopArray = new Uint32Array(playerMaxPop);
-      const attackArray = playerAttack ? new Float32Array(playerAttack) : null;
-
-      const fid = parseInt(state.playerFaction);
-      if (fid >= 1 && fid <= 20) {
-        const troops = troopsArray[fid];   // home reserve
-        const maxPop = maxPopArray[fid];
-        state.playerMaxPop = maxPop;
-
-        // Troops currently committed to an active expansion (attack pool).
-        const attacking = attackArray ? Math.floor(attackArray[fid]) : 0;
-        const lblAttacking = document.getElementById('lblMyAttacking');
-        if (lblAttacking) {
-          lblAttacking.innerText = fmtInt(attacking);
-          lblAttacking.style.color = attacking > 0 ? '#ff9800' : '#aaa';
-        }
-
-        // Total troops = home reserve + deployed on fronts (both share the cap).
-        const totalTroops = Math.floor(troops) + attacking;
-        state.playerTroops = totalTroops;
-
-        // Compute effective max pop including completed city bonus (mirrors Rust apply_production).
-        const myCities = (state.buildings || []).filter(b => b.type === 'city' && b.factionId === fid && !b.constructing).length;
-        const effectiveMaxPop = Math.round(maxPop * (1 + myCities * CITY_POP_BONUS));
-
-        const lblTroops = document.getElementById('lblMyTroops');
-        const lblMax = document.getElementById('lblMyMaxPop');
-        if (lblTroops) lblTroops.innerText = fmtInt(totalTroops);
-        if (lblMax) lblMax.innerText = fmtInt(effectiveMaxPop);
-
-        // Fill and growth both use the total pool so they match the Rust formula.
-        const fill = effectiveMaxPop > 0 ? totalTroops / effectiveMaxPop : 0;
-        const lblFill = document.getElementById('lblMyFill');
-        if (lblFill) lblFill.innerText = `${Math.round(fill * 100)}%`;
-
-        // Growth rate (troops/sec): green while still accelerating (below the
-        // peak fill), red once past the peak and slowing toward the cap.
-        const growth = troopGrowthPerSec(totalTroops, effectiveMaxPop);
-        const lblGrowth = document.getElementById('lblMyGrowth');
-        if (lblGrowth) {
-          lblGrowth.innerText = `+${fmtInt(Math.round(growth))}/s`;
-          lblGrowth.style.color = fill < GROWTH_PEAK_RATIO ? '#28a745' : '#dc3545';
-        }
-
-        // Territory (cells) — cap scales as cells * POP_CAP_PER_CELL.
-        const cells = Math.round(maxPop / POP_CAP_PER_CELL);
-        const lblCells = document.getElementById('lblMyCells');
-        if (lblCells) lblCells.innerText = fmtInt(cells);
-
-        // Player Kills
-        const killArray = playerKills ? new Float32Array(playerKills) : null;
-        const kills = killArray ? Math.floor(killArray[fid]) : 0;
-        state.playerKills = kills;
-        const lblKills = document.getElementById('lblMyKills');
-        if (lblKills) lblKills.innerText = window.formatAbbreviation ? window.formatAbbreviation(kills) : kills;
-
-        // Leaderboard state
-        if (!state.leaderboardData) state.leaderboardData = [];
-        state.leaderboardData.length = 0; // Clear
-        const goldSpentArray = playerGoldSpent ? new Float32Array(playerGoldSpent) : null;
-        
-        for (let i = 1; i <= 20; i++) {
-          // Home reserve + troops out on attack: sending an attack must not
-          // make a faction's score drop.
-          const t = Math.floor(troopsArray[i] + (attackArray ? attackArray[i] : 0));
-          const c = Math.round(maxPopArray[i] / POP_CAP_PER_CELL);
-          const k = killArray ? Math.floor(killArray[i]) : 0;
-          const gs = goldSpentArray ? Math.floor(goldSpentArray[i]) : 0;
-          
-          const isEliminated = state.eliminatedFactions.has(i);
-          
-          if (c > 0 || t > 0 || isEliminated) {
-            const score = gs + k + t + c;
-            state.leaderboardData.push({ fid: i, score, isEliminated });
-          }
-        }
-        // Descending sort
-        state.leaderboardData.sort((a, b) => b.score - a.score);
-        
-        // Render leaderboard (throttled to roughly 2 times a second)
-        const now = performance.now();
-        if (!state.lastLeaderboardRender || now - state.lastLeaderboardRender > 500) {
-          state.lastLeaderboardRender = now;
-          const lbList = document.getElementById('leaderboardList');
-          if (lbList) {
-            lbList.innerHTML = state.leaderboardData.map((lb, index) => {
-              const fColor = factionHexColors[lb.fid] || '#fff';
-              const isMe = lb.fid === fid;
-              const slot = state.activePlayerSlots ? state.activePlayerSlots[lb.fid] : null;
-              const name = isMe ? 'You' : escapeHtml(slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
-              const fmtScore = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : lb.score;
-              const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
-              return `
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${lb.fid === fid ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
-                  <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
-                    <span style="font-size: 10px; color: #888; width: 12px; text-align: right;">${index + 1}.</span>
-                    <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${fColor}; border: 1px solid #000;"></div>
-                    <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>
-                  </div>
-                  <span style="font-size: 13px; font-weight: bold; color: ${lb.isEliminated ? '#888' : '#ffc107'};">${fmtScore}</span>
-                </div>
-              `;
-            }).join('');
-          }
-        }
-
-        // --- Economy / building HUD (bottom bar) ---
-        // Gold accumulated, and income rate (scales with territory owned).
-        const goldArray = playerGold ? new Float32Array(playerGold) : null;
-        const gold = goldArray ? Math.floor(goldArray[fid]) : 0;
-        state.playerGold = gold;
-        const lblGold = document.getElementById('lblMyGold');
-        if (lblGold) lblGold.innerText = fmtInt(gold);
-
-        // Count of this player's own placed buildings.
-        const myBuildings = state.buildings.filter(b => b.factionId === fid);
-
-        const mineCount = myBuildings.filter(b => b.type === 'mine' && !b.constructing).length;
-        const goldRate = Math.round(cells * GOLD_PER_CELL_PER_SEC * (1 + mineCount * 0.10));
-        const lblGoldRate = document.getElementById('lblMyGoldRate');
-        if (lblGoldRate) lblGoldRate.innerText = `+${fmtInt(goldRate)}/s`;
-        
-        // Build bar: affordability and how many of each building we own.
-        updateBuildBar();
-
-        // Feed the game-feel layer (rank callouts, under-attack alerts, milestones).
-        const aliveBoard = state.leaderboardData.filter(lb => !lb.isEliminated);
-        // Largest territory (not the same as the score leader) for domination.
-        let landLeaderFid = 0;
-        let landLeaderCells = 0;
-        for (let i = 1; i <= 20; i++) {
-          const c = maxPopArray[i] / POP_CAP_PER_CELL;
-          if (c > landLeaderCells) { landLeaderCells = c; landLeaderFid = i; }
-        }
-        onSnapshotStats({
-          cells,
-          gold,
-          rank: aliveBoard.findIndex(lb => lb.fid === fid) + 1,
-          alive: aliveBoard.length,
-          leaderFid: aliveBoard.length ? aliveBoard[0].fid : 0,
-          landCells: landCells || 0,
-          dominationShare: dominationShare || 0,
-          landLeaderFid,
-          landLeaderCells,
-        });
-      }
+    if (stats) {
+      const decoded = decodeStats(stats);
+      applyStats(decoded);
+      // A reload lands on the whole-map view: bring the camera home.
+      const me = decoded.players[parseInt(state.playerFaction)];
+      if (me && me.cells > 0 && window.renderer) centerCamera(me.row, me.col);
     }
   });
 
@@ -763,4 +614,120 @@ export function initNetwork() {
   socket.on('build-rejected', ({ type } = {}) => {
     showToast(rejectMessage(type), 'error');
   });
+}
+
+// ── Per-player stats → HUD, leaderboard, labels, game-feel ──────────────────
+// Every number here comes straight from the sim (see decodeStats); the client
+// no longer re-derives economy values from mirrored constants.
+const setText = (id, text) => {
+  const el = document.getElementById(id);
+  if (el && el.textContent !== text) el.textContent = text;
+};
+
+function applyStats({ landCells, dominationShare, players }) {
+  // Labels at each territory centroid, and the shader's per-faction opacity
+  // (troops per cell, normalised so 25/cell is fully opaque).
+  const centroids = {};
+  const opacity = state.factionOpacity || (state.factionOpacity = new Float32Array(players.length));
+  for (let f = 1; f < players.length; f++) {
+    const p = players[f];
+    opacity[f] = p.cells > 0 ? Math.min(p.troops / p.cells / 25, 1) : 0;
+    if (p.cells > 0) {
+      // Troops shown on the map include those out on attack.
+      centroids[f] = { row: p.row, col: p.col, troops: Math.floor(p.total), cells: p.cells };
+    }
+  }
+  state.factionCentroids = centroids;
+
+  updateLeaderboard(players);
+
+  const fid = parseInt(state.playerFaction);
+  const me = players[fid];
+  if (!me) return;
+
+  // --- Top bar ---
+  const total = Math.floor(me.total);
+  state.playerTroops = total;
+  state.playerMaxPop = Math.round(me.maxPop);
+  const fill = me.maxPop > 0 ? me.total / me.maxPop : 0;
+  setText('lblMyTroops', fmtInt(total));
+  setText('lblMyMaxPop', fmtInt(me.maxPop));
+  const lblAttacking = document.getElementById('lblMyAttacking');
+  if (lblAttacking) {
+    lblAttacking.textContent = fmtInt(me.attacking);
+    lblAttacking.style.color = me.attacking >= 1 ? '#ff9800' : '#aaa';
+  }
+  setText('lblMyFill', `${Math.round(fill * 100)}%`);
+  const lblGrowth = document.getElementById('lblMyGrowth');
+  if (lblGrowth) {
+    lblGrowth.textContent = `+${fmtInt(Math.round(me.growth))}/s`;
+    // Green while growth is still accelerating, red once past the peak fill.
+    lblGrowth.style.color = fill < GROWTH_PEAK_RATIO ? '#28a745' : '#dc3545';
+  }
+  setText('lblMyCells', fmtInt(me.cells));
+  state.playerKills = Math.floor(me.kills);
+  setText('lblMyKills', window.formatAbbreviation ? window.formatAbbreviation(me.kills) : fmtInt(me.kills));
+
+  // --- Bottom bar ---
+  state.playerGold = Math.floor(me.gold);
+  setText('lblMyGold', fmtInt(me.gold));
+  setText('lblMyGoldRate', `+${fmtInt(Math.round(me.income))}/s`);
+  updateBuildBar();
+
+  // --- Game-feel layer (rank callouts, under-attack alerts, milestones) ---
+  const board = state.leaderboardData.filter(lb => !lb.isEliminated);
+  let landLeaderFid = 0;
+  let landLeaderCells = 0;
+  for (let f = 1; f < players.length; f++) {
+    if (players[f].cells > landLeaderCells) { landLeaderCells = players[f].cells; landLeaderFid = f; }
+  }
+  onSnapshotStats({
+    cells: me.cells,
+    gold: state.playerGold,
+    rank: board.findIndex(lb => lb.fid === fid) + 1,
+    alive: board.length,
+    leaderFid: board.length ? board[0].fid : 0,
+    landCells,
+    dominationShare,
+    landLeaderFid,
+    landLeaderCells,
+  });
+}
+
+// Score = gold spent + kills + troops (incl. on attack) + land.
+function updateLeaderboard(players) {
+  const data = state.leaderboardData || (state.leaderboardData = []);
+  data.length = 0;
+  for (let f = 1; f < players.length; f++) {
+    const p = players[f];
+    const isEliminated = state.eliminatedFactions.has(f);
+    if (!p.alive && !isEliminated) continue; // unused slot
+    const score = Math.floor(p.goldSpent) + Math.floor(p.kills) + Math.floor(p.total) + p.cells;
+    data.push({ fid: f, score, isEliminated });
+  }
+  data.sort((a, b) => b.score - a.score);
+
+  const now = performance.now();
+  if (state.lastLeaderboardRender && now - state.lastLeaderboardRender < 500) return;
+  state.lastLeaderboardRender = now;
+  const list = document.getElementById('leaderboardList');
+  if (!list) return;
+  const myFid = parseInt(state.playerFaction);
+  list.innerHTML = data.map((lb, index) => {
+    const color = factionHexColors[lb.fid] || '#fff';
+    const isMe = lb.fid === myFid;
+    const slot = state.activePlayerSlots ? state.activePlayerSlots[lb.fid] : null;
+    const name = isMe ? 'You' : escapeHtml(slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
+    const score = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : fmtInt(lb.score);
+    const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
+    return `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${isMe ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
+        <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
+          <span style="font-size: 10px; color: #888; width: 12px; text-align: right;">${index + 1}.</span>
+          <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; border: 1px solid #000;"></div>
+          <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>
+        </div>
+        <span style="font-size: 13px; font-weight: bold; color: ${lb.isEliminated ? '#888' : '#ffc107'};">${score}</span>
+      </div>`;
+  }).join('');
 }
