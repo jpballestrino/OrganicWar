@@ -152,6 +152,16 @@ export function modalsTemplate() {
                     <li><strong>Gold Mine (Press '5'):</strong> Costs 3,000 gold. Boosts your global gold production by 10%.</li>
                     <li><strong>Anti-Air Battery (Press '6'):</strong> Costs 5,000 gold. Intercepts incoming missiles. Holds 3 charges.</li>
                     <li><strong>City (Press '7'):</strong> Costs 2,000 gold. Each city raises your maximum population by 5%.</li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🔗 Synergies</h3>
+                <p style="margin-top: 0;">Two of your finished buildings within 60 cells of each other <strong>link up</strong> (a glowing line on the map). While placing, the preview shows which links you would form.</p>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Walled City</strong> (City + Defense Tower): the city gives +10% population instead of +5%.</li>
+                    <li><strong>Workforce</strong> (Gold Mine + City): the mine gives +15% gold instead of +10%.</li>
+                    <li><strong>Radar Guidance</strong> (Missile Silo + Anti-Air): the silo fires 25% farther.</li>
+                    <li><strong>Arms Industry</strong> (Missile Silo + Gold Mine): missiles from that silo cost 25% less.</li>
+                    <li><strong>Flak Battery</strong> (Anti-Air + Defense Tower): the battery regains an interceptor every 20 seconds.</li>
                     <li><em>Prices shown are for your first building of each type; each further one of the same type costs 25% more.</em></li>
                     <li><em>Right-click or Esc cancels any active building or targeting mode.</em></li>
                 </ul>

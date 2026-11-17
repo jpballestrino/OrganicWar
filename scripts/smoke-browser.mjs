@@ -191,6 +191,32 @@ for (const width of [1920, 1600, 1366, 1280, 1100, 1024]) {
 }
 await page.setViewportSize({ width: 1920, height: 1080 });
 
+// --- Synergy links: bots build next to their own buildings, so links appear ---
+await page.setViewportSize({ width: 1920, height: 1080 });
+const linkInfo = await page.waitForFunction(() => {
+  const linked = window.__owState.buildings.filter(b => b.links && !b.constructing);
+  if (linked.length < 2) return null;
+  const b = linked[0];
+  const r = window.renderer;
+  r.camera.zoom = 3;
+  r.camera.x = b.col - r.canvas.width / 3 / 2;
+  r.camera.y = b.row - r.canvas.height / 3 / 2;
+  return { linked: linked.length, at: [b.row, b.col], links: b.links };
+}, null, { polling: 2000, timeout: 90000 }).then(h => h.jsonValue()).catch(() => null);
+check('synergy links reach the client', !!linkInfo, JSON.stringify(linkInfo));
+// Re-aim after the viewport change above has been fully handled.
+await page.waitForTimeout(1500);
+if (linkInfo) {
+  await page.evaluate(([row, col]) => {
+    const r = window.renderer;
+    r.camera.zoom = 3;
+    r.camera.x = col - r.canvas.width / 3 / 2;
+    r.camera.y = row - r.canvas.height / 3 / 2;
+  }, linkInfo.at);
+  await page.waitForTimeout(1500);
+}
+await shot(page, '06-links');
+
 check('no page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 
 await browser.close();

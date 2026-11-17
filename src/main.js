@@ -721,8 +721,10 @@ function gameLoop(time) {
         } else if (state.gameState === 'PLAYING') {
           // Name + total troops drawn at each faction's territory centroid.
           renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
-          // Draw defense building + silo icons.
+          // Building icons, then synergy links on top (tower auras are opaque
+          // enough to hide anything drawn underneath them).
           renderer.drawBuildings(ctx, state.buildings);
+          renderer.drawBuildingLinks(ctx, state.buildings);
           // Active missiles flying through the air
           state.activeMissiles = renderer.drawMissiles(ctx, state.activeMissiles, state.activeExplosions);
           // Active missile blasts (expanding flash), pruned when finished.

@@ -65,9 +65,9 @@ exactly after a pure-performance change (the sim is deterministic):
 - [x] 3.5 Written proposals for what is NOT implemented (below).
 
 ### Phase 4 — Building synergies
-- [ ] 4.1 Link system in the sim (`building_links` parallel vec, recomputed on complete/destroy/transfer): Walled City (city+tower), Workforce (mine+city), Radar Guidance (silo+anti-air), Flak Tower (anti-air+tower), Arms Industry (silo+mine).
-- [ ] 4.2 Client: link lines on the map, linked state in tooltips/preview, range ring and missile price follow links.
-- [ ] 4.3 Tests for every link + bots benefit from links.
+- [x] 4.1 Link system in the sim (`building_links` parallel vec, recomputed on complete/destroy/transfer): Walled City (city+tower), Workforce (mine+city), Radar Guidance (silo+anti-air), Flak Tower (anti-air+tower), Arms Industry (silo+mine).
+- [x] 4.2 Client: link lines on the map, linked state in tooltips/preview, range ring and missile price follow links.
+- [x] 4.3 Tests for every link + bots benefit from links.
 
 ### Phase 5 — Wrap-up
 - [ ] 5.1 `CLAUDE.md` updated to match the code.
@@ -135,6 +135,18 @@ for towers (radius) and silos (range).
   (6 live prices, blitz active / cooldown seconds).
 - Events: `blitz-started {factionId}`, `gold-seized {fromId, toId, gold, kind}`.
 
+### Phase 4 results
+- Links: Walled City, Workforce, Radar Guidance, Arms Industry, Flak Battery
+  (LINK_* in lib.rs, BUILDING_LINKS in constants.js). Seventh parallel vec
+  `building_links`; event `building-updated {row, col, links, charges}`.
+- Bots build next to their own buildings half the time → links form
+  (63 linked buildings seen in a browser match). Native 20-bot match: 422 s.
+- Client: links drawn as dashed lines + a ring on each linked icon; placement
+  preview names the links you would form; tooltips list synergies.
+- 64-player room with Phase 3+4: domination at **4:03** (was 9:09). Leader 52%
+  vs 2nd 7.7% — plunder feeds the snowball in big rooms; proposal 1 (bounty on
+  the leader) is the counterweight to try first.
+
 ## Proposals not implemented (for the owner to decide)
 
 Ordered by expected fun per effort. None needs a wire-format change beyond
@@ -178,3 +190,4 @@ the cap per second, so any fair exchange rate is either useless or decisive.
 - Phase 2.5 + 2.6 done. Next: decide the domination schedule for big rooms
   (measurement running: `PLAYERS=64 SECONDS=1200 node scripts/bench-room.mjs`), then Phase 3.
 - Phase 3.1–3.4 done (prices, plunder/salvage, Blitz, bots). Next: 3.5 proposals, then Phase 4.
+- Phase 4 done (synergies + visuals, tests). Next: Phase 5 (CLAUDE.md, final verification, PR text).

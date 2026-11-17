@@ -156,6 +156,31 @@ const BLITZ_COOLDOWN_SECONDS: f32 = 45.0;
 const BLITZ_SPEED_MULT: usize = 2;
 const BLITZ_COST_MULT: f32 = 0.6;
 
+// ── Building links (synergies) ───────────────────────────────────────────────
+// Two COMPLETED buildings of the same owner whose centers are within
+// LINK_RADIUS cells form a link if their types pair up below. Each link sets
+// its bit on BOTH buildings (for display); the effect applies to one of them.
+// Recomputed by recompute_links() whenever a building completes, is destroyed
+// or changes owner. Mirrored in src/js/constants.js (BUILDING_LINKS).
+const LINK_RADIUS: i32 = 60;
+const LINK_WALLED_CITY: u8 = 1;     // city + tower   → city pop bonus ×2
+const LINK_WORKFORCE: u8 = 2;       // mine + city    → mine +15% gold (not +10%)
+const LINK_RADAR: u8 = 4;           // silo + anti-air → silo range ×1.25
+const LINK_ARMS: u8 = 8;            // silo + mine    → that silo's missiles −25%
+const LINK_FLAK: u8 = 16;           // anti-air + tower → +1 interceptor / 20 s
+const LINK_PAIRS: [(u8, u8, u8); 5] = [
+    (BTYPE_CITY, BTYPE_DEFENSE, LINK_WALLED_CITY),
+    (BTYPE_MINE, BTYPE_CITY, LINK_WORKFORCE),
+    (BTYPE_SILO, BTYPE_ANTIAIR, LINK_RADAR),
+    (BTYPE_SILO, BTYPE_MINE, LINK_ARMS),
+    (BTYPE_ANTIAIR, BTYPE_DEFENSE, LINK_FLAK),
+];
+const MINE_INCOME_BONUS: f32 = 0.10;
+const WORKFORCE_MINE_BONUS: f32 = 0.15;
+const RADAR_RANGE_MULT: f32 = 1.25;
+const ARMS_MISSILE_MULT: f32 = 0.75;
+const FLAK_RECHARGE_SECONDS: f32 = 20.0;
+
 // Upper bound for per-cell difficulty_to_invade (troops-per-cell × enclosure).
 // The client uses this same value to normalize density to 0..1 for the shader,
 // so density == DIFFICULTY_CAP → fully solid interior at max enclosure.
@@ -187,7 +212,7 @@ const STATS_RECORD_BYTES: usize = 76;
 const STAT_FLAG_ALIVE: u32 = 1;
 const STAT_FLAG_BOT: u32 = 2;
 // write_buildings() emits this many u32s per building.
-const BUILDING_EXPORT_FIELDS: usize = 6;
+const BUILDING_EXPORT_FIELDS: usize = 7;
 
 // ── Block index for the per-tick border scans ────────────────────────────────
 // The war-front and bot scans only care about BORDER cells (an owned cell with a
@@ -265,6 +290,14 @@ pub struct SimulationState {
     building_owner: Vec<u32>,
     // Tracks charges for AA batteries.
     building_charges: Vec<u8>,
+    // Parallel (same INVARIANT): the LINK_* bits this building has right now.
+    building_links: Vec<u8>,
+    // Set when the link graph may have changed (completion, destruction,
+    // owner change); recompute_links() runs once at the end of the tick.
+    links_dirty: bool,
+    // Buildings whose links or anti-air charges changed, as (center, links,
+    // charges) u32 triplets — broadcast as `building-updated`.
+    building_update_buf: Vec<u32>,
     // Tracks when the building can perform its next action (e.g., when a silo can fire again). 0 means ready.
     building_cooldown: Vec<u32>,
     // Silos that changed owner since the last clear, as (center, new_owner) u32
@@ -374,6 +407,9 @@ impl SimulationState {
             building_type: Vec::new(),
             building_owner: Vec::new(),
             building_charges: Vec::new(),
+            building_links: Vec::new(),
+            links_dirty: false,
+            building_update_buf: Vec::new(),
             building_cooldown: Vec::new(),
             transferred_buildings_buf: Vec::new(),
             destroyed_buildings_buf: Vec::new(),
@@ -863,6 +899,8 @@ impl SimulationState {
         // is swap_removed first and never reaches the completion buffer, so it can
         // never emit both building-completed and building-destroyed.
         self.process_construction();
+        self.process_flak_recharge();
+        if self.links_dirty { self.recompute_links(); }
         // Recompute per-cell difficulty once per second. Interior cells of a dense
         // territory become progressively harder to crack; freshly taken border cells
         // reset to 0 at conquest and rebuild over this interval.
@@ -925,28 +963,35 @@ impl SimulationState {
                 // GOLD_PER_CELL_PER_SEC, divided by the tick rate so the per-second
                 // rate is identical regardless of how fast the sim ticks.
                 // Each completed Gold Mine grants a +10% bonus.
-                let mut mine_count = 0.0;
+                // Mines add MINE_INCOME_BONUS each (WORKFORCE_MINE_BONUS if linked
+                // to a city).
+                let mut mine_bonus = 0.0;
                 for b in 0..self.defense_buildings.len() {
-                    if self.building_type[b] == BTYPE_MINE 
-                        && self.building_owner[b] as usize == i 
-                        && self.defense_build_complete[b] == 0 
+                    if self.building_type[b] == BTYPE_MINE
+                        && self.building_owner[b] as usize == i
+                        && self.defense_build_complete[b] == 0
                     {
-                        mine_count += 1.0;
+                        mine_bonus += if self.building_links[b] & LINK_WORKFORCE != 0 {
+                            WORKFORCE_MINE_BONUS
+                        } else {
+                            MINE_INCOME_BONUS
+                        };
                     }
                 }
-                
-                let income_per_sec = cells as f32 * GOLD_PER_CELL_PER_SEC * (1.0 + mine_count * 0.10);
+
+                let income_per_sec = cells as f32 * GOLD_PER_CELL_PER_SEC * (1.0 + mine_bonus);
                 self.player_income_per_sec[i] = income_per_sec;
                 self.player_gold[i] += income_per_sec / tick_hz;
 
-                // Each completed City building grants +CITY_POP_BONUS to max pop.
+                // Each completed City grants +CITY_POP_BONUS to max pop, doubled
+                // for a Walled City (linked to a defense tower).
                 let mut city_count = 0.0_f32;
                 for b in 0..self.defense_buildings.len() {
                     if self.building_type[b] == BTYPE_CITY
                         && self.building_owner[b] as usize == i
                         && self.defense_build_complete[b] == 0
                     {
-                        city_count += 1.0;
+                        city_count += if self.building_links[b] & LINK_WALLED_CITY != 0 { 2.0 } else { 1.0 };
                     }
                 }
 
@@ -1423,7 +1468,7 @@ impl SimulationState {
     /// Export every building into the delta scratch buffer and return how many
     /// there are. BUILDING_EXPORT_FIELDS u32s each: center cell, owner faction,
     /// type (BTYPE_*), completion tick (0 = complete), anti-air charges left,
-    /// silo cooldown tick. For the full-state sync of a (re)joining client.
+    /// cooldown tick, LINK_* bits. For the full-state sync of a (re)joining client.
     #[wasm_bindgen]
     pub fn write_buildings(&mut self) -> u32 {
         self.delta_scratch.clear();
@@ -1434,6 +1479,7 @@ impl SimulationState {
             self.delta_scratch.push(self.defense_build_complete[i]);
             self.delta_scratch.push(self.building_charges[i] as u32);
             self.delta_scratch.push(self.building_cooldown[i]);
+            self.delta_scratch.push(self.building_links[i] as u32);
         }
         (self.delta_scratch.len() / BUILDING_EXPORT_FIELDS) as u32
     }
@@ -1520,9 +1566,30 @@ impl SimulationState {
         (Self::base_price(btype) * (1.0 + BUILDING_PRICE_STEP * owned as f32)).round()
     }
 
-    /// What faction `f` pays for its next missile.
-    fn missile_price(&self, _f: usize) -> f32 {
-        MISSILE_COST
+    /// Range of the silo at index `i` (Radar Guidance extends it).
+    fn silo_range(&self, i: usize) -> f32 {
+        let base = SILO_RANGE as f32;
+        if self.building_links[i] & LINK_RADAR != 0 { base * RADAR_RANGE_MULT } else { base }
+    }
+
+    /// Price of a missile fired from the silo at index `i` (Arms Industry
+    /// discounts it).
+    fn silo_missile_price(&self, i: usize) -> f32 {
+        if self.building_links[i] & LINK_ARMS != 0 { MISSILE_COST * ARMS_MISSILE_MULT } else { MISSILE_COST }
+    }
+
+    /// The cheapest missile faction `f` can currently buy (shown on the HUD):
+    /// the best price among its completed silos, or the base price if none.
+    fn missile_price(&self, f: usize) -> f32 {
+        let mut best = MISSILE_COST;
+        for i in 0..self.defense_buildings.len() {
+            if self.building_type[i] == BTYPE_SILO && self.building_owner[i] as usize == f
+                && self.defense_build_complete[i] == 0
+            {
+                best = best.min(self.silo_missile_price(i));
+            }
+        }
+        best
     }
 
     /// `victim` just lost its last cell to `attacker`: the attacker takes the
@@ -1658,6 +1725,7 @@ impl SimulationState {
         
         let charges = if btype == BTYPE_ANTIAIR { ANTIAIR_MAX_CHARGES } else { 0 };
         self.building_charges.push(charges);
+        self.building_links.push(0);
         self.building_cooldown.push(0);
 
         // Bot builds are broadcast by the server polling placed_buildings_buf
@@ -1695,31 +1763,25 @@ impl SimulationState {
         let target_owner = self.cell_owner(target_cell) as usize;
         if target_owner == 0 || target_owner == f { return 2; }
 
-        let missile_cost = self.missile_price(f);
-        if self.player_gold[f] < missile_cost { return 1; }
-
-        let mut source_center = 0;
-        let mut source_index = 0;
-        let mut in_range = false;
+        // Pick the cheapest ready silo that reaches the target.
+        let mut source: Option<(usize, f32)> = None;
         for i in 0..self.defense_buildings.len() {
             if self.building_type[i] != BTYPE_SILO { continue; }
             if self.defense_build_complete[i] > self.current_tick { continue; } // still building
             if self.building_owner[i] as usize != f { continue; }
-            if self.building_cooldown[i] > self.current_tick { continue; } // silo is on cooldown!
+            if self.building_cooldown[i] > self.current_tick { continue; } // reloading
 
             let center = self.defense_buildings[i];
-            let cr = (center / MAP_WIDTH as u32) as i32;
-            let cc = (center % MAP_WIDTH as u32) as i32;
-            let dr = target_row - cr;
-            let dc = target_col - cc;
-            if dr * dr + dc * dc <= SILO_RANGE * SILO_RANGE { 
-                in_range = true; 
-                source_center = center;
-                source_index = i;
-                break; 
-            }
+            let dr = (target_row - (center / MAP_WIDTH as u32) as i32) as f32;
+            let dc = (target_col - (center % MAP_WIDTH as u32) as i32) as f32;
+            let range = self.silo_range(i);
+            if dr * dr + dc * dc > range * range { continue; }
+            let price = self.silo_missile_price(i);
+            if source.map_or(true, |(_, p)| price < p) { source = Some((i, price)); }
         }
-        if !in_range { return 1; }
+        let Some((source_index, missile_cost)) = source else { return 1; };
+        if self.player_gold[f] < missile_cost { return 1; }
+        let source_center = self.defense_buildings[source_index];
 
         self.building_cooldown[source_index] = self.current_tick + (2.0 * self.tick_hz as f32).ceil() as u32;
 
@@ -1940,6 +2002,7 @@ impl SimulationState {
                 }
             }
             self.defense_build_complete[i] = 0;
+            self.links_dirty = true;
             // (center, faction, type) triplet — the server broadcasts building-completed.
             self.completed_buildings_buf.push(center);
             self.completed_buildings_buf.push(f as u32);
@@ -2007,9 +2070,78 @@ impl SimulationState {
             }
         }
         self.building_owner[idx] = f;
+        self.links_dirty = true;
         self.transferred_buildings_buf.push(center);
         self.transferred_buildings_buf.push(f);
     }
+
+    /// Rebuild every building's link bits from scratch (O(buildings²), run only
+    /// when the set of completed buildings or their owners changed) and record
+    /// the buildings whose bits changed in building_update_buf.
+    fn recompute_links(&mut self) {
+        self.links_dirty = false;
+        let n = self.defense_buildings.len();
+        let mut links = vec![0u8; n];
+        let r2 = LINK_RADIUS * LINK_RADIUS;
+        for i in 0..n {
+            if self.defense_build_complete[i] != 0 { continue; }
+            let (ri, ci) = ((self.defense_buildings[i] / MAP_WIDTH as u32) as i32, (self.defense_buildings[i] % MAP_WIDTH as u32) as i32);
+            for j in (i + 1)..n {
+                if self.defense_build_complete[j] != 0 || self.building_owner[j] != self.building_owner[i] { continue; }
+                let (rj, cj) = ((self.defense_buildings[j] / MAP_WIDTH as u32) as i32, (self.defense_buildings[j] % MAP_WIDTH as u32) as i32);
+                if (ri - rj) * (ri - rj) + (ci - cj) * (ci - cj) > r2 { continue; }
+                let (ti, tj) = (self.building_type[i], self.building_type[j]);
+                for &(a, b, bit) in LINK_PAIRS.iter() {
+                    if (ti == a && tj == b) || (ti == b && tj == a) {
+                        links[i] |= bit;
+                        links[j] |= bit;
+                    }
+                }
+            }
+        }
+        for i in 0..n {
+            if links[i] != self.building_links[i] {
+                self.building_links[i] = links[i];
+                self.building_update_buf.extend_from_slice(&[
+                    self.defense_buildings[i], links[i] as u32, self.building_charges[i] as u32,
+                ]);
+            }
+        }
+    }
+
+    /// Flak Battery: an anti-air battery linked to a defense tower regains one
+    /// interceptor every FLAK_RECHARGE_SECONDS, up to ANTIAIR_MAX_CHARGES.
+    /// (Anti-air batteries don't use building_cooldown otherwise, so it holds
+    /// the next recharge tick.)
+    fn process_flak_recharge(&mut self) {
+        let period = (FLAK_RECHARGE_SECONDS * self.tick_hz.max(1) as f32) as u32;
+        for i in 0..self.defense_buildings.len() {
+            if self.building_type[i] != BTYPE_ANTIAIR || self.building_links[i] & LINK_FLAK == 0 { continue; }
+            if self.building_charges[i] >= ANTIAIR_MAX_CHARGES {
+                self.building_cooldown[i] = 0; // full: the timer starts on the next shot
+                continue;
+            }
+            if self.building_cooldown[i] == 0 {
+                self.building_cooldown[i] = self.current_tick + period;
+            } else if self.building_cooldown[i] <= self.current_tick {
+                self.building_charges[i] += 1;
+                self.building_cooldown[i] = self.current_tick + period;
+                self.building_update_buf.extend_from_slice(&[
+                    self.defense_buildings[i], self.building_links[i] as u32, self.building_charges[i] as u32,
+                ]);
+            }
+        }
+    }
+
+    /// Number of (center, links, charges) triplets in the building-update buffer.
+    #[wasm_bindgen]
+    pub fn get_building_updates_count(&self) -> u32 { (self.building_update_buf.len() / 3) as u32 }
+
+    #[wasm_bindgen]
+    pub fn get_building_updates_ptr(&self) -> *const u32 { self.building_update_buf.as_ptr() }
+
+    #[wasm_bindgen]
+    pub fn clear_building_updates(&mut self) { self.building_update_buf.clear(); }
 
     /// Destroys the building at index `idx`: clears BUILDING_MASK on its 8×8
     /// footprint, resets defense_tier to 0 in its influence zone, records the
@@ -2058,7 +2190,9 @@ impl SimulationState {
         self.building_type.swap_remove(idx);
         self.building_owner.swap_remove(idx);
         self.building_charges.swap_remove(idx);
+        self.building_links.swap_remove(idx);
         self.building_cooldown.swap_remove(idx);
+        self.links_dirty = true;
     }
 
     #[wasm_bindgen]
@@ -2192,8 +2326,22 @@ impl SimulationState {
             let jc = (self.next_rand() % span) as i32 - jitter;
 
             let roll = self.next_rand() % 100;
-            let tr = crow + jr;
-            let tc = ccol + jc;
+            let mut tr = crow + jr;
+            let mut tc = ccol + jc;
+            // Half the time, build next to one of our completed buildings
+            // instead, so bots form synergy links too (LINK_RADIUS).
+            if self.next_rand() % 2 == 0 {
+                let mine: Vec<u32> = (0..self.defense_buildings.len())
+                    .filter(|&i| self.building_owner[i] as usize == f && self.defense_build_complete[i] == 0)
+                    .map(|i| self.defense_buildings[i])
+                    .collect();
+                if !mine.is_empty() {
+                    let anchor = mine[self.next_rand() as usize % mine.len()];
+                    let reach = (LINK_RADIUS - 10) as u32;
+                    tr = (anchor / MAP_WIDTH as u32) as i32 + (self.next_rand() % (2 * reach + 1)) as i32 - reach as i32;
+                    tc = (anchor % MAP_WIDTH as u32) as i32 + (self.next_rand() % (2 * reach + 1)) as i32 - reach as i32;
+                }
+            }
 
             // 15% chance to build a silo if they can afford it and enemy in range
             if roll < 15 && can_afford(self, BTYPE_SILO) {
@@ -2518,6 +2666,82 @@ mod tests {
         assert!(quads.iter().any(|q| q[0] == 2 && q[1] == 1 && q[3] == 0 && q[2] >= 8_000), "plunder: {:?}", quads);
         assert_eq!(s.player_gold[2], 0.0, "the victim's treasury is gone");
         assert!(s.player_gold[1] >= 9_000.0, "salvage + plunder reached the attacker");
+    }
+
+    // Phase-4 synergies: every link forms between completed same-owner
+    // buildings in range, applies its effect, and breaks with its partner.
+    #[test]
+    fn building_links_form_apply_and_break() {
+        let mut s = SimulationState::new();
+        s.init_players(2, 0, 50, 5000);
+        s.set_tick_hz(25);
+        // One big empire (radius 12 is too small for 6 footprints): own a block.
+        for r in 400..600usize {
+            for c in 400..700usize {
+                s.set_cell_owner(r * MAP_WIDTH + c, 1);
+            }
+        }
+        s.player_owned_cells[1] = 200 * 300;
+        s.player_is_alive[1] = 1;
+        s.player_gold[1] = 1.0e7;
+        let mid = |s: &SimulationState, t: u8| s.building_type.iter().position(|&x| x == t).unwrap();
+
+        assert!(s.place_city(1, 450, 450));
+        assert!(s.place_defense_building(1, 450, 480));   // 30 from the city
+        assert!(s.place_mine(1, 480, 450));              // 30 from the city
+        assert!(s.place_silo(1, 550, 600));
+        assert!(s.place_antiair(1, 550, 640));          // 40 from the silo
+        assert!(s.place_mine(1, 520, 600));             // 30 from the silo
+        // Nothing links while under construction.
+        s.tick();
+        assert!(s.building_links.iter().all(|&l| l == 0));
+        for _ in 0..(SILO_BUILD_SECONDS as u32 * 25 + 2) { s.tick(); }
+
+        let city = mid(&s, BTYPE_CITY);
+        let silo = mid(&s, BTYPE_SILO);
+        let aa = mid(&s, BTYPE_ANTIAIR);
+        assert_eq!(s.building_links[city] & (LINK_WALLED_CITY | LINK_WORKFORCE), LINK_WALLED_CITY | LINK_WORKFORCE);
+        assert_eq!(s.building_links[silo] & (LINK_RADAR | LINK_ARMS), LINK_RADAR | LINK_ARMS);
+        assert_eq!(s.building_links[aa] & LINK_RADAR, LINK_RADAR);
+        assert_eq!(s.building_links[aa] & LINK_FLAK, 0, "no tower near the anti-air");
+        assert!(!s.building_update_buf.is_empty(), "link changes are broadcast");
+
+        // Effects: Walled City doubles the city bonus; one Workforce mine (+15%)
+        // and one plain mine near the silo (+10%).
+        let cap = s.player_max_population_cap[1] as f32;
+        assert!((s.player_effective_cap[1] - cap * (1.0 + 2.0 * CITY_POP_BONUS)).abs() < 1.0);
+        let base_income = s.player_owned_cells[1] as f32 * GOLD_PER_CELL_PER_SEC;
+        assert!((s.player_income_per_sec[1] - base_income * 1.25).abs() < 0.01, "{} vs {}", s.player_income_per_sec[1], base_income * 1.25);
+        // Radar: 1.25× range; Arms: −25% missile price.
+        assert_eq!(s.silo_range(silo), SILO_RANGE as f32 * RADAR_RANGE_MULT);
+        assert_eq!(s.missile_price(1), MISSILE_COST * ARMS_MISSILE_MULT);
+
+        // A missile beyond 240 but within 300 cells now fires, at the discount.
+        s.player_is_alive[2] = 1;
+        s.set_cell_owner(550 * MAP_WIDTH + 880, 2); // 280 cells east of the silo
+        s.player_owned_cells[2] = 1;
+        let gold = s.player_gold[1];
+        assert_eq!(s.fire_missile(1, 550, 880), 0);
+        assert_eq!(gold - s.player_gold[1], MISSILE_COST * ARMS_MISSILE_MULT);
+
+        // Flak: a tower next to the anti-air links them; a spent interceptor
+        // comes back after FLAK_RECHARGE_SECONDS.
+        assert!(s.place_defense_building(1, 580, 640));
+        for _ in 0..(DEFENSE_BUILD_SECONDS as u32 * 25 + 2) { s.tick(); }
+        let aa = mid(&s, BTYPE_ANTIAIR);
+        assert_eq!(s.building_links[aa] & LINK_FLAK, LINK_FLAK);
+        s.building_charges[aa] = 1;
+        for _ in 0..(FLAK_RECHARGE_SECONDS as u32 * 25 + 2) { s.tick(); }
+        assert_eq!(s.building_charges[aa], 2, "one interceptor regained");
+
+        // Destroying the tower breaks the Walled City link.
+        let tower = s.defense_buildings.iter().position(|&c| c == (450 * MAP_WIDTH + 480) as u32).unwrap();
+        s.destroy_building(tower);
+        s.tick();
+        let city = mid(&s, BTYPE_CITY);
+        assert_eq!(s.building_links[city] & LINK_WALLED_CITY, 0);
+        assert_eq!(s.building_links[city] & LINK_WORKFORCE, LINK_WORKFORCE, "the mine link stays");
+        assert_eq!(s.building_links.len(), s.defense_buildings.len(), "parallel vecs stay aligned");
     }
 
     // Full 20-bot match on an all-plains map, driven on the same cadence as

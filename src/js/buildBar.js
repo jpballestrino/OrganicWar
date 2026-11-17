@@ -135,6 +135,7 @@ export function drawBuildPreview(renderer, ctx) {
     renderer.drawMissileTargeting(ctx, state.buildings, myFaction(), r, c);
   } else if (r >= 0) {
     renderer[action.preview](ctx, r, c);
+    renderer.drawLinkPreview(ctx, action.type, r, c, state.buildings, myFaction());
   }
 }
 

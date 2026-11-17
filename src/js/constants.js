@@ -70,6 +70,29 @@ export const DIFFICULTY_CAP = 50;
 // Floor so freshly-taken, low-density territory still reads as owned (not invisible).
 export const MIN_TERRITORY_OPACITY = 0.12;
 
+// ── Building links (synergies) — mirror LINK_* in simulation-core/src/lib.rs ──
+// Two of your COMPLETED buildings within LINK_RADIUS cells of each other link
+// if their types pair up here. The sim applies the effect; the client draws the
+// link and explains it. `bit` matches the LINK_* bit sent in building-updated.
+export const LINK_RADIUS = 60;
+export const RADAR_RANGE_MULT = 1.25;
+export const BUILDING_LINKS = [
+  { bit: 1,  name: 'Walled City',    types: ['city', 'defense'],    effect: 'the city gives +10% population instead of +5%' },
+  { bit: 2,  name: 'Workforce',      types: ['mine', 'city'],       effect: 'the mine gives +15% gold instead of +10%' },
+  { bit: 4,  name: 'Radar Guidance', types: ['silo', 'antiair'],    effect: 'the silo fires 25% farther' },
+  { bit: 8,  name: 'Arms Industry',  types: ['silo', 'mine'],       effect: 'missiles from the silo cost 25% less' },
+  { bit: 16, name: 'Flak Battery',   types: ['antiair', 'defense'], effect: 'the battery regains an interceptor every 20s' },
+];
+const NAME_BY_TYPE = { defense: 'Defense Tower', silo: 'Missile Silo', mine: 'Gold Mine', antiair: 'Anti-Air', city: 'City' };
+
+// "Links: + City → Walled City (…)" lines for a building type's tooltip.
+export function linkHelp(type) {
+  return BUILDING_LINKS.filter(l => l.types.includes(type)).map((l) => {
+    const other = l.types[0] === type ? l.types[1] : l.types[0];
+    return `+ ${NAME_BY_TYPE[other]} nearby → ${l.name}: ${l.effect}.`;
+  }).join('\n');
+}
+
 // ── Build bar ────────────────────────────────────────────────────────────────
 // Every purchasable action, in hotkey order. This table is the single source of
 // truth for the HUD build bar, the hotkeys, click placement, the affordability

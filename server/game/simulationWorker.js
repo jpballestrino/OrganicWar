@@ -50,7 +50,7 @@ const BUILD_INPUTS = {
   build_city:    { place: 'simulationstate_place_city',             btype: 4 },
 };
 // write_buildings() record width (BUILDING_EXPORT_FIELDS in lib.rs).
-const BUILDING_EXPORT_FIELDS = 6;
+const BUILDING_EXPORT_FIELDS = 7;
 
 function buildingPayload(btype, factionId, center) {
   const def = BUILDING_TYPES[btype] || BUILDING_TYPES[0];
@@ -247,6 +247,7 @@ class RoomSimWorker {
       this._emitTransferredBuildings();
       this._emitCompletedBuildings();
       this._emitPlunder();
+      this._emitBuildingUpdates();
 
       if (this.env.SIM_PROFILE === '1') {
         const now = Date.now();
@@ -382,6 +383,21 @@ class RoomSimWorker {
     this.exports.simulationstate_clear_plunder(this.statePtr);
   }
 
+  // Buildings whose synergy links or anti-air charges changed.
+  _emitBuildingUpdates() {
+    const count = this.exports.simulationstate_get_building_updates_count(this.statePtr);
+    if (!count) return;
+    const buf = new Uint32Array(
+      this.exports.memory.buffer, this.exports.simulationstate_get_building_updates_ptr(this.statePtr), count * 3);
+    for (let i = 0; i < count; i++) {
+      const center = buf[i * 3];
+      parentPort.postMessage({ type: 'emit', event: 'building-updated', payload: {
+        row: Math.floor(center / MAP_WIDTH), col: center % MAP_WIDTH, links: buf[i * 3 + 1], charges: buf[i * 3 + 2],
+      } });
+    }
+    this.exports.simulationstate_clear_building_updates(this.statePtr);
+  }
+
   // Poll silos that changed owner (fully conquered) and broadcast so clients
   // recolor the icon and update who may fire from it.
   _emitTransferredBuildings() {
@@ -482,6 +498,7 @@ class RoomSimWorker {
       b.constructing = completeTick !== 0 && completeTick > tick;
       b.remainingMs = b.constructing ? Math.round((completeTick - tick) * 1000 / this.tickHz) : 0;
       if (b.type === 'antiair') b.charges = rec[o + 4];
+      b.links = rec[o + 6];
       buildings.push(b);
     }
 

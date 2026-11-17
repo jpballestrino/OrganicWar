@@ -1,10 +1,12 @@
-import { BUILD_ACTIONS, fmtInt } from '../constants.js';
+import { BUILD_ACTIONS, fmtInt, linkHelp } from '../constants.js';
 
 // Build-bar buttons, generated from the BUILD_ACTIONS table so names, hotkeys
 // and prices are never hand-copied into markup (behaviour lives in buildBar.js).
 function buildBarHtml() {
+  const tooltip = (a) => (a.type ? `${a.desc}\n\nSynergies (within 60 cells):\n${linkHelp(a.type)}` : a.desc)
+    .replace(/"/g, '&quot;');
   return BUILD_ACTIONS.map(a => `
-                <button type="button" class="build-option" data-mode="${a.mode}" title="${a.desc}">
+                <button type="button" class="build-option" data-mode="${a.mode}" title="${tooltip(a)}">
                     <span class="build-key">${a.key}</span>
                     <span class="build-info">
                         <span class="build-name">${a.name}</span>

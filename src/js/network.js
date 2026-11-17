@@ -587,6 +587,14 @@ export function initNetwork() {
     if (stampedZone) removeDefenseBuilding(row, col, radius);
   });
 
+  // A building's synergy links or anti-air interceptors changed.
+  socket.on('building-updated', ({ row, col, links, charges }) => {
+    const b = state.buildings.find(x => x.row === row && x.col === col);
+    if (!b) return;
+    b.links = links;
+    if (b.type === 'antiair') b.charges = charges;
+  });
+
   socket.on('building-owner-changed', ({ row, col, factionId }) => {
     // A building was fully conquered — recolor its icon and update its owner.
     const b = state.buildings.find(b => b.row === row && b.col === col);
