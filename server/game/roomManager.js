@@ -7,6 +7,7 @@ import { RoomSim } from './simulationRunner.js';
 import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
 import { MAX_FACTIONS, safeZoneRadiusFor } from '../../src/js/constants.js';
 import { roomRefusal } from './capacity.js';
+import { awardMatchXp } from './progression.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
 const BOT_ADJECTIVES = [
@@ -546,6 +547,8 @@ export function startMatchNow(room) {
       mapId: room.preset,
       domination: room.isGuildWar ? null : DOMINATION,
       onGameOver: (winnerId, stats, byDomination) => handleGameOver(room, winnerId, stats, byDomination),
+      // XP for a logged-in player whose faction was just eliminated.
+      onPlayerEliminated: (p) => awardMatchXp(io, room, p.factionId, { ...p, won: false }),
       onError: (message) => {
         log('error', `[Room ${room.id}] Simulation crashed: ${message}`);
         io.to(room.id).emit('server-error', { message: 'The game simulation crashed. Please return to the main menu.' });
@@ -593,6 +596,9 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
   }
 
   let isAllianceWin = winnerFaction ? !!room.sim.alliances[winnerFaction] : false;
+  const sameTeam = (fid) => winnerFaction && (
+    fid === winnerFaction
+    || (isAllianceWin && room.sim.alliances[fid] === room.sim.alliances[winnerFaction]));
 
   io.to(room.id).emit('game-over', {
     winner: winnerFaction,
@@ -600,6 +606,15 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
     byDomination,
     durationSec: Math.floor((Date.now() - room.createdAt) / 1000),
   });
+
+  // XP for every logged-in player still in the match (the eliminated ones were
+  // awarded at their elimination; awardMatchXp skips them and guests).
+  for (const key of Object.keys(room.humanPlayers || {})) {
+    const fid = parseInt(key);
+    const s = matchStats[fid] || {};
+    const won = !!sameTeam(fid);
+    awardMatchXp(io, room, fid, { ...s, won, placement: won ? 1 : (s.placement || 2) });
+  }
 
   if (room.isGuildWar && winnerFaction) {
     let winningGuild = winnerFaction <= room.teamSize ? room.guildA : room.guildB;

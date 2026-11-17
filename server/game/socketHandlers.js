@@ -1,4 +1,5 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
+import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
@@ -136,6 +137,23 @@ export function setupSocketHandlers(io) {
     
     socket.userId = userId;
     log('info', `Socket connected: ${socket.id} (User ID: ${socket.userId || 'guest'})`);
+
+    // ---------- PROGRESSION (XP) ----------
+    // Logged-in players' XP lives on the server (server/game/progression.js).
+    // The handshake carries the player's UTC offset so daily missions and
+    // streaks roll over at their own midnight.
+    socket.tzOffset = parseTzOffset(socket.handshake.auth && socket.handshake.auth.tzOffset);
+    if (socket.userId) sendProfile(socket);
+    let importUsed = false;
+    socket.on('progression-import', (raw) => {
+      // Only useful once per account (the server ignores it if a profile
+      // exists); one try per connection is plenty.
+      if (importUsed || !socket.userId) return;
+      importUsed = true;
+      try { importGuestProfile(socket, raw); } catch (err) {
+        log('error', `[Progression] import failed for user ${socket.userId}:`, err.message);
+      }
+    });
 
     function getFreshGuildInfo() {
       if (!userId) {return { guildId: null, guildTag: null };}

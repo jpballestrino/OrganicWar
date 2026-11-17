@@ -50,6 +50,9 @@ export function prepareStatements() {
 
   Object.assign(stmts, {
     createUser: db.prepare('INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)'),
+    getProgression: db.prepare('SELECT profile FROM user_progression WHERE user_id = ?'),
+    upsertProgression: db.prepare('INSERT INTO user_progression (user_id, profile, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET profile = excluded.profile, updated_at = CURRENT_TIMESTAMP'),
+    insertProgressionIfMissing: db.prepare('INSERT OR IGNORE INTO user_progression (user_id, profile) VALUES (?, ?)'),
     findUserByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
     findUserByUsername: db.prepare('SELECT * FROM users WHERE username = ?'),
     findUserById: db.prepare('SELECT * FROM users WHERE id = ?'),
@@ -97,6 +100,23 @@ export function prepareStatements() {
     setEmailVerified: db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?'),
     deleteOldEmailVerificationTokens: db.prepare('DELETE FROM email_verification_tokens WHERE user_id = ? AND used = 0'),
   });
+}
+
+// ── Progression (XP) for logged-in players — see server/game/progression.js ──
+// The stored profile, parsed; null if the user has none yet (or it is corrupt).
+export function getProgression(userId) {
+  const row = stmts.getProgression.get(userId);
+  if (!row) return null;
+  try { return JSON.parse(row.profile); } catch { return null; }
+}
+
+export function saveProgression(userId, profile) {
+  stmts.upsertProgression.run(userId, JSON.stringify(profile));
+}
+
+// Store `profile` only if the user has none yet. Returns true if it was stored.
+export function insertProgressionIfMissing(userId, profile) {
+  return stmts.insertProgressionIfMissing.run(userId, JSON.stringify(profile)).changes === 1;
 }
 
 export function createUser(username, email, passwordHash, displayName) {

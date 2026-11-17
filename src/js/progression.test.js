@@ -93,3 +93,35 @@ describe('daily missions in a Mega Battle', () => {
     expect(megaTarget({ stat: 'wins', goal: 1 })).toBe('');
   });
 });
+
+describe('shared scoring core', () => {
+  it('dayKey follows the player\'s midnight, not the machine\'s', async () => {
+    const { dayKey } = await import('./progression.js');
+    const t = Date.UTC(2026, 10, 17, 2, 30); // 02:30 UTC on Nov 17
+    expect(dayKey(t, 0)).toBe('2026-11-17');      // London
+    expect(dayKey(t, 300)).toBe('2026-11-16');    // New York (UTC-5): still the 16th
+    expect(dayKey(t, -600)).toBe('2026-11-17');   // Sydney (UTC+10)
+  });
+
+  it('scoreMatch is pure and uses the given days for streaks', async () => {
+    const { scoreMatch, normalizeProfile } = await import('./progression.js');
+    const before = normalizeProfile({ xp: 100, games: 1, lastPlayDay: '2026-11-16', dayStreak: 1 }, '2026-11-17');
+    const snapshot = JSON.stringify(before);
+    const r = scoreMatch(before, { placement: 3, totalPlayers: 20 }, { day: '2026-11-17', yesterday: '2026-11-16' });
+    expect(JSON.stringify(before)).toBe(snapshot);          // input untouched
+    expect(r.profile.games).toBe(2);
+    expect(r.profile.dayStreak).toBe(2);
+    expect(r.lines.some(l => l.label === '2-day streak')).toBe(true);
+    expect(r.profile.xp).toBe(100 + r.totalXp);
+  });
+
+  it('validateImport refuses profiles nobody could have earned', async () => {
+    const { validateImport, MAX_XP_PER_MATCH } = await import('./progression.js');
+    expect(validateImport({ xp: 1200, games: 4, wins: 1, eliminations: 3 })).toMatchObject({ xp: 1200, games: 4 });
+    expect(validateImport({ xp: 5 * MAX_XP_PER_MATCH + 1, games: 5, wins: 0, eliminations: 0 })).toBeNull();
+    expect(validateImport({ xp: 100, games: 2, wins: 3, eliminations: 0 })).toBeNull();   // more wins than games
+    expect(validateImport({ xp: 100, games: 0, wins: 0, eliminations: 0 })).toBeNull();
+    expect(validateImport({ xp: '9999', games: 2, wins: 0, eliminations: 0 })).toBeNull();
+    expect(validateImport(null)).toBeNull();
+  });
+});

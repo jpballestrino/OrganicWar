@@ -520,6 +520,7 @@ if (urlParams.has('debug')) {
   // Lets scripts/smoke-browser.mjs inspect the client.
   window.__owState = state;
   window.__owCountOwned = countOwnedCells;
+  window.__owSocket = socket;
   const debugDiv = document.createElement('div');
   debugDiv.id = 'debugUI';
   debugDiv.style.position = 'absolute';

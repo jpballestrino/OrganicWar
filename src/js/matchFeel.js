@@ -6,7 +6,7 @@
 
 import { state } from './state.js';
 import { playSfx } from './sfx.js';
-import { applyMatchResult, loadProfile } from './progression.js';
+import { applyMatchResult, loadProfile, isServerMode, setServerProfile, renderProgressCards } from './progression.js';
 import { escapeHtml } from './escape.js';
 import { showToast } from './guildUI.js';
 import { getCellOwner } from './simBridge.js';
@@ -39,6 +39,10 @@ function freshMatch() {
     total: 0,
     bountyFid: 0,
     bountyAnnouncedAt: {},
+    // Logged-in players: the server's XP result (progression-result), and the
+    // options the recap was last shown with, so it can be re-rendered.
+    pendingProgress: null,
+    endOpts: null,
     bountyEarnedShown: 0,
     lastBountyToastAt: 0,
     alive: 0,
@@ -207,7 +211,7 @@ function beginMatch() {
   // New commanders get the controls on screen for the opening of the match.
   const hint = document.getElementById('controlsHint');
   if (hint) {
-    const isNew = loadProfile().games < 3;
+    const isNew = (loadProfile()?.games ?? 0) < 3;
     hint.style.display = isNew ? 'flex' : 'none';
     if (isNew) setTimeout(() => { hint.style.display = 'none'; }, 30000);
   }
@@ -251,7 +255,9 @@ function settle({ won, placement, survivedSec, killerId = 0, final = false, winn
     missiles: match.missiles,
     tookLead: match.tookLead,
   };
-  const progress = applyMatchResult(outcome);
+  // Guests score in the browser; a logged-in player's XP is scored by the
+  // server, which sends it as `progression-result` (possibly already here).
+  const progress = isServerMode() ? match.pendingProgress : applyMatchResult(outcome);
   match.result = { ...outcome, killerName: killerId ? factionName(killerId) : '', progress };
 
   state.activePurchaseMode = null;
@@ -274,6 +280,7 @@ function enterSpectate() {
 }
 
 function showEndScreen(result, { final = false, winner = null, animate = false, byDomination = false } = {}) {
+  match.endOpts = { final, winner, byDomination };
   const container = document.getElementById('gameArea') || document.body;
   const old = document.getElementById('matchEndOverlay');
   if (old) old.remove();
@@ -296,15 +303,36 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
     sub = result.killerName ? `Your empire fell to ${result.killerName}.` : 'Your empire has fallen.';
   }
 
+  // A logged-in player's XP is scored by the server: until progression-result
+  // arrives (normally within a moment) the XP part of the card is a placeholder.
   const p = result.progress;
-  const xpLines = p.lines.map(l => `
-    <div class="end-xp-line"><span>${escapeHtml(l.label)}</span><span>+${l.xp}</span></div>`).join('');
-  const missions = p.missions.map(m => `
+  const xpLines = p ? p.lines.map(l => `
+    <div class="end-xp-line"><span>${escapeHtml(l.label)}</span><span>+${l.xp}</span></div>`).join('') : '';
+  const missions = p ? p.missions.map(m => `
     <div class="pc-mission ${m.done ? 'done' : ''}">
       <span class="pc-mission-check">${m.done ? '✔' : '○'}</span>
       <span class="pc-mission-text">${escapeHtml(m.text)}</span>
       <span class="pc-mission-xp">+${m.xp} XP</span>
-    </div>`).join('');
+    </div>`).join('') : '';
+  const progressHtml = p ? `
+      <div class="end-xp">
+        ${xpLines}
+        <div class="end-xp-line end-xp-total"><span>Total</span><span>+${p.totalXp} XP</span></div>
+      </div>
+
+      <div class="end-level">
+        <div class="end-level-row">
+          <span id="endLevelLabel">Level ${p.before.level} · ${p.before.title}</span>
+          <span id="endLevelUp" class="end-level-up" style="visibility:hidden;">LEVEL UP!</span>
+        </div>
+        <div class="pc-bar"><div id="endLevelFill" class="pc-bar-fill" style="width:${animate ? p.before.pct : p.after.pct}%"></div></div>
+      </div>
+
+      <div class="end-missions">
+        <div class="pc-missions-label">Daily missions</div>
+        ${missions}
+      </div>` : `
+      <div class="end-xp end-xp-pending" id="endXpPending">Saving XP to your account…</div>`;
 
   const overlay = document.createElement('div');
   overlay.id = 'matchEndOverlay';
@@ -326,23 +354,7 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
         <div class="end-stat"><b>${result.missiles}</b><span>Missiles</span></div>
       </div>
 
-      <div class="end-xp">
-        ${xpLines}
-        <div class="end-xp-line end-xp-total"><span>Total</span><span>+${p.totalXp} XP</span></div>
-      </div>
-
-      <div class="end-level">
-        <div class="end-level-row">
-          <span id="endLevelLabel">Level ${p.before.level} · ${p.before.title}</span>
-          <span id="endLevelUp" class="end-level-up" style="visibility:hidden;">LEVEL UP!</span>
-        </div>
-        <div class="pc-bar"><div id="endLevelFill" class="pc-bar-fill" style="width:${animate ? p.before.pct : p.after.pct}%"></div></div>
-      </div>
-
-      <div class="end-missions">
-        <div class="pc-missions-label">Daily missions</div>
-        ${missions}
-      </div>
+${progressHtml}
 
       <div class="end-buttons">
         <button id="btnEndPlayAgain" class="feel-btn feel-btn-primary feel-btn-big">Play Again <kbd>Enter</kbd></button>
@@ -362,6 +374,15 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
     if (lbl) lbl.textContent = `Level ${info.level} · ${info.title}`;
   };
 
+  if (!p) {
+    // If the server's result never comes (connection trouble), say where the
+    // XP went rather than leave "saving…" up forever.
+    setTimeout(() => {
+      const box = document.getElementById('endXpPending');
+      if (box) box.textContent = 'Your XP is saved to your account and will show on your profile.';
+    }, 10000);
+    return;
+  }
   if (!animate) { setLevelLabel(p.after); return; }
 
   // Animate the XP bar: fill, and on a level-up roll over into the new level.
@@ -596,6 +617,18 @@ export function initMatchFeel({ socket, quit }) {
   });
 
   socket.on('build-rejected', () => playSfx('error'));
+
+  // A logged-in player's XP for this match, scored and saved by the server.
+  socket.on('progression-result', (result = {}) => {
+    if (result.profile) { setServerProfile(result.profile); renderProgressCards(); }
+    if (!match.result) { match.pendingProgress = result; return; }
+    if (match.result.progress) return;
+    match.result.progress = result;
+    // Fill the recap in place if it is on screen (not while spectating).
+    if (document.getElementById('matchEndOverlay')) {
+      showEndScreen(match.result, { ...match.endOpts, animate: true });
+    }
+  });
 
   socket.on('gold-seized', ({ toId, gold, kind } = {}) => {
     if (!match.active || toId !== myFid()) return;

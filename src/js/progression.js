@@ -1,8 +1,19 @@
 // Persistent commander progression: XP, levels, rank titles, day streak and
-// three daily missions. Stored in localStorage so it works for guests too — it
-// is a motivation layer only and never affects the authoritative simulation.
+// three daily missions. A motivation layer only — it never affects the sim.
+//
+// Two homes for the profile, one scoring rule:
+//   * guests     — localStorage (`ow_profile_v1`), scored in the browser by
+//                  applyMatchResult();
+//   * logged in  — the server's `user_progression` table, scored on the server
+//                  from its own match bookkeeping (server/game/progression.js)
+//                  and pushed to the client (setServerProfile). The browser
+//                  never computes or uploads a logged-in player's XP.
+// The pure core (normalizeProfile / scoreMatch / dayKey) is imported by both,
+// so XP and missions are identical wherever they are scored.
 
-import { QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from './constants.js';
+import { QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS, MAX_FACTIONS } from './constants.js';
+
+const MAX_PLAYERS_PER_MATCH = MAX_FACTIONS;
 
 const KEY = 'ow_profile_v1';
 
@@ -51,9 +62,15 @@ const MISSION_POOL = [
   { id: 'lead',     text: 'Hold 1st place during a battle', stat: 'tookLead',     kind: 'sum',    goal: 1,     xp: 120 },
 ];
 
-function todayKey(d = new Date()) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Calendar day (YYYY-MM-DD) of `nowMs` for a player whose clock is
+// `tzOffsetMin` minutes behind UTC (Date#getTimezoneOffset). Day streaks and
+// daily missions follow the PLAYER's midnight, also when the server scores.
+export function dayKey(nowMs = Date.now(), tzOffsetMin = new Date(nowMs).getTimezoneOffset()) {
+  const d = new Date(nowMs - tzOffsetMin * 60000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
+const todayKey = () => dayKey();
+const yesterdayKey = () => dayKey(Date.now() - 86400000);
 
 // Total XP needed to *reach* a level: 0, 100, 300, 600, 1000 …
 export function xpForLevel(level) { return 50 * level * (level - 1); }
@@ -82,7 +99,7 @@ export function levelInfo(xp) {
   };
 }
 
-function defaultProfile() {
+export function defaultProfile() {
   return {
     xp: 0, games: 0, wins: 0, eliminations: 0, bestPlacement: 0,
     lastPlayDay: '', dayStreak: 0,
@@ -106,25 +123,65 @@ function pickMissions(day) {
   return picked.map(m => ({ id: m.id, progress: 0, done: false }));
 }
 
+// Fill defaults and roll today's missions over if `day` is a new day. Pure:
+// returns a new object. Used for profiles from localStorage and the server.
+export function normalizeProfile(raw, day) {
+  const profile = { ...defaultProfile(), ...(raw && typeof raw === 'object' ? raw : {}) };
+  if (!Array.isArray(profile.missions)) profile.missions = [];
+  if (profile.missionDay !== day) {
+    profile.missionDay = day;
+    profile.missions = pickMissions(day);
+  }
+  return profile;
+}
+
+// ── Where the displayed profile comes from ───────────────────────────────────
+// For a logged-in player the server pushes the profile (`progression-profile`)
+// and match results (`progression-result`); until it arrives there is none.
+let serverProfile = null;
+let serverMode = false;
+
+export function setServerMode(on) { serverMode = !!on; if (!on) serverProfile = null; }
+export function isServerMode() { return serverMode; }
+export function setServerProfile(profile) { serverProfile = profile; }
+
 function save(profile) {
   try { localStorage.setItem(KEY, JSON.stringify(profile)); } catch (_) { /* storage blocked */ }
 }
 
-export function loadProfile() {
-  let profile = defaultProfile();
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) profile = { ...profile, ...JSON.parse(raw) };
-  } catch (_) { /* corrupt or blocked storage — start fresh */ }
-  if (!Array.isArray(profile.missions)) profile.missions = [];
-
-  const today = todayKey();
-  if (profile.missionDay !== today) {
-    profile.missionDay = today;
-    profile.missions = pickMissions(today);
-    save(profile);
-  }
+// The guest profile stored in this browser (normalized for today).
+export function loadLocalProfile() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) { /* corrupt or blocked */ }
+  const profile = normalizeProfile(raw, todayKey());
+  if (!raw || raw.missionDay !== profile.missionDay) save(profile);
   return profile;
+}
+
+// The profile to show: the server's for a logged-in player, else the local one.
+export function loadProfile() {
+  if (serverMode) return serverProfile ? normalizeProfile(serverProfile, todayKey()) : null;
+  return loadLocalProfile();
+}
+
+// Sanity check for importing a browser's guest profile into an account the
+// first time it logs in (the server has no profile for it yet). localStorage
+// is editable, so anything a real player couldn't have earned is refused.
+export const MAX_XP_PER_MATCH = 2000;
+export function validateImport(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const int = (v, max) => (Number.isInteger(v) && v >= 0 && v <= max ? v : null);
+  const games = int(raw.games, 100000);
+  const xp = int(raw.xp, 100000 * MAX_XP_PER_MATCH);
+  const wins = int(raw.wins, 100000);
+  const eliminations = int(raw.eliminations, 100000 * MAX_PLAYERS_PER_MATCH);
+  if (games === null || xp === null || wins === null || eliminations === null) return null;
+  if (games === 0 || xp > games * MAX_XP_PER_MATCH || wins > games || eliminations > games * MAX_PLAYERS_PER_MATCH) return null;
+  const bestPlacement = int(raw.bestPlacement, MAX_PLAYERS_PER_MATCH) ?? 0;
+  const dayStreak = int(raw.dayStreak, 10000) ?? 0;
+  const lastPlayDay = typeof raw.lastPlayDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.lastPlayDay) ? raw.lastPlayDay : '';
+  // Missions are not imported: today's are rolled fresh on the server.
+  return { xp, games, wins, eliminations, bestPlacement, dayStreak, lastPlayDay };
 }
 
 // Missions joined with their static definitions, for rendering.
@@ -149,16 +206,19 @@ export function missionViews(profile) {
 }
 
 /**
- * Apply one finished match to the profile.
+ * Score one finished match against a profile. Pure: returns a new profile.
  * match: { placement, totalPlayers, won, eliminations, peakCells, survivedSec,
  *          towers, missiles, tookLead }
+ * day / yesterday: the player's calendar days (dayKey) for streaks and missions.
  * Returns { lines: [{label, xp}], totalXp, before, after, leveledUp, missions, profile }.
  */
-export function applyMatchResult(match) {
-  const profile = loadProfile();
+export function scoreMatch(rawProfile, match, { day = todayKey(), yesterday = yesterdayKey() } = {}) {
+  const profile = normalizeProfile(rawProfile, day);
+  profile.missions = profile.missions.map(m => ({ ...m }));
   const before = levelInfo(profile.xp);
   const lines = [];
-  const add = (label, xp) => { if (xp > 0) lines.push({ label, xp: Math.round(xp) }); };
+  // Round first, so a line that would read "+0" is left out.
+  const add = (label, xp) => { const v = Math.round(xp); if (v > 0) lines.push({ label, xp: v }); };
 
   const total = Math.max(2, match.totalPlayers || 2);
   const placement = Math.min(total, Math.max(1, match.placement || total));
@@ -178,11 +238,9 @@ export function applyMatchResult(match) {
   add('Time survived', Math.min(40, ((match.survivedSec || 0) / 60) * 4));
 
   // Day streak: consecutive calendar days with at least one battle.
-  const today = todayKey();
-  if (profile.lastPlayDay !== today) {
-    const yesterday = todayKey(new Date(Date.now() - 86400000));
+  if (profile.lastPlayDay !== day) {
     profile.dayStreak = profile.lastPlayDay === yesterday ? profile.dayStreak + 1 : 1;
-    profile.lastPlayDay = today;
+    profile.lastPlayDay = day;
     add('First battle of the day', 50);
     if (profile.dayStreak > 1) add(`${profile.dayStreak}-day streak`, Math.min(50, profile.dayStreak * 10));
   }
@@ -223,7 +281,6 @@ export function applyMatchResult(match) {
   if (match.won) profile.wins += 1;
   profile.eliminations += match.eliminations || 0;
   if (!profile.bestPlacement || placement < profile.bestPlacement) profile.bestPlacement = placement;
-  save(profile);
 
   const after = levelInfo(profile.xp);
   return {
@@ -234,12 +291,22 @@ export function applyMatchResult(match) {
   };
 }
 
+// Guest path: score a match against this browser's profile and store it.
+export function applyMatchResult(match) {
+  const result = scoreMatch(loadLocalProfile(), match);
+  save(result.profile);
+  return result;
+}
+
 // Compact home-screen card: level, XP bar, day streak and today's missions.
 export function progressCardHtml() {
   const profile = loadProfile();
+  if (!profile) {
+    // Logged in, waiting for the server's copy (sent on connect).
+    return '<div class="pc-loading">Loading your progress…</div>';
+  }
   const info = levelInfo(profile.xp);
-  const streakActive = profile.lastPlayDay === todayKey()
-    || profile.lastPlayDay === todayKey(new Date(Date.now() - 86400000));
+  const streakActive = profile.lastPlayDay === todayKey() || profile.lastPlayDay === yesterdayKey();
   const streak = streakActive ? profile.dayStreak : 0;
 
   const missions = missionViews(profile).map(m => {

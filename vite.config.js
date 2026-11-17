@@ -1,9 +1,20 @@
 import { defineConfig } from 'vite';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
+import { fileURLToPath } from 'url';
+
+const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
   root: 'src',
+  // Vitest: client tests live in src/, server tests in server/ (the Vite root
+  // is src/, so point the scan at the repo root). NODE_ENV=test gives the
+  // server an in-memory SQLite database.
+  test: {
+    dir: repoRoot,
+    include: ['src/**/*.test.js', 'server/**/*.test.js'],
+    environment: 'node',
+  },
   plugins: [
     wasm(),
     topLevelAwait()

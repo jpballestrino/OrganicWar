@@ -220,3 +220,9 @@ the cap per second, so any fair exchange rate is either useless or decisive.
       (`fieldScale` in progression.js) — land ×3.2, placement ÷3.2, Victory
       150 → 480; mission cards show the Mega target. First JS test file
       (`src/js/progression.test.js`, 8 tests); standard XP is unchanged.
+- [x] XP synced to the server for logged-in players: server-scored from the
+      worker's own match numbers (shared pure core in progression.js),
+      `user_progression` table (migration 006), pushed on connect / at match
+      end, one-time validated guest import, player-timezone days. Tests: 16
+      vitest (incl. server/game/progression.test.js) + scripts/e2e-progression.mjs
+      (real match eliminated / game over, import, win) + Chromium login flow.

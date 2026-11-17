@@ -1,15 +1,20 @@
 import { io } from 'socket.io-client';
 import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
-import { getToken } from './auth.js';
+import { getToken, isLoggedIn } from './auth.js';
+import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
 import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { onSnapshotStats } from './matchFeel.js';
 import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt } from './constants.js';
 import { updateBuildBar, rejectMessage } from './buildBar.js';
 
+// The handshake carries the player's UTC offset so the server rolls daily
+// missions and streaks over at the player's own midnight.
+export const socketAuth = () => ({ token: getToken(), tzOffset: new Date().getTimezoneOffset() });
+
 export const socket = io({
-  auth: { token: getToken() },
+  auth: socketAuth(),
 });
 
 export function quitAndReload() {
@@ -221,6 +226,21 @@ socket.io.on('reconnect_failed', () => {
 });
 
 export function initNetwork() {
+  // ── Progression for logged-in players (server/game/progression.js) ──
+  // The server owns their XP: it pushes the profile on connect and the scored
+  // result when their match ends. A first login offers this browser's guest
+  // XP for a one-time import (the server validates it).
+  setServerMode(isLoggedIn());
+  socket.on('progression-profile', ({ profile, canImport } = {}) => {
+    setServerMode(true);
+    setServerProfile(profile);
+    renderProgressCards();
+    if (canImport) {
+      const local = loadLocalProfile();
+      if (local.games > 0) socket.emit('progression-import', local);
+    }
+  });
+
   const savedToken = sessionStorage.getItem('reconnectToken');
   if (savedToken) {
     console.log('[RECONNECT] Sending token:', savedToken);
