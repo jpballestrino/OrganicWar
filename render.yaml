@@ -55,3 +55,16 @@ services:
         sync: false
       - key: DISCORD_CLIENT_SECRET
         sync: false
+      # Shown on /privacy as the contact for data requests (recommended).
+      - key: CONTACT_EMAIL
+        sync: false
+      # Optional Google ads (server/ads.js, DEPLOY.md → "Google ads"). Leave
+      # ADSENSE_CLIENT empty and no ad code is loaded at all.
+      - key: ADSENSE_CLIENT
+        sync: false
+      - key: ADSENSE_SLOT_HOME
+        sync: false
+      - key: ADSENSE_SLOT_RECAP
+        sync: false
+      - key: ADSENSE_GAME_BREAKS
+        sync: false

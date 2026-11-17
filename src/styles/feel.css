@@ -587,3 +587,35 @@ body.in-match #notificationContainer {
     text-align: center;
     padding: 10px 0;
 }
+
+/* ===== Google ads (src/js/ads.js) — side rail beside the home menu / recap ===== */
+.ad-rail {
+    position: fixed;
+    right: 24px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 300px;
+    min-height: 250px;
+    max-height: 640px;
+    overflow: hidden;
+    z-index: 1002;
+    pointer-events: auto;
+}
+
+.ad-rail[hidden] {
+    display: none;
+}
+
+.ad-label {
+    color: #475569;
+    font: 600 10px 'Inter', sans-serif;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    text-align: center;
+    margin-bottom: 4px;
+}
+
+/* The recap card is centred in its overlay; keep the ad clear of it. */
+@media (max-width: 1149px) {
+    .ad-rail { display: none; }
+}

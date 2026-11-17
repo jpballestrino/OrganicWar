@@ -252,6 +252,8 @@ export function homeTemplate() {
                     <span>OrganicWar.io &nbsp;v1.0.0</span>
                     <span class="home-footer-dot">•</span>
                     <a href="#" id="linkTutorial" style="color: #4ade80; text-decoration: none; font-weight: bold;">📖 How to Play</a>
+                    <span class="home-footer-dot">•</span>
+                    <a href="/privacy" target="_blank" rel="noopener" style="color: #64748b; text-decoration: none;">Privacy</a>
                 </div>
                 <div class="home-footer-row home-footer-auth-row" style="display:none;">
                     <a href="#" id="linkFeedback" class="auth-footer-links" style="color: #94a3b8; text-decoration: none;">💬 Send Feedback</a>

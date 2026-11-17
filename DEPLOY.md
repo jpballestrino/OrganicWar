@@ -26,8 +26,9 @@ hetzner.com/cloud before buying. Capacity adapts to the plan automatically
    `https://organicwar-io.onrender.com`, which works fine to start. A `.io`
    (organicwar.io, if available) is about US$40–60/year; `.com` / `.gg` are
    cheaper or similar. Cloudflare Registrar, Porkbun and Namecheap all work.
-3. **Nothing else is required.** Email (password reset) and Google/Discord
-   login are optional and free to set up — see below.
+3. **Nothing else is required.** Email (password reset), Google/Discord login
+   and Google ads are optional and free to set up — see below. Google ads need
+   your own domain (point 2).
 
 ## A. Render — step by step
 
@@ -84,6 +85,46 @@ hour). Then change `APP_URL` to `https://yourdomain.com` (Environment tab).
 - **Discord login:** discord.com/developers/applications → New application →
   OAuth2 → redirect `https://yourdomain.com/api/auth/discord/callback`. Set
   `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`.
+
+## Optional: Google ads (AdSense)
+
+Ads are **off until you set `ADSENSE_CLIENT`** — with it unset no Google code
+loads at all. Once on, ads appear only around matches, never during one:
+
+| Placement | Setting | Notes |
+|---|---|---|
+| Banner beside the home menu | `ADSENSE_SLOT_HOME` | wide screens only (≥ 1150 px), never covers the menu |
+| Banner beside the end-of-match recap | `ADSENSE_SLOT_RECAP` | same |
+| Full-screen ad between matches (Play Again / Main Menu) | `ADSENSE_GAME_BREAKS=1` | Google's Ad Placement API ("H5 Games Ads"); at most one every 2 minutes, sound muted during it |
+
+If a player's ad blocker blocks Google's script, the game simply carries on.
+
+**What you need:**
+1. **Your own domain** (AdSense doesn't accept `*.onrender.com` addresses) —
+   so this needs the domain from "What you need to buy".
+2. **An AdSense account** (free): adsense.google.com → add your site → paste
+   nothing (the game already includes Google's code) → Google reviews the site,
+   which can take from a few days to a few weeks. `/ads.txt` and the privacy
+   policy at `/privacy` (linked in the home footer) are served automatically.
+3. Once approved: **Ads → By ad unit → Display ads** — create two responsive
+   units ("home", "recap") and copy each one's `data-ad-slot` number.
+4. In Render → Environment set `ADSENSE_CLIENT` (your `ca-pub-…` publisher id,
+   from Account → Settings), `ADSENSE_SLOT_HOME`, `ADSENSE_SLOT_RECAP`, and
+   `CONTACT_EMAIL` (shown on the privacy page). The service restarts; the log
+   line `Google ads ON (...)` confirms it.
+5. **Between-match ads** are a separate Google programme for web games: apply
+   for "H5 Games Ads" (Ad Placement API) from your AdSense account, and set
+   `ADSENSE_GAME_BREAKS=1` after Google enables it. While testing,
+   `ADSENSE_TEST=1` makes Google serve test ads (no earnings).
+6. **Europe / UK consent:** in AdSense → Privacy & messaging, publish the
+   European regulations (GDPR) message. Google then shows the consent banner
+   itself — required for visitors from the EEA, UK and Switzerland.
+
+**Review the privacy policy** (`server/pages/privacy.html`) before going live —
+it was written from what the code stores, but it is not legal advice.
+
+Check it from a terminal with `node scripts/smoke-ads.mjs` (see the file for
+the server settings it expects; Google's script is replaced by a stand-in).
 
 ## Running it
 
