@@ -20,6 +20,7 @@ import apiRouter from './routes/apiRoutes.js';
 import { log } from './utils/logger.js';
 import { activeRooms } from './game/state.js';
 import { setupSocketHandlers } from './game/socketHandlers.js';
+import { capacityReport } from './game/capacity.js';
 import { guildWarMatchmakerInterval, rankedMatchmakerInterval, playerCountInterval } from './game/gameLoop.js';
 
 runMigrations();
@@ -66,7 +67,9 @@ export const io = new Server(httpServer, {
     origin: CORS_ORIGIN,
     methods: ['GET', 'POST'],
   },
-  perMessageDeflate: true,
+  // Compress only frames worth it: the 20×/s owner deltas are mostly small,
+  // and deflating every tiny frame for every client costs more CPU than it saves.
+  perMessageDeflate: { threshold: 2048 },
 });
 
 // Connection-rate limiter (counts connections in a ~60s rolling window, halved each minute).
@@ -150,21 +153,18 @@ if (fs.existsSync(clientDistPath)) {
 
 // Health check — live room count + per-worker RSS for capacity planning (Item 17)
 app.get('/healthz', (_req, res) => {
-  const MAX_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
   const rooms = Object.values(activeRooms);
   const roomDetails = rooms.map(r => ({
     id: r.id,
     humans: Object.values(r.activePlayerSlots).filter(s => s && !s.isBot).length,
-    rssMB: r.simReal?._workerRssMB ?? null,
+    load: r.simReal?.load ?? null,
   }));
-  const totalWorkerRssMB = roomDetails.reduce((s, r) => s + (r.rssMB || 0), 0);
   res.json({
     status: 'ok',
     nodeEnv: process.env.NODE_ENV || 'development',
     distReady: fs.existsSync(clientDistPath),
-    rooms: rooms.length,
-    maxRooms: MAX_ROOMS,
-    totalWorkerRssMB,
+    capacity: capacityReport(),
+    rssMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
     uptime: Math.floor(process.uptime()),
     roomDetails,
   });
@@ -180,7 +180,7 @@ if (process.env.NODE_ENV !== 'test') {
   const BACKUP_DIR = path.join(__dirname, '..', 'backups');
   const HOURLY_KEEP = 48;
 
-  function runDbBackup() {
+  const runDbBackup = () => {
     try {
       fs.mkdirSync(BACKUP_DIR, { recursive: true });
       const ts = new Date().toISOString().slice(0, 16).replace(/:/g, '-'); // YYYY-MM-DDTHH-mm
@@ -201,7 +201,7 @@ if (process.env.NODE_ENV !== 'test') {
     } catch (err) {
       log('error', '[Backup] DB backup setup failed:', err.message);
     }
-  }
+  };
 
   // First backup 5 minutes after startup, then every hour
   setTimeout(runDbBackup, 5 * 60 * 1000);

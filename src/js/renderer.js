@@ -1,5 +1,8 @@
 import { state } from './state.js';
-import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS } from './constants.js';
+import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
+
+// Per-faction shader arrays: index 0 = neutral, 1..MAX_FACTIONS = players.
+const FACTION_SLOTS = MAX_FACTIONS + 1;
 
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
@@ -54,9 +57,9 @@ export class WebGLRenderer {
         this.cellTexture = null;
 
         // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1),
-        // indexed by owner id 0..20. Multiplied by per-cell enclosure in the shader
-        // to produce per-cell opacity variation. Updated each sim snapshot.
-        this.playerOpacity = new Float32Array(21).fill(1.0);
+        // indexed by owner id 0..MAX_FACTIONS. Combined with terrain cost in the
+        // shader to produce per-cell opacity. Updated on every sim-stats message.
+        this.playerOpacity = new Float32Array(FACTION_SLOTS).fill(1.0);
 
         this.initShaders();
         this.initBuffers();
@@ -116,7 +119,7 @@ export class WebGLRenderer {
             // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1).
             // Combined per-pixel with the cell's terrain cost to produce per-cell opacity:
             // mountains in a dense empire render fully solid; plains in a weak one stay faint.
-            uniform float u_player_opacity[21];
+            uniform float u_player_opacity[${FACTION_SLOTS}];
 
             // The local player's faction id (0 when spectating/pre-game). Their own
             // frontier is drawn as a bright highlight; all other borders are dark.
@@ -125,7 +128,7 @@ export class WebGLRenderer {
             // Per-faction territory color (index 0 = neutral, unused). Uploaded once
             // from factionRGB in constants.js — the SAME source the building icons
             // and HUD use — so a faction's territory matches its icon/label color.
-            uniform vec3 u_palette[21];
+            uniform vec3 u_palette[${FACTION_SLOTS}];
 
             // Terrain base color for a packed terrain value (bits 7-10).
             vec3 terrainColor(uint terrainVal) {
@@ -147,7 +150,7 @@ export class WebGLRenderer {
                 uint ownerVal = packed & 127u;
                 uint terrainVal = (packed >> 7u) & 15u;
                 vec3 baseColor = terrainColor(terrainVal);
-                if (ownerVal > 0u && ownerVal <= 20u) {
+                if (ownerVal > 0u && ownerVal <= ${MAX_FACTIONS}u) {
                     vec3 pColor = u_palette[ownerVal];
                     float terrainCost = (terrainVal == 0u) ? 1.0 : (terrainVal == 1u) ? 3.0 : (terrainVal == 2u) ? 6.0 : 0.0;
                     uint defTierRaw = (packed >> 11u) & 15u;
@@ -196,7 +199,7 @@ export class WebGLRenderer {
                 vec3 baseColor = mix(mix(f00, f10, frac.x), mix(f01, f11, frac.x), frac.y);
 
                 // --- Crisp faction borders (decided on the nearest cell's owner) ---
-                if (ownerVal > 0u && ownerVal <= 20u) {
+                if (ownerVal > 0u && ownerVal <= ${MAX_FACTIONS}u) {
                     // Sample neighbors at a cell distance that grows as we zoom out, so
                     // the outline stays ~constant width on screen at any zoom (a flat
                     // 1-cell line vanishes when the whole map is fit to the screen).
@@ -217,7 +220,7 @@ export class WebGLRenderer {
                             baseColor = mix(baseColor, vec3(0.04, 0.04, 0.06), 0.72);
                         }
                     }
-                } else if (ownerVal > 20u) {
+                } else if (ownerVal > ${MAX_FACTIONS}u) {
                     baseColor = vec3(1.0, 0.0, 0.0); // debug: out-of-range owner
                 }
 
@@ -255,9 +258,9 @@ export class WebGLRenderer {
 
         // Upload the faction palette once (it's static). Built from factionRGB so
         // territory fill matches the building icons / HUD; index 0 (neutral) stays
-        // black and is never sampled (only owners 1..20 read u_palette).
-        const palette = new Float32Array(21 * 3);
-        for (let i = 1; i <= 20; i++) {
+        // black and is never sampled (only owners 1..MAX_FACTIONS read u_palette).
+        const palette = new Float32Array(FACTION_SLOTS * 3);
+        for (let i = 1; i <= MAX_FACTIONS; i++) {
             const rgb = factionRGB[i] || [128, 128, 128];
             palette[i * 3]     = rgb[0] / 255;
             palette[i * 3 + 1] = rgb[1] / 255;
@@ -445,7 +448,7 @@ export class WebGLRenderer {
         // Territory opacity per faction (from difficulty_to_invade). Pull the
         // latest values the network layer computed from the last snapshot.
         if (state.factionOpacity) {
-            this.playerOpacity.set(state.factionOpacity);
+            this.playerOpacity.set(state.factionOpacity.subarray(0, FACTION_SLOTS));
         }
         this.gl.uniform1fv(this.uniforms.playerOpacity, this.playerOpacity);
 
@@ -534,6 +537,118 @@ export class WebGLRenderer {
         }
 
         ctx.textBaseline = 'alphabetic';
+    }
+
+    // Synergy links: a glowing dashed line between every linked pair (both
+    // buildings carry the link's bit, are the same faction's and in range),
+    // drawn edge to edge between the two icons rather than through them.
+    drawBuildingLinks(ctx, buildings) {
+        if (!buildings || buildings.length < 2) return;
+        const linked = buildings.filter(b => b.links && !b.constructing);
+        if (linked.length < 2) return;
+        const r2 = LINK_RADIUS * LINK_RADIUS;
+        const t = performance.now() * 0.02;
+        // Same icon size as drawBuildings, so the line starts at the hex edge.
+        const hexR = Math.max(6, 11 * this.camera.zoom) * 1.62;
+        ctx.save();
+        ctx.lineWidth = Math.max(2, 1.2 * this.camera.zoom);
+        ctx.lineCap = 'round';
+        ctx.setLineDash([6, 5]);
+        ctx.lineDashOffset = -t;
+        const partnered = new Set();
+        for (let i = 0; i < linked.length; i++) {
+            const a = linked[i];
+            for (let j = i + 1; j < linked.length; j++) {
+                const b = linked[j];
+                if (a.factionId !== b.factionId || !(a.links & b.links)) continue;
+                if ((a.row - b.row) ** 2 + (a.col - b.col) ** 2 > r2) continue;
+                const shared = BUILDING_LINKS.some(l => (a.links & b.links & l.bit)
+                    && l.types.includes(a.type) && l.types.includes(b.type) && a.type !== b.type);
+                if (!shared) continue;
+                partnered.add(a);
+                partnered.add(b);
+                const pa = this.worldToScreen(a.col, a.row);
+                const pb = this.worldToScreen(b.col, b.row);
+                const len = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+                if (len <= hexR * 2 + 4) continue; // icons overlap: nothing to draw
+                if (Math.max(pa.x, pb.x) < 0 || Math.min(pa.x, pb.x) > this.canvas.width
+                    || Math.max(pa.y, pb.y) < 0 || Math.min(pa.y, pb.y) > this.canvas.height) continue;
+                const ux = (pb.x - pa.x) / len;
+                const uy = (pb.y - pa.y) / len;
+                const [r, g, bl] = factionRGB[a.factionId] || [200, 200, 200];
+                // Dark under-stroke so the link reads on any territory colour.
+                ctx.shadowBlur = 0;
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+                ctx.lineWidth = Math.max(4, 2.4 * this.camera.zoom);
+                ctx.beginPath();
+                ctx.moveTo(pa.x + ux * hexR, pa.y + uy * hexR);
+                ctx.lineTo(pb.x - ux * hexR, pb.y - uy * hexR);
+                ctx.stroke();
+                ctx.strokeStyle = `rgb(${Math.min(255, r + 60)}, ${Math.min(255, g + 60)}, ${Math.min(255, bl + 60)})`;
+                ctx.lineWidth = Math.max(2, 1.2 * this.camera.zoom);
+                if (!state.lowGraphics) { ctx.shadowColor = `rgb(${r}, ${g}, ${bl})`; ctx.shadowBlur = 8; }
+                ctx.stroke();
+            }
+        }
+        // A rotating dashed ring marks every linked building, so the link is
+        // visible even when the two icons touch (no room for a line).
+        ctx.setLineDash([hexR * 0.5, hexR * 0.3]);
+        ctx.lineDashOffset = t * 0.5;
+        ctx.lineWidth = Math.max(1.5, 0.9 * this.camera.zoom);
+        ctx.strokeStyle = 'rgba(140, 235, 255, 0.95)';
+        if (!state.lowGraphics) { ctx.shadowColor = 'rgb(80, 210, 255)'; ctx.shadowBlur = 10; }
+        for (const b of partnered) {
+            const p = this.worldToScreen(b.col, b.row);
+            if (p.x < -hexR * 2 || p.x > this.canvas.width + hexR * 2 || p.y < -hexR * 2 || p.y > this.canvas.height + hexR * 2) continue;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, hexR * 1.2, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // While placing a building of `type`: show the link radius and which of
+    // the player's completed buildings it would link with, and the link names.
+    drawLinkPreview(ctx, type, hoverRow, hoverCol, buildings, myFaction) {
+        const center = this.worldToScreen(hoverCol, hoverRow);
+        const r2 = LINK_RADIUS * LINK_RADIUS;
+        const names = new Set();
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        for (const b of buildings || []) {
+            if (b.factionId !== myFaction || b.constructing) continue;
+            if ((b.row - hoverRow) ** 2 + (b.col - hoverCol) ** 2 > r2) continue;
+            const link = BUILDING_LINKS.find(l => l.types.includes(type) && l.types.includes(b.type) && type !== b.type);
+            if (!link) continue;
+            names.add(link.name);
+            const p = this.worldToScreen(b.col, b.row);
+            ctx.strokeStyle = 'rgba(120, 230, 255, 0.95)';
+            ctx.beginPath();
+            ctx.moveTo(center.x, center.y);
+            ctx.lineTo(p.x, p.y);
+            ctx.stroke();
+        }
+        ctx.setLineDash([2, 6]);
+        ctx.strokeStyle = 'rgba(120, 230, 255, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, LINK_RADIUS * this.camera.zoom, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (names.size) {
+            ctx.font = "bold 12px 'Orbitron', sans-serif";
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+            const text = `Links: ${[...names].join(' · ')}`;
+            const y = center.y + 6 * this.camera.zoom + 6;
+            ctx.strokeText(text, center.x, y);
+            ctx.fillStyle = 'rgba(120, 230, 255, 1)';
+            ctx.fillText(text, center.x, y);
+        }
+        ctx.restore();
     }
 
     drawBuildings(ctx, buildings) {
@@ -1100,7 +1215,9 @@ export class WebGLRenderer {
                 if (b.type !== 'silo' || b.constructing || b.factionId !== myFaction) continue;
                 const c = this.worldToScreen(b.col, b.row);
                 ctx.beginPath();
-                ctx.arc(c.x, c.y, SILO_RANGE * this.camera.zoom, 0, Math.PI * 2);
+                // Radar Guidance (silo + anti-air link) extends the range.
+                const range = b.links & 4 ? SILO_RANGE * RADAR_RANGE_MULT : SILO_RANGE;
+                ctx.arc(c.x, c.y, range * this.camera.zoom, 0, Math.PI * 2);
                 ctx.setLineDash([6, 8]);
                 ctx.stroke();
                 ctx.setLineDash([]);

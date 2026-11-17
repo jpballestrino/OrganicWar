@@ -130,6 +130,8 @@ export function modalsTemplate() {
                     <li><strong>Attack / Expand:</strong> Click on neutral land or enemy territory to start an attack front. Your troops push forward automatically.</li>
                     <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against that specific enemy.</li>
                     <li><strong>Cancel All Attacks:</strong> Press <strong>Space</strong> to instantly refund and cancel all active attacks.</li>
+                    <li><strong>Blitz (Press '1'):</strong> For 6 seconds your attacks advance twice as fast and pay 40% less to take enemy land. Recharges in 45 seconds — save it for the breakthrough.</li>
+                    <li><strong>Plunder:</strong> Eliminate a rival and you take their whole treasury. Razing an enemy Defense Tower pays 1,000 gold of salvage.</li>
                     <li><strong>Troops &amp; Gold:</strong> Troop cap, growth rate, and gold income all scale with territory owned.</li>
                     <li><strong>Attack size:</strong> The Attack slider (or <strong>Shift + mouse wheel</strong>) sets what share of your troops each click commits.</li>
                     <li><strong>Camera:</strong> Drag the map or use <strong>WASD</strong> / arrow keys to move; mouse wheel zooms.</li>
@@ -150,7 +152,18 @@ export function modalsTemplate() {
                     <li><strong>Gold Mine (Press '5'):</strong> Costs 3,000 gold. Boosts your global gold production by 10%.</li>
                     <li><strong>Anti-Air Battery (Press '6'):</strong> Costs 5,000 gold. Intercepts incoming missiles. Holds 3 charges.</li>
                     <li><strong>City (Press '7'):</strong> Costs 2,000 gold. Each city raises your maximum population by 5%.</li>
-                    <li><em>Right-click cancels any active building or targeting mode.</em></li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🔗 Synergies</h3>
+                <p style="margin-top: 0;">Two of your finished buildings within 60 cells of each other <strong>link up</strong> (a glowing line on the map). While placing, the preview shows which links you would form.</p>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Walled City</strong> (City + Defense Tower): the city gives +10% population instead of +5%.</li>
+                    <li><strong>Workforce</strong> (Gold Mine + City): the mine gives +15% gold instead of +10%.</li>
+                    <li><strong>Radar Guidance</strong> (Missile Silo + Anti-Air): the silo fires 25% farther.</li>
+                    <li><strong>Arms Industry</strong> (Missile Silo + Gold Mine): missiles from that silo cost 25% less.</li>
+                    <li><strong>Flak Battery</strong> (Anti-Air + Defense Tower): the battery regains an interceptor every 20 seconds.</li>
+                    <li><em>Prices shown are for your first building of each type; each further one of the same type costs 25% more.</em></li>
+                    <li><em>Right-click or Esc cancels any active building or targeting mode.</em></li>
                 </ul>
             </div>
         </div>

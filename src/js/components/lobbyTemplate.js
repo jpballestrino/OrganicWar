@@ -1,3 +1,5 @@
+import { MAX_FACTIONS } from '../constants.js';
+
 export function lobbyTemplate() {
   return `
     <!-- Lobby Browser Modal -->
@@ -42,7 +44,7 @@ export function lobbyTemplate() {
 
             <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px;">
                 <label style="font-size: 13px; font-weight: bold; color: #ccc;">Max Players (2-20):</label>
-                <input type="number" id="maxPlayersInput" min="2" max="20" value="5"
+                <input type="number" id="maxPlayersInput" min="2" max="${MAX_FACTIONS}" value="5"
                     style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 10px; border-radius: 4px; font-size: 14px; outline: none;">
             </div>
 

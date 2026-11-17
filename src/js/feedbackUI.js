@@ -1,4 +1,4 @@
-import { getUser, getToken, isLoggedIn } from './auth.js';
+import { getToken, isLoggedIn } from './auth.js';
 import { showToast } from './guildUI.js';
 
 const getE = (id) => document.getElementById(id);

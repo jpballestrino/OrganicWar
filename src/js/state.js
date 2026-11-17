@@ -19,7 +19,7 @@ export const state = {
   shopCosts: {},
   doctrines: {},
   factionCentroids: {},
-  factionOpacity: null, // Float32Array(21): per-faction density ratio (troops/cell / DIFFICULTY_CAP)
+  factionOpacity: null, // Float32Array: per-faction troops-per-cell / 25 (shader opacity), from sim-stats
   buildings: [],        // [{type, factionId, row, col, radius, defTier}] — populated from building-placed events
   activeStructuresList: [],
   camera: { x: 0, y: 0, zoom: 1.0, minZoom: 0.5, maxZoom: 3.0, baseSpeed: 8 },
@@ -44,6 +44,9 @@ export const state = {
   playerTroops: 0,
   playerMaxPop: 0,
   playerGold: 0,
+  prices: null,          // per-action prices from the sim (sim-stats)
+  blitzActiveUntil: 0,   // performance.now() deadlines from sim-stats
+  blitzReadyAt: 0,
   
   navalTargetingMode: false,
   selectedSiloCell: null,
@@ -97,6 +100,9 @@ export function resetGameState() {
   for (let k in state.keysPressed) {delete state.keysPressed[k];}
 
   state.playerGold = 0;
+  state.prices = null;
+  state.blitzActiveUntil = 0;
+  state.blitzReadyAt = 0;
   state.playerFaction = null;
   state.selectedSlot = null;
   state.selectedDoctrine = 'balanced';

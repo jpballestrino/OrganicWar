@@ -1,3 +1,21 @@
+import { BUILD_ACTIONS, fmtInt, linkHelp } from '../constants.js';
+
+// Build-bar buttons, generated from the BUILD_ACTIONS table so names, hotkeys
+// and prices are never hand-copied into markup (behaviour lives in buildBar.js).
+function buildBarHtml() {
+  const tooltip = (a) => (a.type ? `${a.desc}\n\nSynergies (within 60 cells):\n${linkHelp(a.type)}` : a.desc)
+    .replace(/"/g, '&quot;');
+  return BUILD_ACTIONS.map(a => `
+                <button type="button" class="build-option" data-mode="${a.mode}" title="${tooltip(a)}">
+                    <span class="build-key">${a.key}</span>
+                    <span class="build-info">
+                        <span class="build-name">${a.name}</span>
+                        <span class="build-cost text-gold">${a.instant ? 'Ready' : `${fmtInt(a.cost)}g`}</span>
+                    </span>
+                    <span class="build-count" hidden>0</span>
+                </button>`).join('');
+}
+
 export function gameUITemplate() {
   return `
     <div id="gameArea" style="display: none;">
@@ -41,7 +59,7 @@ export function gameUITemplate() {
         </div>
 
         <!-- Spawn Selection Overlay -->
-        <div id="spawnOverlay" style="display: none; position: absolute; top: 40px; left: 50%; transform: translateX(-50%); z-index: 1000; background: linear-gradient(135deg, rgba(15, 20, 25, 0.95) 0%, rgba(10, 12, 15, 0.95) 100%); border: 1px solid rgba(255, 193, 7, 0.2); border-top: 2px solid rgba(255, 193, 7, 0.6); border-radius: 40px; padding: 12px 30px; text-align: center; pointer-events: none; box-shadow: 0 10px 25px rgba(0,0,0,0.6), 0 0 20px rgba(255, 193, 7, 0.15); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; gap: 20px; width: max-content;">
+        <div id="spawnOverlay" style="display: none; position: absolute; top: 40px; left: 50%; transform: translateX(-50%); z-index: 1000; background: linear-gradient(135deg, rgba(15, 20, 25, 0.95) 0%, rgba(10, 12, 15, 0.95) 100%); border: 1px solid rgba(255, 193, 7, 0.2); border-top: 2px solid rgba(255, 193, 7, 0.6); border-radius: 40px; padding: 12px 30px; text-align: center; pointer-events: none; box-shadow: 0 10px 25px rgba(0,0,0,0.6), 0 0 20px rgba(255, 193, 7, 0.15); backdrop-filter: blur(10px); align-items: center; justify-content: center; gap: 20px; width: max-content;">
 
             <div style="display: flex; align-items: center; gap: 10px;">
                 <span style="display: inline-block; width: 8px; height: 8px; background: #ffc107; border-radius: 50%; box-shadow: 0 0 10px #ffc107; animation: pulse 2s infinite;"></span>
@@ -59,7 +77,7 @@ export function gameUITemplate() {
             <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 12px; color: #cbd5e1; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;">Drop In</span>
                 <div style="display: flex; align-items: baseline; gap: 2px;">
-                    <span id="spawnTimerText" style="font-family: 'Orbitron', monospace; font-weight: bold; font-size: 22px; color: #ff4444; text-shadow: 0 0 10px rgba(255, 68, 68, 0.6); line-height: 1;">5</span>
+                    <span id="spawnTimerText" style="font-family: 'Orbitron', monospace; font-weight: bold; font-size: 22px; color: #ff4444; text-shadow: 0 0 10px rgba(255, 68, 68, 0.6); line-height: 1;">–</span>
                     <span style="font-size: 13px; color: #ff4444; font-weight: 700; opacity: 0.8;">s</span>
                 </div>
             </div>
@@ -143,58 +161,8 @@ export function gameUITemplate() {
                     <span class="hud-stat-label" title="Gold per second — scales with territory owned">Income</span>
                     <span class="hud-stat-value text-success" id="lblMyGoldRate">+0/s</span>
                 </div>
-                <div class="hud-stat-box">
-                    <span class="hud-stat-label" title="Defense Towers you have placed">Towers</span>
-                    <span class="hud-stat-value text-muted" id="lblMyTowers">0</span>
-                </div>
-                <div class="hud-stat-box">
-                    <span class="hud-stat-label" title="Missile Silos you have placed">Silos</span>
-                    <span class="hud-stat-value text-muted" id="lblMySilos">0</span>
-                </div>
             </div>
-            <div class="hud-controls hud-build-controls">
-                <div class="build-option" id="btnBuildTower" data-mode="defense_building">
-                    <span class="build-key">3</span>
-                    <div class="build-info">
-                        <span class="build-name">Defense Tower</span>
-                        <span class="build-cost text-gold">2,000g</span>
-                    </div>
-                </div>
-                <div class="build-option" id="btnBuildSilo" data-mode="silo">
-                    <span class="build-key">4</span>
-                    <div class="build-info">
-                        <span class="build-name">Missile Silo</span>
-                        <span class="build-cost text-gold">10,000g</span>
-                    </div>
-                </div>
-                <div class="build-option" id="btnFireMissile" data-mode="missile">
-                    <span class="build-key">2</span>
-                    <div class="build-info">
-                        <span class="build-name">Fire Missile</span>
-                        <span class="build-cost text-gold">2,000g</span>
-                    </div>
-                </div>
-                <div class="build-option" id="btnBuildMine" data-mode="mine">
-                    <span class="build-key">5</span>
-                    <div class="build-info">
-                        <span class="build-name">Gold Mine</span>
-                        <span class="build-cost text-gold">3,000g</span>
-                    </div>
-                </div>
-                <div class="build-option" id="btnBuildAntiAir" data-mode="antiair">
-                    <span class="build-key">6</span>
-                    <div class="build-info">
-                        <span class="build-name">Anti-Air Battery</span>
-                        <span class="build-cost text-gold">5,000g</span>
-                    </div>
-                </div>
-                <div class="build-option" id="btnBuildCity" data-mode="city">
-                    <span class="build-key">7</span>
-                    <div class="build-info">
-                        <span class="build-name">City</span>
-                        <span class="build-cost text-gold">2,000g</span>
-                    </div>
-                </div>
+            <div class="hud-controls hud-build-controls">${buildBarHtml()}
             </div>
         </div>
     </div>

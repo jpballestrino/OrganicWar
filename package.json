@@ -15,7 +15,8 @@
     "build": "npm run build:wasm && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:browser": "node scripts/smoke-browser.mjs"
   },
   "dependencies": {
     "bad-words": "^3.0.4",

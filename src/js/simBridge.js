@@ -1,6 +1,6 @@
 // Bridge between the network layer and the client-side WASM render cache.
 // main.js registers the simulation handles here once WASM is loaded;
-// network.js calls applyOwnerSnapshot() on sim-snapshot events.
+// network.js feeds it the sim-delta / sim-full / sim-stats messages.
 
 import { TOTAL_CELLS, CELL_OWNER_MASK, COLS, ROWS } from './constants.js';
 import { generateTerrain } from './mapGen.js';
@@ -39,63 +39,111 @@ export function getCellOwner(cellId) {
   return cellView[cellId] & CELL_OWNER_MASK;
 }
 
-// Snapshot format (matches server/game/simulationWorker.js):
-//   byte 0      : 0 = sparse delta, 1 = full packed-cell buffer,
-//                 2 = packed-u32 delta
-//   if delta(0) : N pairs of (u32 cell_id, u32 owner_id), little-endian
-//   if delta(2) : N × u32, each = cell_id (21 bits) | owner << 21 (7 bits)
-//   if full     : TOTAL_CELLS * 2 bytes of u16 packed cells
-// Cells are packed (owner/terrain/defense/building) into one u16, so we only
-// merge the OWNER bits and leave the locally-generated terrain bits intact —
-// the server never generates terrain, so its terrain bits are zero.
-export function applyOwnerSnapshot(ownerDelta) {
+// ── Wire format (encoded by the sim + server/game/simulationWorker.js) ───────
+// sim-delta : ArrayBuffer of u32, each `cell_id (21 bits) | owner << 21`.
+// sim-full  : { owners: ArrayBuffer of u32 runs `length (24 bits) | owner << 24`
+//               covering every cell in row-major order, buildings: [...],
+//               stats: <sim-stats buffer> } — sent to a (re)joining client.
+// sim-stats : see decodeStats below.
+// Only OWNER bits are merged into the local cell_data; terrain, defense tier
+// and building bits are set locally (mapGen + building events).
+
+const toU32 = (buf) => (buf instanceof ArrayBuffer
+  ? new Uint32Array(buf)
+  // A typed-array / Buffer view: copy so the u32 view is aligned.
+  : new Uint32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)));
+
+export function applyOwnerDelta(buf) {
+  if (!wasmMemory || cellDataPtr === null || !buf) return;
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const delta = toU32(buf);
+  for (let i = 0; i < delta.length; i++) {
+    const v = delta[i];
+    const id = v & 0x1FFFFF;
+    if (id < TOTAL_CELLS) {
+      cells[id] = (cells[id] & ~CELL_OWNER_MASK) | ((v >>> 21) & CELL_OWNER_MASK);
+    }
+  }
+}
+
+// Rebuild every cell's owner from run-length runs (full-state sync).
+export function applyOwnerRuns(buf) {
+  if (!wasmMemory || cellDataPtr === null || !buf) return;
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const runs = toU32(buf);
+  let i = 0;
+  for (let r = 0; r < runs.length && i < TOTAL_CELLS; r++) {
+    const owner = (runs[r] >>> 24) & CELL_OWNER_MASK;
+    const end = Math.min(TOTAL_CELLS, i + (runs[r] & 0xFFFFFF));
+    for (; i < end; i++) cells[i] = (cells[i] & ~CELL_OWNER_MASK) | owner;
+  }
+}
+
+// How many cells of the local render cache faction `fid` owns (debug / tests).
+export function countOwnedCells(fid) {
+  if (!wasmMemory || cellDataPtr === null) return 0;
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  let n = 0;
+  for (let i = 0; i < TOTAL_CELLS; i++) if ((cells[i] & CELL_OWNER_MASK) === fid) n++;
+  return n;
+}
+
+// Clear every defense-tier and has-building bit (before a full-state rebuild).
+export function clearAllBuildingBits() {
   if (!wasmMemory || cellDataPtr === null) return;
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const keep = ~(DEFENSE_MASK | BUILDING_MASK_JS) & 0xFFFF;
+  for (let i = 0; i < TOTAL_CELLS; i++) cells[i] &= keep;
+}
 
-  // Node Buffers are Uint8Array subclasses, so the first branch covers them too.
-  let bytes;
-  if (ownerDelta instanceof Uint8Array) {
-    bytes = ownerDelta;
-  } else if (ownerDelta instanceof ArrayBuffer) {
-    bytes = new Uint8Array(ownerDelta);
-  } else {
-    bytes = new Uint8Array(ownerDelta.buffer, ownerDelta.byteOffset, ownerDelta.byteLength);
+// sim-stats: a 16-byte header then one 76-byte record per player (layout:
+// STATS_* consts in simulation-core/src/lib.rs — keep in sync). Returns
+// { tick, landCells, dominationShare, players } with players[1..n].
+export function decodeStats(buf) {
+  const bytes = buf instanceof ArrayBuffer ? buf : buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  const dv = new DataView(bytes);
+  const n = dv.getUint16(12, true);
+  const rec = dv.getUint16(14, true);
+  const players = [null];
+  for (let f = 1; f <= n; f++) {
+    const o = 16 + (f - 1) * rec;
+    const troops = dv.getFloat32(o, true);
+    const attacking = dv.getFloat32(o + 4, true);
+    const flags = dv.getUint32(o + 40, true);
+    players.push({
+      troops,                               // home reserve
+      attacking,                            // committed to fronts
+      total: troops + attacking,
+      maxPop: dv.getFloat32(o + 8, true),   // effective cap (incl. cities)
+      cells: dv.getUint32(o + 12, true),
+      gold: dv.getFloat32(o + 16, true),
+      income: dv.getFloat32(o + 20, true),  // gold / s
+      growth: dv.getFloat32(o + 24, true),  // troops / s
+      kills: dv.getFloat32(o + 28, true),
+      goldSpent: dv.getFloat32(o + 32, true),
+      row: dv.getUint16(o + 36, true),
+      col: dv.getUint16(o + 38, true),
+      alive: (flags & 1) !== 0,
+      bot: (flags & 2) !== 0,
+      // What this player pays right now (prices escalate per building owned).
+      prices: {
+        defense: dv.getFloat32(o + 44, true),
+        silo: dv.getFloat32(o + 48, true),
+        mine: dv.getFloat32(o + 52, true),
+        antiair: dv.getFloat32(o + 56, true),
+        city: dv.getFloat32(o + 60, true),
+        missile: dv.getFloat32(o + 64, true),
+      },
+      blitzActive: dv.getFloat32(o + 68, true),   // seconds left
+      blitzCooldown: dv.getFloat32(o + 72, true), // seconds until ready
+    });
   }
-
-  if (bytes.byteLength < 1) return;
-  const kind = bytes[0];
-  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
-
-  // The 1-byte header leaves the payload misaligned, and typed-array views
-  // require an aligned offset — copy the payload to a fresh aligned buffer.
-  const payloadBytes = bytes.slice(1);
-
-  if (kind === 1) {
-    // Full snapshot: payload is packed u16 cells. Take owner bits only.
-    const packed = new Uint16Array(payloadBytes.buffer, 0, payloadBytes.byteLength >> 1);
-    const n = Math.min(packed.length, TOTAL_CELLS);
-    for (let i = 0; i < n; i++) {
-      cellView[i] = (cellView[i] & ~CELL_OWNER_MASK) | (packed[i] & CELL_OWNER_MASK);
-    }
-  } else if (kind === 0) {
-    // Sparse delta: (u32 cell_id, u32 owner_id) pairs.
-    const payload = new Uint32Array(payloadBytes.buffer, 0, payloadBytes.byteLength >> 2);
-    for (let i = 0; i + 1 < payload.length; i += 2) {
-      const cellId = payload[i];
-      if (cellId < TOTAL_CELLS) {
-        cellView[cellId] = (cellView[cellId] & ~CELL_OWNER_MASK) | (payload[i + 1] & CELL_OWNER_MASK);
-      }
-    }
-  } else if (kind === 2) {
-    // Packed-u32 delta: each u32 = cell_id (21 bits) | owner << 21 (7 bits).
-    const payload = new Uint32Array(payloadBytes.buffer, 0, payloadBytes.byteLength >> 2);
-    for (let i = 0; i < payload.length; i++) {
-      const v = payload[i];
-      const cellId = v & 0x1FFFFF;
-      if (cellId < TOTAL_CELLS) {
-        cellView[cellId] = (cellView[cellId] & ~CELL_OWNER_MASK) | ((v >>> 21) & CELL_OWNER_MASK);
-      }
-    }
-  }
+  return {
+    tick: dv.getUint32(0, true),
+    landCells: dv.getUint32(4, true),
+    dominationShare: dv.getFloat32(8, true),
+    players,
+  };
 }
 
 // Remove a destroyed defense building from the client's local cell_data.

@@ -1,4 +1,5 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
+import { MAX_FACTIONS, QUICK_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns, SAFE_ZONE_RADIUS } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
@@ -38,7 +39,7 @@ function getFactionForSocket(room, socketId) {
 
 const createRoomSchema = z.object({
   name: z.string().min(1).max(50),
-  maxPlayers: z.coerce.number().int().min(2).max(20),
+  maxPlayers: z.coerce.number().int().min(2).max(MAX_FACTIONS),
   preset: z.enum(['north_america', 'europe', 'africa']).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
@@ -62,6 +63,7 @@ export function setupSocketHandlers(io) {
     const inputRateLimits = {
       expand:        { lastMs: 0, minIntervalMs: 33   },  // ~30/s max
       cancel:        { lastMs: 0, minIntervalMs: 50   },
+      blitz:         { lastMs: 0, minIntervalMs: 500  },
       cancel_front:  { lastMs: 0, minIntervalMs: 50   },
       build_defense: { lastMs: 0, minIntervalMs: 200 },
       build_silo:    { lastMs: 0, minIntervalMs: 200 },
@@ -167,7 +169,7 @@ export function setupSocketHandlers(io) {
         const effectiveNickname = cleanNickname(socket.displayName || nickname, 'Host');
         let room = createRoom(safeName, preset || 'north_america', parseInt(maxPlayers) || 5, false);
         if (!room) {
-          socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+          socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
           return;
         }
         room.hostSocketId = socket.id;
@@ -231,9 +233,10 @@ export function setupSocketHandlers(io) {
       try {
         let room = Object.values(activeRooms).find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout);
         if (!room) {
-          room = createRoom('Quick Game', randomMapId(), 20, true);
+          room = createRoom('Quick Game', randomMapId(), QUICK_PLAY_PLAYERS, true);
           if (!room) {
-            socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+            // The client hid the menu when it asked; this brings it back.
+            socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
             return;
           }
         }
@@ -471,9 +474,7 @@ export function setupSocketHandlers(io) {
         // Use server-stored faction; never trust a client-supplied factionId.
         const fid = socket.assignedFaction || getFactionForSocket(room, socket.id);
         if (!fid) { return; }
-        room.simReal.handleInput(fid, input, () => {
-          socket.emit('build-rejected', { type: input.type });
-        });
+        room.simReal.handleInput(fid, input);
       } catch (err) {
         log('error', `[ERROR] sim-input failed for socket ${socket.id}:`, err.message);
       }
@@ -754,7 +755,12 @@ export function setupSocketHandlers(io) {
               socket.join(room.id);
                         
               sendInitConfig(socket, room);
-              socket.emit('reconnect-success', { factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay });
+              socket.emit('reconnect-success', {
+                factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay,
+                inMatch: !!(room.matchStarted && room.simReal),
+              });
+              // Deltas only carry changes: bring this client fully up to date.
+              if (room.matchStarted && room.simReal) room.simReal.sendFullState(socket.id);
               io.to(room.id).emit('slots-update', room.activePlayerSlots);
               found = true;
               log('info', `[RECONNECT] Success for ${fid}`);

@@ -1,11 +1,20 @@
+// Shared client + server constants. Values that mirror simulation-core/src/lib.rs
+// say so; the sim is always authoritative. Economy numbers (income, growth,
+// population cap, live prices) are NOT mirrored: the HUD reads them from the
+// sim-stats message (see simBridge.decodeStats).
+
 export const COLS = 1920;
 export const ROWS = 1080;
-export const CELL_SIZE = 1;
-export const MAX_FACTIONS = 20;
-export const BORDER_BRIGHTNESS = 65;
-export const MAP_WIDTH = COLS * CELL_SIZE;
-export const MAP_HEIGHT = ROWS * CELL_SIZE;
+export const MAP_WIDTH = COLS;
+export const MAP_HEIGHT = ROWS;
 export const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
+// Faction capacity of one room — mirrors MAX_PLAYERS in simulation-core/src/lib.rs
+// (the worker refuses to start a room if the two disagree). Index 0 is neutral
+// land, so per-faction arrays have MAX_FACTIONS + 1 entries.
+export const MAX_FACTIONS = 64;
+// Players in a Quick Battle. Pacing, missions and milestones are calibrated
+// for 20 (see progression.js / matchFeel.js) — re-measure before changing.
+export const QUICK_PLAY_PLAYERS = 20;
 
 // Packed per-cell layout (one u16 per cell). Mirrors the bit layout in
 // simulation-core/src/lib.rs — keep both in lockstep.
@@ -15,171 +24,113 @@ export const CELL_OWNER_MASK = 0x007F;
 export const CELL_TERRAIN_SHIFT = 7;
 export const CELL_TERRAIN_MASK = 0x000F << CELL_TERRAIN_SHIFT; // 0x0780
 
-// Population growth model — MUST mirror simulation-core/src/lib.rs. Used only to
-// display the growth rate in the HUD (the server runs the authoritative sim).
-export const POP_CAP_PER_CELL = 2;
-// Gold income per owned cell per second — mirrors GOLD_PER_CELL_PER_SEC in
-// simulation-core/src/lib.rs. Used to show the income rate in the economy HUD.
-export const GOLD_PER_CELL_PER_SEC = 0.00333;
-// Gold cost of a defense building — mirrors DEFENSE_BUILDING_COST in
-// simulation-core/src/lib.rs. The server is authoritative; this is for the HUD
-// and a client-side pre-check so we don't send unaffordable build requests.
+// Base prices (the first building of each type; the sim adds 25% per one
+// already owned and sends the live price in sim-stats). Mirror the *_COST
+// consts in lib.rs; used before the first stats message arrives.
 export const DEFENSE_BUILDING_COST = 2000;
-// Defense building construction time (ms) — mirrors DEFENSE_BUILD_SECONDS (5s) in
-// simulation-core/src/lib.rs. Used as the client fill-bar duration; the server
-// sends the authoritative value in the building-placed event (this is a fallback).
-export const DEFENSE_BUILD_MS = 5000;
-// Missile silo + missiles — mirror SILO_* / MISSILE_* in simulation-core/src/lib.rs.
-// The server is authoritative; these drive HUD labels, client-side affordability
-// pre-checks, the dashed range/blast previews, and the build-time fill bar.
 export const SILO_BUILDING_COST = 10000;
-export const SILO_BUILD_MS = 10000;
-export const SILO_RANGE = 240;      // missile firing range from a completed silo (cells)
-
-// Gold Mine building
 export const MINE_BUILDING_COST = 3000;
-export const MINE_BUILD_MS = 10000;
-
-// Anti-Air Battery building
 export const ANTIAIR_BUILDING_COST = 5000;
-export const ANTIAIR_BUILD_MS = 10000;
-export const ANTIAIR_RADIUS = 400;
-export const ANTIAIR_MAX_CHARGES = 3;
-
-// City building — boosts max pop by CITY_POP_BONUS per completed city.
-// Mirrors BTYPE_CITY / CITY_BUILDING_COST / CITY_BUILD_SECONDS / CITY_POP_BONUS in lib.rs.
 export const CITY_BUILDING_COST = 2000;
-export const CITY_BUILD_MS = 5000;
-export const CITY_POP_BONUS = 0.05;
 export const MISSILE_COST = 2000;
+
+// Geometry for previews and range rings — mirror lib.rs.
+export const BUILDING_RADIUS = 40;     // defense tower fortification radius (cells)
+export const SILO_RANGE = 240;         // missile range from a silo (cells)
+export const ANTIAIR_RADIUS = 400;     // anti-air interception radius (cells)
 export const MISSILE_BLAST_RADIUS = 15;
-export const GROWTH_PEAK_RATIO = 0.40;   // growth peaks at this population fill
-export const PEAK_GROWTH_FRACTION = 0.05; // peak troops/sec as a fraction of cap
-export const MIN_GROWTH_PER_SEC = 5.0;    // recovery floor
+// Fallback progress-bar duration; building-placed carries the real buildMs.
+export const DEFENSE_BUILD_MS = 5000;
 
-// Max troops a single defended cell can cost (defender troops-per-cell density is
-// clamped to this in the sim). Also the top of the territory render-opacity ramp:
-// difficulty 0..DIFFICULTY_CAP maps to colour opacity 0..100%. Mirror lib.rs.
-export const DIFFICULTY_CAP = 50;
-// Floor so freshly-taken, low-density territory still reads as owned (not invisible).
-export const MIN_TERRITORY_OPACITY = 0.12;
+// Troop growth peaks at this population fill (lib.rs GROWTH_PEAK_RATIO); the
+// HUD colours the growth rate green below it and red above it.
+export const GROWTH_PEAK_RATIO = 0.40;
 
-// Troops/sec a player gains right now, given current troops and max population.
-// Same downward parabola the sim uses (peak at GROWTH_PEAK_RATIO, 0 at full pop).
-export function troopGrowthPerSec(troops, maxPop) {
-  if (maxPop <= 0 || troops >= maxPop) { return 0; }
-  const p = Math.min(Math.max(troops / maxPop, 0), 1);
-  const root2 = 2 * GROWTH_PEAK_RATIO - 1;                       // -0.2
-  const shapePeak = (1 - GROWTH_PEAK_RATIO) * (GROWTH_PEAK_RATIO - root2); // 0.36
-  const shape = Math.max((1 - p) * (p - root2) / shapePeak, 0);
-  return Math.max(maxPop * PEAK_GROWTH_FRACTION * shape, MIN_GROWTH_PER_SEC);
+// ── Building links (synergies) — mirror LINK_* in simulation-core/src/lib.rs ──
+// Two of your COMPLETED buildings within LINK_RADIUS cells of each other link
+// if their types pair up here. The sim applies the effect; the client draws the
+// link and explains it. `bit` matches the LINK_* bit sent in building-updated.
+export const LINK_RADIUS = 60;
+export const RADAR_RANGE_MULT = 1.25;
+export const BUILDING_LINKS = [
+  { bit: 1,  name: 'Walled City',    types: ['city', 'defense'],    effect: 'the city gives +10% population instead of +5%' },
+  { bit: 2,  name: 'Workforce',      types: ['mine', 'city'],       effect: 'the mine gives +15% gold instead of +10%' },
+  { bit: 4,  name: 'Radar Guidance', types: ['silo', 'antiair'],    effect: 'the silo fires 25% farther' },
+  { bit: 8,  name: 'Arms Industry',  types: ['silo', 'mine'],       effect: 'missiles from the silo cost 25% less' },
+  { bit: 16, name: 'Flak Battery',   types: ['antiair', 'defense'], effect: 'the battery regains an interceptor every 20s' },
+];
+const NAME_BY_TYPE = { defense: 'Defense Tower', silo: 'Missile Silo', mine: 'Gold Mine', antiair: 'Anti-Air', city: 'City' };
+
+// "Links: + City → Walled City (…)" lines for a building type's tooltip.
+export function linkHelp(type) {
+  return BUILDING_LINKS.filter(l => l.types.includes(type)).map((l) => {
+    const other = l.types[0] === type ? l.types[1] : l.types[0];
+    return `+ ${NAME_BY_TYPE[other]} nearby → ${l.name}: ${l.effect}.`;
+  }).join('\n');
 }
 
-export const factionRGB = {
-  1: [84, 153, 199],   // Soft Blue
-  2: [205, 97, 85],    // Soft Red
-  3: [240, 178, 122],  // Soft Orange
-  4: [175, 122, 197],  // Soft Purple
-  5: [72, 201, 176],   // Soft Teal
-  6: [244, 208, 63],   // Soft Yellow
-  7: [133, 146, 158],  // Soft Slate
-  8: [241, 148, 138],  // Soft Pink
-  9: [118, 215, 196],  // Soft Mint
-  10: [133, 193, 233], // Pale Blue
-  11: [236, 112, 99],  // Pale Red
-  12: [187, 143, 206], // Pale Purple
-  13: [245, 183, 177], // Blush
-  14: [229, 152, 102], // Peach
-  15: [163, 228, 215], // Aqua
-  16: [247, 220, 111], // Pale Mustard
-  17: [171, 235, 198], // Pale Green
-  18: [204, 209, 209], // Light Silver
-  19: [235, 152, 78],  // Light Amber
-  20: [169, 204, 227],  // Pale Indigo
-  21: [141, 110, 99],  // Brown
-  22: [255, 152, 0],   // Deep Orange
-  23: [205, 220, 57],  // Lime
-  24: [0, 188, 212],   // Cyan
-  25: [156, 39, 176],  // Deep Purple
-  26: [233, 30, 99],   // Pink
-  27: [96, 125, 139],  // Blue Grey
-  28: [255, 193, 7],   // Amber
-  29: [139, 195, 74],  // Light Green
-  30: [3, 169, 244],   // Light Blue
-};
+// ── Build bar ────────────────────────────────────────────────────────────────
+// Every purchasable action, in hotkey order. This table is the single source of
+// truth for the HUD build bar, the hotkeys, click placement, the affordability
+// state and the server's reject messages (see src/js/buildBar.js). `mode` is the
+// value held in state.activePurchaseMode; `type` is the building's wire `type`
+// (null for actions that are not buildings); `input` is the sim-input type sent
+// to the server; `preview` names the renderer method that draws the placement/
+// targeting overlay; `priceKey` picks the live price from sim-stats (prices
+// escalate per building owned — `cost` is only the base, shown before the first
+// stats arrive). `instant` actions fire on the key press, with no map click.
+export const BUILD_ACTIONS = [
+  { mode: 'blitz', key: '1', name: 'Blitz', type: null, input: 'blitz', cost: 0, instant: true,
+    desc: 'For 6 seconds your attacks advance twice as fast and pay 40% less to take enemy land. 45s cooldown.' },
+  { mode: 'missile', key: '2', name: 'Missile', type: null, input: 'fire_missile', cost: MISSILE_COST, priceKey: 'missile',
+    preview: 'drawMissileTargeting',
+    desc: 'Fire from a completed silo at an enemy cell in range. Razes troops and buildings in the blast.' },
+  { mode: 'defense_building', key: '3', name: 'Defense Tower', type: 'defense', input: 'build_defense', cost: DEFENSE_BUILDING_COST, priceKey: 'defense',
+    preview: 'drawBuildingPlacementPreview',
+    desc: 'Fortifies your land around it: attackers pay far more per cell. Destroyed if any of its cells falls.' },
+  { mode: 'silo', key: '4', name: 'Missile Silo', type: 'silo', input: 'build_silo', cost: SILO_BUILDING_COST, priceKey: 'silo',
+    preview: 'drawSiloPlacementPreview',
+    desc: 'Lets you fire missiles at targets within its range. Changes hands only if fully conquered.' },
+  { mode: 'mine', key: '5', name: 'Gold Mine', type: 'mine', input: 'build_mine', cost: MINE_BUILDING_COST, priceKey: 'mine',
+    preview: 'drawMinePlacementPreview',
+    desc: 'Raises your gold income by 10%.' },
+  { mode: 'antiair', key: '6', name: 'Anti-Air', type: 'antiair', input: 'build_antiair', cost: ANTIAIR_BUILDING_COST, priceKey: 'antiair',
+    preview: 'drawAntiAirPlacementPreview',
+    desc: 'Shoots down missiles aimed at your land. Holds 3 interceptors.' },
+  { mode: 'city', key: '7', name: 'City', type: 'city', input: 'build_city', cost: CITY_BUILDING_COST, priceKey: 'city',
+    preview: 'drawCityPlacementPreview',
+    desc: 'Raises your maximum population by 5%.' },
+];
 
-export const terrainRGB = {
-  0: [241, 245, 237],  // Plains (Light Pale Greenish-Tan)
-  1: [230, 223, 210],  // Highlands (Soft Tan)
-  2: [215, 215, 215],  // Mountains (Pale Grey)
-  3: [120, 190, 220],   // Water (Soft Light Blue)
-};
+// Whole numbers in the HUD are always shown with thousands separators.
+export function fmtInt(n) {
+  return Math.max(0, Math.floor(n || 0)).toLocaleString('en-US');
+}
 
-export const factionBaseColors = {
-  1: '84, 153, 199', 2: '205, 97, 85', 3: '240, 178, 122', 4: '175, 122, 197', 5: '72, 201, 176',
-  6: '244, 208, 63', 7: '133, 146, 158', 8: '241, 148, 138', 9: '118, 215, 196', 10: '133, 193, 233',
-  11: '236, 112, 99', 12: '187, 143, 206', 13: '245, 183, 177', 14: '229, 152, 102', 15: '163, 228, 215',
-  16: '247, 220, 111', 17: '171, 235, 198', 18: '204, 209, 209', 19: '235, 152, 78', 20: '169, 204, 227',
-  21: '141, 110, 99', 22: '255, 152, 0', 23: '205, 220, 57', 24: '0, 188, 212', 25: '156, 39, 176',
-  26: '233, 30, 99', 27: '96, 125, 139', 28: '255, 193, 7', 29: '139, 195, 74', 30: '3, 169, 244',
-};
+// Faction colours. The first 30 are hand-picked; the rest (rooms bigger than
+// 30) are spread around the hue wheel by the golden angle so neighbours in id
+// order never look alike. One list feeds every format the UI needs.
+const HAND_PICKED_RGB = [
+  [84, 153, 199], [205, 97, 85], [240, 178, 122], [175, 122, 197], [72, 201, 176],
+  [244, 208, 63], [133, 146, 158], [241, 148, 138], [118, 215, 196], [133, 193, 233],
+  [236, 112, 99], [187, 143, 206], [245, 183, 177], [229, 152, 102], [163, 228, 215],
+  [247, 220, 111], [171, 235, 198], [204, 209, 209], [235, 152, 78], [169, 204, 227],
+  [141, 110, 99], [255, 152, 0], [205, 220, 57], [0, 188, 212], [156, 39, 176],
+  [233, 30, 99], [96, 125, 139], [255, 193, 7], [139, 195, 74], [3, 169, 244],
+];
 
-export const factionHexColors = {
-  1: '#5499C7', 2: '#CD6155', 3: '#F0B27A', 4: '#AF7AC5', 5: '#48C9B0',
-  6: '#F4D03F', 7: '#85929E', 8: '#F1948A', 9: '#76D7C4', 10: '#85C1E9',
-  11: '#EC7063', 12: '#BB8FCE', 13: '#F5B7B1', 14: '#E59866', 15: '#A3E4D7',
-  16: '#F7DC6F', 17: '#ABEBC6', 18: '#CCD1D1', 19: '#EB984E', 20: '#A9CCE3',
-  21: '#8D6E63', 22: '#FF9800', 23: '#CDDC39', 24: '#00BCD4', 25: '#9C27B0',
-  26: '#E91E63', 27: '#607D8B', 28: '#FFC107', 29: '#8BC34A', 30: '#03A9F4',
-};
+function hslToRgb(h, sat, light) {
+  const k = (n) => (n + h / 30) % 12;
+  const a = sat * Math.min(light, 1 - light);
+  const f = (n) => light - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
 
-export const terrainColors = {
-  0: '#f1f5ed', // Plains
-  1: '#e6dfd2', // Highlands
-  2: '#d7d7d7', // Mountains
-  3: '#78bedc',  // Water
-};
-
-export const TERRAIN_WATER = 3;
-export const CAPTURE_COST_PLAINS = 0.15;
-export const CAPTURE_COST_HIGHLANDS = 0.45;
-export const CAPTURE_COST_MOUNTAINS = 1.00;
-export const MIN_ATTACK_FORCE = 12;
-export const INITIAL_TROOPS = 200;
-export const INITIAL_GOLD = 100;
-export const BASE_CAPACITY = 150;
-export const SHOP_COST_MULTIPLIER = 1.0;
-export const SHOP_COSTS = {
-  factory: 3000,
-  city: 4500,
-  defense: 2000,
-  missile: 6000,
-  silo: 3500,
-  port: 2500,
-  artillery: 4000,
-};
-export const INITIAL_MISSILE_COOLDOWN = -0.8;
-export const SILO_UPGRADE_COST_L2 = 20000;
-export const SILO_UPGRADE_COST_L3 = 50000;
-export const SILO_UPGRADE_RANGES = [100, 150, 200];
-export const SILO_BLAST_RADIUS = [18, 30, 46];
-export const EXPLOSION_VISUAL_MULTIPLIER = 3;
-export const VITAL_SPACE_RADIUS = 40;
-
-// Defense building influence radius (cells). Must match BUILDING_RADIUS in
-// simulation-core/src/lib.rs and the radius emitted in the building-placed event.
-export const BUILDING_RADIUS = 40;
-
-// Faction & Doctrine modifiers
-export const CAPACITY_GAIN_STANDARD = 0.125;
-export const CAPACITY_GAIN_EXPANSIONIST = 0.1875;
-export const CAPACITY_CITY_MULTIPLIER = 0.25;
-
-export const DOCTRINE_FACTORY_COST_INDUSTRIAL = 0.8;
-export const DOCTRINE_FACTORY_COST_MILITARIST = 1.2;
-
-// Expansion velocity limits
-export const MIN_EXPANSION_STEPS = 3;
-export const MAX_EXPANSION_STEPS = 500;
-export const MAX_NATURE_EXPANSION_STEPS = 300;
-export const MIN_NATURE_EXPANSION_STEPS = 10;
+export const factionRGB = {};
+export const factionHexColors = {};
+for (let fid = 1; fid <= MAX_FACTIONS; fid++) {
+  const rgb = HAND_PICKED_RGB[fid - 1]
+    || hslToRgb((fid * 137.508) % 360, 0.55 + (fid % 3) * 0.1, 0.58 + (fid % 2) * 0.08);
+  factionRGB[fid] = rgb;
+  factionHexColors[fid] = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
