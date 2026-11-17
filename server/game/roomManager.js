@@ -5,6 +5,8 @@ import { activeRooms, guildWarQueue, rankedQueue } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
 import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
+import { MAX_FACTIONS } from '../../src/js/constants.js';
+import { roomRefusal } from './capacity.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
 const BOT_ADJECTIVES = [
@@ -23,7 +25,7 @@ function randomBotName() {
 
 // --- Mock Simulation Engine ---
 class MockSimulation {
-  constructor(maxFactions = 20) {
+  constructor(maxFactions = MAX_FACTIONS) {
     this.ROWS = 100;
     this.COLS = 100;
     this.factions = Array.from({ length: maxFactions }, (_, i) => i + 1);
@@ -229,12 +231,12 @@ export function buildLobbyList() {
 }
 
 export function createRoom(name = 'Game', preset = 'north_america', maxPlayers = 20, isQuickPlay = false) {
-  const MAX_CONCURRENT_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
-  const currentRoomCount = Object.keys(activeRooms).length;
-  if (currentRoomCount >= MAX_CONCURRENT_ROOMS) {
-    log('warn', `[Room] Refused to create room: at cap (${currentRoomCount}/${MAX_CONCURRENT_ROOMS})`);
+  const refusal = roomRefusal();
+  if (refusal) {
+    log('warn', `[Room] Refused to create room: ${refusal}`);
     return null;
   }
+  maxPlayers = Math.max(2, Math.min(MAX_FACTIONS, maxPlayers | 0));
 
   const roomId = generateUniqueRoomId();
   const sim = new MockSimulation(maxPlayers);
@@ -271,11 +273,11 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
 }
 
 export function createRankedRoom(players) {
-  const MAX_CONCURRENT_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
-  if (Object.keys(activeRooms).length >= MAX_CONCURRENT_ROOMS) {
-    log('warn', `[Room] Refused ranked room: at cap (${Object.keys(activeRooms).length}/${MAX_CONCURRENT_ROOMS})`);
+  const refusal = roomRefusal();
+  if (refusal) {
+    log('warn', `[Room] Refused ranked room: ${refusal}`);
     for (const p of players) {
-      p.socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+      p.socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
     }
     return null;
   }
@@ -347,9 +349,9 @@ export function matchmakeRanked(force = false) {
 }
 
 export function createGuildWarRoom(guildA, guildB, teamSize) {
-  const MAX_CONCURRENT_ROOMS = parseInt(process.env.MAX_CONCURRENT_ROOMS) || 10;
-  if (Object.keys(activeRooms).length >= MAX_CONCURRENT_ROOMS) {
-    log('warn', `[Room] Refused guild war room: at cap (${Object.keys(activeRooms).length}/${MAX_CONCURRENT_ROOMS})`);
+  const refusal = roomRefusal();
+  if (refusal) {
+    log('warn', `[Room] Refused guild war room: ${refusal}`);
     io.to(`guild:${guildA.id}`).emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
     io.to(`guild:${guildB.id}`).emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
     return null;

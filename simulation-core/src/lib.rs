@@ -5,8 +5,11 @@ pub const MAP_WIDTH: usize = 1920;
 pub const MAP_HEIGHT: usize = 1080;
 pub const TOTAL_CELLS: usize = MAP_WIDTH * MAP_HEIGHT;
 
-pub const MAX_PLAYERS: usize = 20;
-// Index 0 represents "Neutral / Unowned", Indices 1-20 represent active players.
+// Faction capacity of one room. The owner field is 7 bits (max 127). Mirrored
+// as MAX_FACTIONS in src/js/constants.js; the server reads it at runtime via
+// max_players() and refuses to start a room if the two disagree.
+pub const MAX_PLAYERS: usize = 64;
+// Index 0 represents "Neutral / Unowned", indices 1..=MAX_PLAYERS are players.
 pub const PLAYER_ARRAY_SIZE: usize = MAX_PLAYERS + 1;
 
 // --- Packed cell layout (one u16 per cell) ---
@@ -319,6 +322,8 @@ pub struct SimulationState {
     // anti-snowball consts). Set once in init_players from land_cells/num_players;
     // 0 = no throttle (e.g. before init or on the client render cache).
     growth_soft_cap: u32,
+    // Factions in this match (set by init_players); stats are exported for 1..=this.
+    num_players: usize,
     // xorshift RNG state — used to randomize the order cells are conquered so
     // expansion grows radially in all directions rather than toward the target.
     rng_state: u32,
@@ -375,6 +380,7 @@ impl SimulationState {
             current_tick: 0,
             tick_hz: 60,
             growth_soft_cap: 0,
+            num_players: 0,
             rng_state: 0x9E3779B9,
         };
 
@@ -542,6 +548,7 @@ impl SimulationState {
         }
 
         let actual_players = if num_players as usize > MAX_PLAYERS { MAX_PLAYERS } else { num_players as usize };
+        self.num_players = actual_players;
 
         // Anti-snowball: set the production soft cap at GROWTH_FAIR_SHARE_MULT ×
         // each player's fair share of the land. Terrain is generated (by the
@@ -1384,10 +1391,11 @@ impl SimulationState {
         buf.extend_from_slice(&self.current_tick.to_le_bytes());
         buf.extend_from_slice(&land_cells.to_le_bytes());
         buf.extend_from_slice(&domination_share.to_le_bytes());
-        buf.extend_from_slice(&(MAX_PLAYERS as u16).to_le_bytes());
+        let n = self.num_players.max(1);
+        buf.extend_from_slice(&(n as u16).to_le_bytes());
         buf.extend_from_slice(&(STATS_RECORD_BYTES as u16).to_le_bytes());
         debug_assert_eq!(buf.len(), STATS_HEADER_BYTES);
-        for f in 1..PLAYER_ARRAY_SIZE {
+        for f in 1..=n {
             let cells = self.player_owned_cells[f];
             let (crow, ccol) = if cells > 0 {
                 ((self.player_row_sum[f] / cells as f32).round() as u16,
@@ -1411,7 +1419,7 @@ impl SimulationState {
             buf.extend_from_slice(&ccol.to_le_bytes());
             buf.extend_from_slice(&flags.to_le_bytes());
         }
-        debug_assert_eq!(buf.len(), STATS_HEADER_BYTES + MAX_PLAYERS * STATS_RECORD_BYTES);
+        debug_assert_eq!(buf.len(), STATS_HEADER_BYTES + n * STATS_RECORD_BYTES);
         buf.len() as u32
     }
 
@@ -2285,7 +2293,7 @@ mod tests {
 
         // Stats: header + one record per player, values straight from the sim.
         let len = s.write_stats(1234, 0.65) as usize;
-        assert_eq!(len, STATS_HEADER_BYTES + MAX_PLAYERS * STATS_RECORD_BYTES);
+        assert_eq!(len, STATS_HEADER_BYTES + 3 * STATS_RECORD_BYTES, "one record per match player");
         let b = &s.stats_buf;
         let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
         let f32_at = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);

@@ -53,8 +53,8 @@ exactly after a pure-performance change (the sim is deterministic):
 - [x] 2.2 Sim memory: drop dead per-cell buffers (`troops` 8 MB, `last_modified_tick` 8 MB), shrink `difficulty_to_invade` to u8, size `delta_scratch` on demand (16 MB). ~44 MB → ~8 MB per room (and per browser tab).
 - [x] 2.3 Wire: one binary frame per snapshot (today 7 attachments = 8 WS frames, 20×/s); per-player stats at 5 Hz; skip empty snapshots; authoritative income / growth / effective cap in the stats so the client stops mirroring the economy.
 - [x] 2.4 Full-state sync for reconnect / page reload / late join (today the map is blank, buildings missing, HUD hidden).
-- [ ] 2.5 Capacity: room cap derived from CPU cores, load in `/healthz`, websocket compression tuned, "server full" handled.
-- [ ] 2.6 Player cap: single source of truth for max players (no scattered `20`/`21`), raise engine cap; measure pacing before changing the Quick Battle default.
+- [x] 2.5 Capacity: room cap derived from CPU cores, load in `/healthz`, websocket compression tuned, "server full" handled.
+- [x] 2.6 Player cap: single source of truth for max players (no scattered `20`/`21`), raise engine cap; measure pacing before changing the Quick Battle default.
 - [x] 2.7 `scripts/bench-room.mjs` (spawn the real worker with bots; tick ms, KB/s, RSS).
 
 ### Phase 3 — Economy & troops
@@ -122,6 +122,13 @@ for towers (radius) and silos (range).
 - This container renders headless Chromium at ~2 FPS (software compositor);
   `smoke-browser.mjs` tolerates slow screenshots.
 
+- Capacity: `server/game/capacity.js` — rooms = min(8/core, 60% RAM / 64 MB),
+  refused while the sims use > 75% of the cores. 4-core box → 32 rooms.
+- Player cap 20 → 64 (engine); Quick Battle stays 20. 64-player room: 2.9 ms/tick
+  (7% of a core), 10 MB heap, 87 KB/s deltas + 14 KB/s stats per client.
+  **Open:** 64-player pacing — after 10 min, 30 alive and no domination. See
+  the 64-player domination measurement under Status log.
+
 ## Proposals not implemented (for the owner to decide)
 
 _(written in Phase 3.5)_
@@ -135,3 +142,5 @@ _(written in Phase 3.5)_
   on :3000). Lint is clean. Next: Phase 2.1.
 - Phase 2.1–2.4 + 2.7 done (sim block index, exports, worker/runner/client
   rewire, full-state sync, bench script). Next: 2.5 capacity, 2.6 player cap.
+- Phase 2.5 + 2.6 done. Next: decide the domination schedule for big rooms
+  (measurement running: `PLAYERS=64 SECONDS=1200 node scripts/bench-room.mjs`), then Phase 3.

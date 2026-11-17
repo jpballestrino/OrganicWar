@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { parentPort, workerData } from 'worker_threads';
 import { generateTerrain } from '../../src/js/mapGen.js';
+import { MAX_FACTIONS } from '../../src/js/constants.js';
 // We cannot use the global logger cleanly since it writes to files and we are in a thread.
 // We can either post logs to the parent or just use console.log. Let's post them.
 function logInfo(msg) {
@@ -110,6 +111,11 @@ class RoomSimWorker {
     // Player capacity comes from the sim itself (MAX_PLAYERS in lib.rs).
     this.maxPlayers = this.exports.simulationstate_max_players();
     this.arraySize = this.maxPlayers + 1; // index 0 = neutral
+    if (this.maxPlayers !== MAX_FACTIONS) {
+      // The client sizes its colour tables and shader arrays from MAX_FACTIONS;
+      // a mismatch would mis-draw (or reject) factions above the smaller cap.
+      throw new Error(`sim MAX_PLAYERS (${this.maxPlayers}) != MAX_FACTIONS (${MAX_FACTIONS}) in src/js/constants.js — rebuild the WASM`);
+    }
 
     const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
     generateTerrain(this.exports.memory, cellPtr, this.mapId);
@@ -185,7 +191,8 @@ class RoomSimWorker {
       const seconds = Math.max(0.001, (now - l.since) / 1000);
       parentPort.postMessage({
         type: 'load-report',
-        rssMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+        // This room's own WASM heap (process RSS is shared by every room).
+        wasmMB: Math.round(this.exports.memory.buffer.byteLength / 1024 / 1024),
         avgTickMs: l.ticks ? l.tickMs / l.ticks : 0,
         maxTickMs: l.maxTickMs,
         // Share of the tick interval spent simulating (1.0 = saturated).

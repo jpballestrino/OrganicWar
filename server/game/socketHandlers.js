@@ -1,4 +1,5 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
+import { MAX_FACTIONS, QUICK_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns, SAFE_ZONE_RADIUS } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
@@ -38,7 +39,7 @@ function getFactionForSocket(room, socketId) {
 
 const createRoomSchema = z.object({
   name: z.string().min(1).max(50),
-  maxPlayers: z.coerce.number().int().min(2).max(20),
+  maxPlayers: z.coerce.number().int().min(2).max(MAX_FACTIONS),
   preset: z.enum(['north_america', 'europe', 'africa']).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
@@ -167,7 +168,7 @@ export function setupSocketHandlers(io) {
         const effectiveNickname = cleanNickname(socket.displayName || nickname, 'Host');
         let room = createRoom(safeName, preset || 'north_america', parseInt(maxPlayers) || 5, false);
         if (!room) {
-          socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+          socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
           return;
         }
         room.hostSocketId = socket.id;
@@ -231,9 +232,10 @@ export function setupSocketHandlers(io) {
       try {
         let room = Object.values(activeRooms).find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout);
         if (!room) {
-          room = createRoom('Quick Game', randomMapId(), 20, true);
+          room = createRoom('Quick Game', randomMapId(), QUICK_PLAY_PLAYERS, true);
           if (!room) {
-            socket.emit('notification', { message: 'Server is full. Please try again later.', type: 'error' });
+            // The client hid the menu when it asked; this brings it back.
+            socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
             return;
           }
         }

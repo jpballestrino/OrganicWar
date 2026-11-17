@@ -1,7 +1,13 @@
 export const COLS = 1920;
 export const ROWS = 1080;
 export const CELL_SIZE = 1;
-export const MAX_FACTIONS = 20;
+// Faction capacity of one room — mirrors MAX_PLAYERS in simulation-core/src/lib.rs
+// (the server checks the two agree at room start). Index 0 is neutral land, so
+// per-faction arrays have MAX_FACTIONS + 1 entries.
+export const MAX_FACTIONS = 64;
+// Players in a Quick Battle. Pacing, missions and milestones are calibrated
+// for 20 (see progression.js / matchFeel.js) — re-measure before changing.
+export const QUICK_PLAY_PLAYERS = 20;
 export const BORDER_BRIGHTNESS = 65;
 export const MAP_WIDTH = COLS * CELL_SIZE;
 export const MAP_HEIGHT = ROWS * CELL_SIZE;
@@ -109,62 +115,41 @@ export function troopGrowthPerSec(troops, maxPop) {
   return Math.max(maxPop * PEAK_GROWTH_FRACTION * shape, MIN_GROWTH_PER_SEC);
 }
 
-export const factionRGB = {
-  1: [84, 153, 199],   // Soft Blue
-  2: [205, 97, 85],    // Soft Red
-  3: [240, 178, 122],  // Soft Orange
-  4: [175, 122, 197],  // Soft Purple
-  5: [72, 201, 176],   // Soft Teal
-  6: [244, 208, 63],   // Soft Yellow
-  7: [133, 146, 158],  // Soft Slate
-  8: [241, 148, 138],  // Soft Pink
-  9: [118, 215, 196],  // Soft Mint
-  10: [133, 193, 233], // Pale Blue
-  11: [236, 112, 99],  // Pale Red
-  12: [187, 143, 206], // Pale Purple
-  13: [245, 183, 177], // Blush
-  14: [229, 152, 102], // Peach
-  15: [163, 228, 215], // Aqua
-  16: [247, 220, 111], // Pale Mustard
-  17: [171, 235, 198], // Pale Green
-  18: [204, 209, 209], // Light Silver
-  19: [235, 152, 78],  // Light Amber
-  20: [169, 204, 227],  // Pale Indigo
-  21: [141, 110, 99],  // Brown
-  22: [255, 152, 0],   // Deep Orange
-  23: [205, 220, 57],  // Lime
-  24: [0, 188, 212],   // Cyan
-  25: [156, 39, 176],  // Deep Purple
-  26: [233, 30, 99],   // Pink
-  27: [96, 125, 139],  // Blue Grey
-  28: [255, 193, 7],   // Amber
-  29: [139, 195, 74],  // Light Green
-  30: [3, 169, 244],   // Light Blue
-};
+// Faction colours. The first 30 are hand-picked; the rest (rooms bigger than
+// 30) are spread around the hue wheel by the golden angle so neighbours in id
+// order never look alike. One list feeds every format the UI needs.
+const HAND_PICKED_RGB = [
+  [84, 153, 199], [205, 97, 85], [240, 178, 122], [175, 122, 197], [72, 201, 176],
+  [244, 208, 63], [133, 146, 158], [241, 148, 138], [118, 215, 196], [133, 193, 233],
+  [236, 112, 99], [187, 143, 206], [245, 183, 177], [229, 152, 102], [163, 228, 215],
+  [247, 220, 111], [171, 235, 198], [204, 209, 209], [235, 152, 78], [169, 204, 227],
+  [141, 110, 99], [255, 152, 0], [205, 220, 57], [0, 188, 212], [156, 39, 176],
+  [233, 30, 99], [96, 125, 139], [255, 193, 7], [139, 195, 74], [3, 169, 244],
+];
+
+function hslToRgb(h, sat, light) {
+  const k = (n) => (n + h / 30) % 12;
+  const a = sat * Math.min(light, 1 - light);
+  const f = (n) => light - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+
+export const factionRGB = {};
+export const factionBaseColors = {};
+export const factionHexColors = {};
+for (let fid = 1; fid <= MAX_FACTIONS; fid++) {
+  const rgb = HAND_PICKED_RGB[fid - 1]
+    || hslToRgb((fid * 137.508) % 360, 0.55 + (fid % 3) * 0.1, 0.58 + (fid % 2) * 0.08);
+  factionRGB[fid] = rgb;
+  factionBaseColors[fid] = rgb.join(', ');
+  factionHexColors[fid] = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
 
 export const terrainRGB = {
   0: [241, 245, 237],  // Plains (Light Pale Greenish-Tan)
   1: [230, 223, 210],  // Highlands (Soft Tan)
   2: [215, 215, 215],  // Mountains (Pale Grey)
   3: [120, 190, 220],   // Water (Soft Light Blue)
-};
-
-export const factionBaseColors = {
-  1: '84, 153, 199', 2: '205, 97, 85', 3: '240, 178, 122', 4: '175, 122, 197', 5: '72, 201, 176',
-  6: '244, 208, 63', 7: '133, 146, 158', 8: '241, 148, 138', 9: '118, 215, 196', 10: '133, 193, 233',
-  11: '236, 112, 99', 12: '187, 143, 206', 13: '245, 183, 177', 14: '229, 152, 102', 15: '163, 228, 215',
-  16: '247, 220, 111', 17: '171, 235, 198', 18: '204, 209, 209', 19: '235, 152, 78', 20: '169, 204, 227',
-  21: '141, 110, 99', 22: '255, 152, 0', 23: '205, 220, 57', 24: '0, 188, 212', 25: '156, 39, 176',
-  26: '233, 30, 99', 27: '96, 125, 139', 28: '255, 193, 7', 29: '139, 195, 74', 30: '3, 169, 244',
-};
-
-export const factionHexColors = {
-  1: '#5499C7', 2: '#CD6155', 3: '#F0B27A', 4: '#AF7AC5', 5: '#48C9B0',
-  6: '#F4D03F', 7: '#85929E', 8: '#F1948A', 9: '#76D7C4', 10: '#85C1E9',
-  11: '#EC7063', 12: '#BB8FCE', 13: '#F5B7B1', 14: '#E59866', 15: '#A3E4D7',
-  16: '#F7DC6F', 17: '#ABEBC6', 18: '#CCD1D1', 19: '#EB984E', 20: '#A9CCE3',
-  21: '#8D6E63', 22: '#FF9800', 23: '#CDDC39', 24: '#00BCD4', 25: '#9C27B0',
-  26: '#E91E63', 27: '#607D8B', 28: '#FFC107', 29: '#8BC34A', 30: '#03A9F4',
 };
 
 export const terrainColors = {

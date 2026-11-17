@@ -229,6 +229,18 @@ export function initNetwork() {
     updateDevDashboard();
   });
 
+  // The server could not place us in a match (no capacity). The menu was
+  // hidden when we asked, so bring it back instead of leaving a blank screen.
+  socket.on('matchmaking-failed', ({ message } = {}) => {
+    state.gameState = 'SETUP';
+    const home = document.getElementById('homeScreen');
+    if (home) { home.style.display = 'flex'; home.style.opacity = '1'; }
+    // Leaving the ranked queue view also stops its timer.
+    const queue = document.getElementById('homeStateRankedQueue');
+    if (queue && queue.style.display !== 'none') document.getElementById('btn-leave-ranked')?.click();
+    showToast(message || 'Could not start a match. Please try again.', 'error');
+  });
+
   socket.on('reconnect-failed', () => {
     sessionStorage.removeItem('reconnectToken');
     state.gameState = 'SETUP';
@@ -628,7 +640,10 @@ function applyStats({ landCells, dominationShare, players }) {
   // Labels at each territory centroid, and the shader's per-faction opacity
   // (troops per cell, normalised so 25/cell is fully opaque).
   const centroids = {};
-  const opacity = state.factionOpacity || (state.factionOpacity = new Float32Array(players.length));
+  if (!state.factionOpacity || state.factionOpacity.length < players.length) {
+    state.factionOpacity = new Float32Array(players.length);
+  }
+  const opacity = state.factionOpacity;
   for (let f = 1; f < players.length; f++) {
     const p = players[f];
     opacity[f] = p.cells > 0 ? Math.min(p.troops / p.cells / 25, 1) : 0;
@@ -694,6 +709,8 @@ function applyStats({ landCells, dominationShare, players }) {
   });
 }
 
+const LEADERBOARD_ROWS = 10;
+
 // Score = gold spent + kills + troops (incl. on attack) + land.
 function updateLeaderboard(players) {
   const data = state.leaderboardData || (state.leaderboardData = []);
@@ -713,17 +730,22 @@ function updateLeaderboard(players) {
   const list = document.getElementById('leaderboardList');
   if (!list) return;
   const myFid = parseInt(state.playerFaction);
-  list.innerHTML = data.map((lb, index) => {
+  // Top LEADERBOARD_ROWS, plus your own row (with its real rank) if you are
+  // further down — a 20+ player list does not fit next to the map.
+  const shown = data.map((lb, index) => ({ lb, index }))
+    .filter(({ lb, index }) => index < LEADERBOARD_ROWS || lb.fid === myFid);
+  list.innerHTML = shown.map(({ lb, index }) => {
     const color = factionHexColors[lb.fid] || '#fff';
     const isMe = lb.fid === myFid;
     const slot = state.activePlayerSlots ? state.activePlayerSlots[lb.fid] : null;
     const name = isMe ? 'You' : escapeHtml(slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
     const score = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : fmtInt(lb.score);
     const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
-    return `
+    const gap = index >= LEADERBOARD_ROWS ? '<div class="leaderboard-gap">⋯</div>' : '';
+    return `${gap}
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${isMe ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
         <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
-          <span style="font-size: 10px; color: #888; width: 12px; text-align: right;">${index + 1}.</span>
+          <span style="font-size: 10px; color: #888; min-width: 14px; text-align: right;">${index + 1}.</span>
           <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; border: 1px solid #000;"></div>
           <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>
         </div>

@@ -99,7 +99,7 @@ export class RoomSim {
       case 'load-report':
         // Polled by /healthz and the room-capacity check (see capacity.js).
         this.load = {
-          rssMB: msg.rssMB,
+          wasmMB: msg.wasmMB,
           avgTickMs: msg.avgTickMs,
           maxTickMs: msg.maxTickMs,
           tickBudgetUsed: msg.tickBudgetUsed,

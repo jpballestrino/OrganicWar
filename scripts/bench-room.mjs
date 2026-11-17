@@ -124,6 +124,23 @@ worker.on('message', (msg) => {
 worker.on('error', (e) => { fail(`worker error: ${e.message}`); });
 worker.on('exit', () => { if (!process.exitCode) process.exitCode = 0; });
 
+const raceLog = setInterval(() => {
+  if (!lastStats) return;
+  const dv = new DataView(lastStats);
+  const land = dv.getUint32(4, true);
+  const n = dv.getUint16(12, true);
+  const rec = dv.getUint16(14, true);
+  let top = 0;
+  let alive = 0;
+  for (let f = 1; f <= n; f++) {
+    const c = dv.getUint32(16 + (f - 1) * rec + 12, true);
+    if (c > top) top = c;
+    if (c > 0) alive++;
+  }
+  console.log(`${elapsed()}  land leader ${(100 * top / land).toFixed(1)}%, ${alive} alive, target ${(dv.getFloat32(8, true) * 100).toFixed(0)}%`);
+}, 60000);
+raceLog.unref();
+
 const limit = setTimeout(() => {
   console.log(`${elapsed()}  time limit reached without a winner`);
   report((Date.now() - started) / 1000);
@@ -136,11 +153,22 @@ function report(secs) {
   console.log('\n── room load (from the worker\'s own load reports) ──');
   console.log(`tick cost      avg ${avg('avgTickMs').toFixed(2)} ms, worst ${max('maxTickMs').toFixed(1)} ms`);
   console.log(`tick budget    avg ${(avg('tickBudgetUsed') * 100).toFixed(1)}%, peak ${(max('tickBudgetUsed') * 100).toFixed(1)}% of one core`);
-  console.log(`worker RSS     ${max('rssMB')} MB`);
+  console.log(`room memory    ${max('wasmMB')} MB of WASM heap (plus one V8 isolate)`);
   console.log('── wire, per connected client ──');
   const kb = (b) => (b / 1024 / secs).toFixed(1);
   console.log(`sim-delta ${kb(bytes['sim-delta'])} KB/s (${counts['sim-delta'] || 0} msgs), ` +
     `sim-stats ${kb(bytes['sim-stats'])} KB/s (${counts['sim-stats'] || 0} msgs), other events ${kb(bytes.other)} KB/s`);
-  if (!lastStats) fail('no sim-stats received');
+  if (!lastStats) { fail('no sim-stats received'); return; }
+  // Land race at the end, from the last stats record (layout: STATS_* in lib.rs).
+  const dv = new DataView(lastStats);
+  const land = dv.getUint32(4, true);
+  const n = dv.getUint16(12, true);
+  const rec = dv.getUint16(14, true);
+  const cells = [];
+  for (let f = 1; f <= n; f++) cells.push(dv.getUint32(16 + (f - 1) * rec + 12, true));
+  cells.sort((a, b) => b - a);
+  const pct = (c) => (100 * c / land).toFixed(1) + '%';
+  console.log(`land race      leader ${pct(cells[0])}, 2nd ${pct(cells[1] || 0)}, 3rd ${pct(cells[2] || 0)}; ` +
+    `${cells.filter(c => c > 0).length} alive; domination target ${(dv.getFloat32(8, true) * 100).toFixed(0)}%`);
   if (!fullCheckDone) console.log('(full-state check did not run: too few eliminations)');
 }

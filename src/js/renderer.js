@@ -1,5 +1,8 @@
 import { state } from './state.js';
-import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS } from './constants.js';
+import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS } from './constants.js';
+
+// Per-faction shader arrays: index 0 = neutral, 1..MAX_FACTIONS = players.
+const FACTION_SLOTS = MAX_FACTIONS + 1;
 
 const MAP_WIDTH = 1920;
 const MAP_HEIGHT = 1080;
@@ -54,9 +57,9 @@ export class WebGLRenderer {
         this.cellTexture = null;
 
         // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1),
-        // indexed by owner id 0..20. Multiplied by per-cell enclosure in the shader
-        // to produce per-cell opacity variation. Updated each sim snapshot.
-        this.playerOpacity = new Float32Array(21).fill(1.0);
+        // indexed by owner id 0..MAX_FACTIONS. Combined with terrain cost in the
+        // shader to produce per-cell opacity. Updated on every sim-stats message.
+        this.playerOpacity = new Float32Array(FACTION_SLOTS).fill(1.0);
 
         this.initShaders();
         this.initBuffers();
@@ -116,7 +119,7 @@ export class WebGLRenderer {
             // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1).
             // Combined per-pixel with the cell's terrain cost to produce per-cell opacity:
             // mountains in a dense empire render fully solid; plains in a weak one stay faint.
-            uniform float u_player_opacity[21];
+            uniform float u_player_opacity[${FACTION_SLOTS}];
 
             // The local player's faction id (0 when spectating/pre-game). Their own
             // frontier is drawn as a bright highlight; all other borders are dark.
@@ -125,7 +128,7 @@ export class WebGLRenderer {
             // Per-faction territory color (index 0 = neutral, unused). Uploaded once
             // from factionRGB in constants.js — the SAME source the building icons
             // and HUD use — so a faction's territory matches its icon/label color.
-            uniform vec3 u_palette[21];
+            uniform vec3 u_palette[${FACTION_SLOTS}];
 
             // Terrain base color for a packed terrain value (bits 7-10).
             vec3 terrainColor(uint terrainVal) {
@@ -147,7 +150,7 @@ export class WebGLRenderer {
                 uint ownerVal = packed & 127u;
                 uint terrainVal = (packed >> 7u) & 15u;
                 vec3 baseColor = terrainColor(terrainVal);
-                if (ownerVal > 0u && ownerVal <= 20u) {
+                if (ownerVal > 0u && ownerVal <= ${MAX_FACTIONS}u) {
                     vec3 pColor = u_palette[ownerVal];
                     float terrainCost = (terrainVal == 0u) ? 1.0 : (terrainVal == 1u) ? 3.0 : (terrainVal == 2u) ? 6.0 : 0.0;
                     uint defTierRaw = (packed >> 11u) & 15u;
@@ -196,7 +199,7 @@ export class WebGLRenderer {
                 vec3 baseColor = mix(mix(f00, f10, frac.x), mix(f01, f11, frac.x), frac.y);
 
                 // --- Crisp faction borders (decided on the nearest cell's owner) ---
-                if (ownerVal > 0u && ownerVal <= 20u) {
+                if (ownerVal > 0u && ownerVal <= ${MAX_FACTIONS}u) {
                     // Sample neighbors at a cell distance that grows as we zoom out, so
                     // the outline stays ~constant width on screen at any zoom (a flat
                     // 1-cell line vanishes when the whole map is fit to the screen).
@@ -217,7 +220,7 @@ export class WebGLRenderer {
                             baseColor = mix(baseColor, vec3(0.04, 0.04, 0.06), 0.72);
                         }
                     }
-                } else if (ownerVal > 20u) {
+                } else if (ownerVal > ${MAX_FACTIONS}u) {
                     baseColor = vec3(1.0, 0.0, 0.0); // debug: out-of-range owner
                 }
 
@@ -255,9 +258,9 @@ export class WebGLRenderer {
 
         // Upload the faction palette once (it's static). Built from factionRGB so
         // territory fill matches the building icons / HUD; index 0 (neutral) stays
-        // black and is never sampled (only owners 1..20 read u_palette).
-        const palette = new Float32Array(21 * 3);
-        for (let i = 1; i <= 20; i++) {
+        // black and is never sampled (only owners 1..MAX_FACTIONS read u_palette).
+        const palette = new Float32Array(FACTION_SLOTS * 3);
+        for (let i = 1; i <= MAX_FACTIONS; i++) {
             const rgb = factionRGB[i] || [128, 128, 128];
             palette[i * 3]     = rgb[0] / 255;
             palette[i * 3 + 1] = rgb[1] / 255;
@@ -445,7 +448,7 @@ export class WebGLRenderer {
         // Territory opacity per faction (from difficulty_to_invade). Pull the
         // latest values the network layer computed from the last snapshot.
         if (state.factionOpacity) {
-            this.playerOpacity.set(state.factionOpacity);
+            this.playerOpacity.set(state.factionOpacity.subarray(0, FACTION_SLOTS));
         }
         this.gl.uniform1fv(this.uniforms.playerOpacity, this.playerOpacity);
 

@@ -624,3 +624,11 @@
 .error-notice button:hover {
     background: rgba(255, 255, 255, 0.18);
 }
+
+/* Separator between the leaderboard's top rows and your own, further down. */
+.leaderboard-gap {
+    text-align: center;
+    color: #666;
+    font-size: 11px;
+    line-height: 10px;
+}
