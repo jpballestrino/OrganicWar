@@ -2,14 +2,33 @@
 // three daily missions. Stored in localStorage so it works for guests too — it
 // is a motivation layer only and never affects the authoritative simulation.
 
+import { QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from './constants.js';
+
 const KEY = 'ow_profile_v1';
+
+// ── Room-size scaling ────────────────────────────────────────────────────────
+// Everything below is calibrated for a standard 20-player battle. In a bigger
+// room (Mega Battle: 64) each commander's share of the map is smaller and every
+// placement is harder, so results are converted to their standard-battle
+// equivalent before XP and missions are scored:
+//   land      × scale   (a fair share of a 64-player map ≈ one of a 20-player map)
+//   placement ÷ scale   (top 16 of 64 ≈ top 5 of 20)
+//   victory   × scale   (beating 63 rivals is ~3× rarer than beating 19)
+// Placement, elimination and survival XP need no scaling: placement XP is
+// already a fraction of the field, and a match lasts as long either way.
+const CALIBRATION_PLAYERS = QUICK_PLAY_PLAYERS;
+export function fieldScale(totalPlayers) {
+  return Math.max(1, (totalPlayers || CALIBRATION_PLAYERS) / CALIBRATION_PLAYERS);
+}
+const VICTORY_XP = 150;
 
 const RANKS = [
   [1, 'Recruit'], [3, 'Private'], [6, 'Sergeant'], [10, 'Lieutenant'], [15, 'Captain'],
   [20, 'Major'], [27, 'Colonel'], [35, 'General'], [45, 'Warlord'], [60, 'Emperor'],
 ];
 
-// Goals and XP are calibrated against headless 20-bot matches (Europe and North
+// Goals and XP are calibrated against headless 20-bot matches (bigger rooms are
+// converted to standard-battle equivalents — see "Room-size scaling" above) (Europe and North
 // America, ~1.26M land cells): a fair share is ~63k land, the map is fully
 // claimed within ~45s, half the field is gone by 1.5-5 min and a match lasts
 // 7-10 min. So 150k land is roughly a top-5 empire and 3 minutes is roughly
@@ -109,11 +128,22 @@ export function loadProfile() {
 }
 
 // Missions joined with their static definitions, for rendering.
+// What a room-size-dependent mission asks of a Mega Battle, e.g.
+// "top 16 in Mega Battle" — or '' for missions that don't depend on room size.
+export function megaTarget(def) {
+  const scale = fieldScale(MEGA_PLAY_PLAYERS);
+  if (def.stat === 'placement') return `top ${Math.floor(def.goal * scale)} in Mega Battle`;
+  if (def.stat === 'peakCells') {
+    return `${(Math.round(def.goal / scale / 1000) * 1000).toLocaleString('en-US')} in Mega Battle`;
+  }
+  return '';
+}
+
 export function missionViews(profile) {
   return profile.missions
     .map(m => {
       const def = MISSION_POOL.find(d => d.id === m.id);
-      return def ? { ...def, progress: m.progress, done: m.done } : null;
+      return def ? { ...def, progress: m.progress, done: m.done, mega: megaTarget(def) } : null;
     })
     .filter(Boolean);
 }
@@ -133,12 +163,17 @@ export function applyMatchResult(match) {
   const total = Math.max(2, match.totalPlayers || 2);
   const placement = Math.min(total, Math.max(1, match.placement || total));
 
+  const scale = fieldScale(total);
+  // Standard-battle equivalents (see "Room-size scaling" above).
+  const equivLand = (match.peakCells || 0) * scale;
+  const equivPlacement = Math.ceil(placement / scale);
+
   add('Battle fought', 20);
   add(`Placed #${placement} of ${total}`, ((total - placement) / (total - 1)) * 100);
-  if (match.won) add('Victory', 150);
+  if (match.won) add(scale > 1 ? `Victory over ${total - 1} rivals` : 'Victory', VICTORY_XP * scale);
   add(`Eliminations ×${match.eliminations || 0}`, (match.eliminations || 0) * 40);
-  // 1 XP per 5,000 peak land: ~12 for a fair share (63k), capped at 400k land.
-  add('Territory held', Math.min(80, (match.peakCells || 0) / 5000));
+  // 1 XP per 5,000 (equivalent) peak land: ~12 for a fair share, capped at 80.
+  add('Territory held', Math.min(80, equivLand / 5000));
   // 4 XP per minute, capped at 10 minutes (about a full match).
   add('Time survived', Math.min(40, ((match.survivedSec || 0) / 60) * 4));
 
@@ -157,10 +192,10 @@ export function applyMatchResult(match) {
     games: 1,
     wins: match.won ? 1 : 0,
     eliminations: match.eliminations || 0,
-    placement,
+    placement: equivPlacement,
     towers: match.towers || 0,
     missiles: match.missiles || 0,
-    peakCells: match.peakCells || 0,
+    peakCells: equivLand,
     survivedSec: match.survivedSec || 0,
     tookLead: match.tookLead ? 1 : 0,
   };
@@ -214,7 +249,7 @@ export function progressCardHtml() {
     return `
       <div class="pc-mission ${m.done ? 'done' : ''}">
         <span class="pc-mission-check">${m.done ? '✔' : '○'}</span>
-        <span class="pc-mission-text">${m.text}${count}</span>
+        <span class="pc-mission-text">${m.text}${count}${m.mega ? ` <span class="pc-mission-mega">· ${m.mega}</span>` : ''}</span>
         <span class="pc-mission-xp">+${m.xp} XP</span>
       </div>`;
   }).join('');

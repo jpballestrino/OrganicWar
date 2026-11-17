@@ -216,3 +216,7 @@ the cap per second, so any fair exchange rate is either useless or decisive.
   64p ends 4:13 / 4:34 / 4:44, runner-up 35.9% / 40.1% / 37.1% (was 6–8%);
   20p ends 3:50, 55.0% vs 44.8%. Bounties last 2–21 s; the client announces
   the same target at most once per 30 s.
+- [x] XP for Mega Battle: results scored as standard-battle equivalents
+      (`fieldScale` in progression.js) — land ×3.2, placement ÷3.2, Victory
+      150 → 480; mission cards show the Mega target. First JS test file
+      (`src/js/progression.test.js`, 8 tests); standard XP is unchanged.
