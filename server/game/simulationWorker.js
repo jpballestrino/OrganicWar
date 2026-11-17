@@ -98,8 +98,16 @@ class RoomSimWorker {
       if (((terrainCells[i] >> 7) & 0xF) !== 3) land++;
     }
     this.landCells = land;
-    // Share of all land that wins the match outright (0 disables).
-    this.dominationShare = Number(opts.dominationShare) > 0 ? Number(opts.dominationShare) : 0;
+    // Domination rule: { share, decayStartSec, decayEverySec, decayStep, floor }
+    // (null/absent disables). See _dominationShare() for the schedule.
+    const dom = opts.domination;
+    this.domination = dom && Number(dom.share) > 0 ? {
+      share: Number(dom.share),
+      decayStartSec: Number(dom.decayStartSec) || 0,
+      decayEverySec: Number(dom.decayEverySec) || 0,
+      decayStep: Number(dom.decayStep) || 0,
+      floor: Number(dom.floor) || Number(dom.share),
+    } : null;
 
     this.exports.simulationstate_init_players(
       this.statePtr,
@@ -434,7 +442,7 @@ class RoomSimWorker {
         playerGoldSpent: goldSpentBuffer,
         centroids,
         landCells: this.landCells,
-        dominationShare: this.dominationShare,
+        dominationShare: this._dominationShare(currentTick),
       }
     });
     this.lastSnapshotTick = currentTick;
@@ -480,9 +488,14 @@ class RoomSimWorker {
 
       // Domination: one faction holds the winning share of all land.
       let dominator = 0;
-      if (this.dominationShare > 0 && nowAlive.size > 1) {
+      const share = this._dominationShare(this.exports.simulationstate_get_current_tick(this.statePtr));
+      if (share > 0 && nowAlive.size > 1) {
+        // Largest qualifying empire wins (matters once the target is below 50%).
         for (const fid of nowAlive) {
-          if (cellsView[fid] >= this.landCells * this.dominationShare) { dominator = fid; break; }
+          if (cellsView[fid] >= this.landCells * share
+              && (!dominator || cellsView[fid] > cellsView[dominator])) {
+            dominator = fid;
+          }
         }
       }
 
@@ -522,6 +535,20 @@ class RoomSimWorker {
     }
 
     this.prevAlive = nowAlive;
+  }
+
+  // Share of all land that currently wins the match outright (0 = rule off).
+  // Holds at the starting share, then steps down on a fixed schedule to a floor.
+  // Driven by sim time (ticks), so it is unaffected by server hiccups.
+  _dominationShare(tick) {
+    const d = this.domination;
+    if (!d) return 0;
+    if (!(d.decayEverySec > 0) || !(d.decayStep > 0)) return d.share;
+    const sec = tick / this.tickHz;
+    if (sec < d.decayStartSec) return d.share;
+    const steps = Math.floor((sec - d.decayStartSec) / d.decayEverySec) + 1;
+    // Round to whole percent so float drift never shows as "54.999%".
+    return Math.max(d.floor, Math.round((d.share - steps * d.decayStep) * 100) / 100);
   }
 
   // Who eliminated `fid`: the sim records the last faction to take a cell from

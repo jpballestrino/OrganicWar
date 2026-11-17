@@ -409,7 +409,19 @@ const SPAWN_SELECTION_SECONDS = 8;
 // A faction holding this share of all land wins outright, so the match ends on
 // a decisive moment instead of a long mop-up (or a fortified stalemate). Guild
 // wars are team games and keep last-team-standing.
-const DOMINATION_SHARE = 0.65;
+//
+// The target shrinks as the match goes on ("sudden death") so games can't drag:
+// it holds at `share` until `decayStartSec`, then drops by `decayStep` every
+// `decayEverySec`, down to `floor`. Measured on 20-bot matches the leader holds
+// about half the land by 3.5-4.5 min, so this ends a match around the 4-5 min
+// mark without touching the opening or midgame.
+const DOMINATION = {
+  share: 0.65,
+  decayStartSec: 180,
+  decayEverySec: 30,
+  decayStep: 0.05,
+  floor: 0.40,
+};
 
 export function startSpawnSelection(room) {
   room.isOpen = false;
@@ -525,7 +537,7 @@ export function startMatchNow(room) {
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
       mapId: room.preset,
-      dominationShare: room.isGuildWar ? 0 : DOMINATION_SHARE,
+      domination: room.isGuildWar ? null : DOMINATION,
       onGameOver: (winnerId, stats, byDomination) => handleGameOver(room, winnerId, stats, byDomination),
       onError: (message) => {
         log('error', `[Room ${room.id}] Simulation crashed: ${message}`);

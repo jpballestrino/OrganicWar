@@ -56,6 +56,7 @@ function freshMatch() {
     // domination (hold a share of all land to win)
     dominationShare: 0,
     dominationWarnedFid: 0,
+    suddenDeath: false,
     result: null,
   };
 }
@@ -352,6 +353,22 @@ export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells
   if (!match.active || match.settled) return;
   const now = performance.now();
   match.alive = alive;
+  // The domination target shrinks late in the match; call out each drop.
+  if (match.dominationShare > 0 && dominationShare > 0 && dominationShare < match.dominationShare - 0.001) {
+    const goal = Math.round(dominationShare * 100);
+    if (!match.suddenDeath) {
+      match.suddenDeath = true;
+      announce('Sudden death', `The domination target is falling — ${goal}% of the land wins now`, 'red', 'alarm');
+    } else {
+      playSfx('tick');
+    }
+    const line = document.getElementById('lblDomination');
+    if (line) {
+      line.classList.remove('pulse');
+      void line.offsetWidth;
+      line.classList.add('pulse');
+    }
+  }
   match.dominationShare = dominationShare;
   if (cells > match.peakCells) match.peakCells = cells;
 
