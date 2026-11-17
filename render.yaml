@@ -1,9 +1,57 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: Render dashboard → New → Blueprint → pick this repository.
+# See DEPLOY.md for the full walkthrough, costs and the post-deploy checklist.
 services:
   - type: web
     name: organicwar-io
-    runtime: node
-    buildCommand: npm install --include=dev && npm run build
-    startCommand: npm start
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Starter = 0.5 CPU / 512 MB → about 4 simultaneous rooms (~80 players in
+    # Quick Battles). Standard (1 CPU / 2 GB) → about 8. The capacity limits
+    # adapt to the plan automatically (server/game/capacity.js reads cgroups).
+    plan: starter
+    # Closest region to most of your players; can't be changed after creation.
+    region: virginia
+    # Rooms live in this process's memory: exactly ONE instance, no autoscaling.
+    numInstances: 1
+    healthCheckPath: /healthz
+    autoDeploy: true
+    # The SQLite database and its hourly backups. Without this disk every
+    # deploy would start with an empty database (accounts, XP, ELO, guilds).
+    disk:
+      name: organicwar-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DB_PATH
+        value: /data/organicwar.db
+      # Render's load balancer is one proxy hop: use X-Forwarded-For for the
+      # real player IP (per-IP limits) and https in OAuth callback URLs.
+      - key: TRUST_PROXY
+        value: "1"
+      # Signs login tokens. Generated once by Render and kept across deploys —
+      # never change it, or every player is logged out.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MAX_CONNECTIONS_PER_IP
+        value: "5"
+      # Public URL (no trailing slash), used in password-reset / verification
+      # emails. Set it in the dashboard, e.g. https://organicwar.io
+      - key: APP_URL
+        sync: false
+      # Optional: email (password reset, verification) and social login.
+      # Leave unset to launch without them; see DEPLOY.md.
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false

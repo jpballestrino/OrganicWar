@@ -1,51 +1,64 @@
-# Multi-stage Dockerfile for OrganicWar.io
-# Stage 1: Build WASM + frontend assets
-# Stage 2: Lean production runtime (no Rust toolchain)
+# OrganicWar.io production image.
+#   Stage 1 builds the WASM simulation (Rust → both wasm targets) and the
+#   client bundle; stage 2 is a lean Node runtime with no Rust toolchain.
+#
+#   docker build -t organicwar .
+#   docker run -p 3000:3000 -v organicwar-data:/data -e JWT_SECRET=... organicwar
+#
+# The SQLite database and its hourly backups live on the /data volume
+# (DB_PATH=/data/organicwar.db) — mount persistent storage there or every
+# redeploy starts with an empty database.
 
-# ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS builder
+# ── Stage 1: build ────────────────────────────────────────────────────────────
+# The full Debian image already has curl, python3 and a C toolchain (Rust's
+# build scripts and better-sqlite3 need one), so no apt-get step is needed.
+FROM node:22-bookworm AS builder
 
-# Install Rust toolchain + wasm-pack
-RUN apt-get update && apt-get install -y curl build-essential && \
-    curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable && \
-    ~/.cargo/bin/cargo install wasm-pack && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Rust (minimal profile) + the wasm target, straight from the official
+# rustup-init binary; wasm-pack and wasm-opt as prebuilt npm binaries
+# (compiling wasm-pack with cargo takes ~10 minutes).
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN curl -fsSL -o /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain stable --target wasm32-unknown-unknown \
+    && rm /tmp/rustup-init
+RUN npm install -g wasm-pack@0.15.1 binaryen@132.0.0
 
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN SKIP_BUILD_CHECK=1 npm run build
+RUN npm run build && npm prune --omit=dev
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS runtime
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM node:22-bookworm-slim AS runtime
 
 WORKDIR /app
-
-# Copy only production dependencies
-COPY package*.json ./
-RUN npm ci --omit=dev
-
-# Copy built assets and server code from builder
-COPY --from=builder /app/dist ./dist
+# Production dependencies from the builder (same Debian release, so the
+# compiled better-sqlite3 binding matches) — no compiler or network needed here.
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+# Server code (incl. migrations and the node-target WASM built in stage 1),
+# the client bundle, and the shared modules the server imports from src/js.
 COPY --from=builder /app/server ./server
+COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/js ./src/js
-COPY --from=builder /app/src/wasm ./src/wasm
-COPY --from=builder /app/migrations ./migrations
 
-# Create writable directories for DB and backups
-RUN mkdir -p /data/backups /app/logs && \
-    ln -s /data/organicwar.db /app/server/organicwar.db || true
+RUN mkdir -p /data /app/logs && chown -R node:node /data /app/logs
+# Runs as root only long enough to take ownership of the data volume, then
+# drops to the unprivileged `node` user (see docker-entrypoint.sh).
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["docker-entrypoint.sh"]
 
-ENV NODE_ENV=production
-ENV PORT=3000
+ENV NODE_ENV=production \
+    PORT=3000 \
+    DB_PATH=/data/organicwar.db
 
 EXPOSE 3000
-
-# Mount /data as a volume for the SQLite database + backups
 VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "server/server.js"]

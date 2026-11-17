@@ -11,7 +11,8 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 
 import { verifyToken } from './auth.js';
-import { findUserById, getUserProfile, prepareStatements , db } from './database.js';
+import { findUserById, getUserProfile, prepareStatements, db, dbPath } from './database.js';
+import { clientIp, TRUST_PROXY } from './clientIp.js';
 import { runMigrations } from './migrate.js';
 import guildRoutes from './routes/guilds.js';
 import authRouter from './routes/authRoutes.js';
@@ -30,6 +31,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const app = express();
+// Behind a TLS proxy / load balancer (Render, Caddy) the socket peer is the
+// proxy: trust its X-Forwarded-* so req.ip / req.protocol are the player's
+// (OAuth callback URLs need https). TRUST_PROXY = number of proxy hops.
+if (TRUST_PROXY > 0) app.set('trust proxy', TRUST_PROXY);
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -87,7 +92,7 @@ const ipConcurrentCounts = new Map();
 const MAX_CONNECTIONS_PER_IP = parseInt(process.env.MAX_CONNECTIONS_PER_IP) || 5;
 
 io.use((socket, next) => {
-  const ip = socket.handshake.address;
+  const ip = clientIp(socket);
   // Exempt localhost (dev / internal health checks)
   if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
     return next();
@@ -177,7 +182,8 @@ setupSocketHandlers(io);
 // db.backup() uses SQLite's online backup API — safe even under concurrent writes.
 // Skipped in test mode (:memory: DB has nothing to back up).
 if (process.env.NODE_ENV !== 'test') {
-  const BACKUP_DIR = path.join(__dirname, '..', 'backups');
+  // Next to the database, so backups land on the same persistent volume.
+  const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(dbPath), 'backups');
   const HOURLY_KEEP = 48;
 
   const runDbBackup = () => {

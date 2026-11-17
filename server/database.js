@@ -1,11 +1,17 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.join(__dirname, 'organicwar.db');
+// DB_PATH puts the database on a persistent volume in production (e.g.
+// /data/organicwar.db on Render / Docker); the default suits local development.
+export const dbPath = process.env.NODE_ENV === 'test'
+  ? ':memory:'
+  : (process.env.DB_PATH || path.join(__dirname, 'organicwar.db'));
+if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');

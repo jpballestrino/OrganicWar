@@ -1,4 +1,5 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
+import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
@@ -51,7 +52,7 @@ const guildChatSchema = z.object({
 
 export function setupSocketHandlers(io) {
   io.on('connection', (socket) => {
-    const ip = socket.handshake.address;
+    const ip = clientIp(socket);
     const count = (ipConnectionCounts.get(ip) || 0) + 1;
     ipConnectionCounts.set(ip, count);
     if (count > 20) {

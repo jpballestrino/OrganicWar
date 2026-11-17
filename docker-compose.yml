@@ -1,22 +1,41 @@
+# Self-hosting on a VPS (alternative to Render) — see DEPLOY.md.
+#   1. Point your domain's DNS A record at the server.
+#   2. cp .env.example .env, then set DOMAIN, JWT_SECRET (openssl rand -hex 64)
+#      and APP_URL=https://<your domain>.
+#   3. docker compose up -d --build
+# Caddy obtains and renews the HTTPS certificate automatically.
 services:
   game:
     build: .
     restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - db_data:/data         # SQLite DB + hourly backups
-      - ./logs:/app/logs      # PM2 / app logs on host for easy tailing
+    env_file: .env
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - JWT_SECRET=${JWT_SECRET}
-      - SESSION_SECRET=${SESSION_SECRET}
-      - MAX_CONCURRENT_ROOMS=${MAX_CONCURRENT_ROOMS:-10}
-      - MAX_CONNECTIONS_PER_IP=${MAX_CONNECTIONS_PER_IP:-5}
-      - CORS_ORIGIN=${CORS_ORIGIN:-*}
-    env_file:
-      - .env
+      NODE_ENV: production
+      PORT: 3000
+      DB_PATH: /data/organicwar.db
+      # Caddy is one proxy hop in front of the game server.
+      TRUST_PROXY: "1"
+    volumes:
+      - game_data:/data   # SQLite database + hourly backups
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    depends_on:
+      - game
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
-  db_data:
+  game_data:
+  caddy_data:
+  caddy_config:
