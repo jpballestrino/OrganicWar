@@ -180,7 +180,7 @@ if (process.env.NODE_ENV !== 'test') {
   const BACKUP_DIR = path.join(__dirname, '..', 'backups');
   const HOURLY_KEEP = 48;
 
-  function runDbBackup() {
+  const runDbBackup = () => {
     try {
       fs.mkdirSync(BACKUP_DIR, { recursive: true });
       const ts = new Date().toISOString().slice(0, 16).replace(/:/g, '-'); // YYYY-MM-DDTHH-mm
@@ -201,7 +201,7 @@ if (process.env.NODE_ENV !== 'test') {
     } catch (err) {
       log('error', '[Backup] DB backup setup failed:', err.message);
     }
-  }
+  };
 
   // First backup 5 minutes after startup, then every hour
   setTimeout(runDbBackup, 5 * 60 * 1000);

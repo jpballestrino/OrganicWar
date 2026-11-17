@@ -441,6 +441,12 @@
 }
 
 .build-option {
+    /* These are real <button>s: reset the native look and inherit the HUD font. */
+    appearance: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    position: relative;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -470,6 +476,35 @@
     opacity: 0.4;
     cursor: not-allowed;
     filter: grayscale(100%);
+}
+
+.build-option:focus-visible {
+    outline: 2px solid #ffc107;
+    outline-offset: 2px;
+}
+
+/* How many of this building the player owns. */
+.build-count {
+    position: absolute;
+    top: -7px;
+    right: -7px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-radius: 9px;
+    background: #ffc107;
+    color: #111;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 900;
+    line-height: 18px;
+    text-align: center;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.build-count[hidden] {
+    display: none;
 }
 
 .build-key {
@@ -516,4 +551,76 @@
     font-weight: 800;
     font-family: 'Orbitron', sans-serif;
     margin-top: 2px;
+}
+
+.build-name {
+    white-space: nowrap;
+}
+
+/* The bottom bar holds two stats and six build buttons: tighten it step by
+   step as the window narrows so it never overflows the screen. */
+@media (max-width: 1500px) {
+    .game-hud { padding: 0 16px; }
+    .hud-stats-container { gap: 20px; }
+    .hud-build-controls { gap: 8px; padding: 6px 10px; }
+    .build-option { gap: 8px; padding: 5px 9px; }
+    .hud-slider { width: 150px; }
+}
+
+@media (max-width: 1250px) {
+    .hud-stats-container { gap: 14px; }
+    .hud-stat-value { font-size: 1rem; }
+    .hud-stat-label { font-size: 0.62rem; letter-spacing: 1px; }
+    .hud-build-controls { gap: 6px; padding: 5px 8px; }
+    .build-option { gap: 6px; padding: 4px 7px; }
+    .build-name { font-size: 0.66rem; letter-spacing: 0; }
+    .build-cost { font-size: 0.64rem; }
+    .build-key { width: 20px; height: 20px; font-size: 0.75rem; }
+    .hud-slider { width: 110px; }
+}
+
+/* Below this the names no longer fit: keep the hotkey and the price. */
+@media (max-width: 1040px) {
+    .build-name { display: none; }
+    .hud-controls { padding: 8px 10px; gap: 10px; }
+}
+
+/* ===== ERROR NOTICE ===== */
+.error-notice {
+    position: fixed;
+    left: 50%;
+    bottom: 80px;
+    transform: translateX(-50%);
+    z-index: 10000;
+    max-width: min(560px, 92vw);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: rgba(30, 12, 14, 0.96);
+    border: 1px solid rgba(220, 53, 69, 0.7);
+    border-radius: 8px;
+    color: #f1d6d8;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+
+.error-notice-text {
+    overflow-wrap: anywhere;
+}
+
+.error-notice button {
+    flex: none;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 5px;
+    color: #fff;
+    font: inherit;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+
+.error-notice button:hover {
+    background: rgba(255, 255, 255, 0.18);
 }

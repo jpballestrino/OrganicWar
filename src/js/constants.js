@@ -64,6 +64,40 @@ export const DIFFICULTY_CAP = 50;
 // Floor so freshly-taken, low-density territory still reads as owned (not invisible).
 export const MIN_TERRITORY_OPACITY = 0.12;
 
+// ── Build bar ────────────────────────────────────────────────────────────────
+// Every purchasable action, in hotkey order. This table is the single source of
+// truth for the HUD build bar, the hotkeys, click placement, the affordability
+// state and the server's reject messages (see src/js/buildBar.js). `mode` is the
+// value held in state.activePurchaseMode; `type` is the building's wire `type`
+// (null for the missile, which is an action, not a building); `input` is the
+// sim-input type sent to the server; `preview` names the renderer method that
+// draws the placement/targeting overlay.
+export const BUILD_ACTIONS = [
+  { mode: 'missile', key: '2', name: 'Missile', type: null, input: 'fire_missile', cost: MISSILE_COST,
+    preview: 'drawMissileTargeting',
+    desc: 'Fire from a completed silo at an enemy cell in range. Razes troops and buildings in the blast.' },
+  { mode: 'defense_building', key: '3', name: 'Defense Tower', type: 'defense', input: 'build_defense', cost: DEFENSE_BUILDING_COST,
+    preview: 'drawBuildingPlacementPreview',
+    desc: 'Fortifies your land around it: attackers pay far more per cell. Destroyed if any of its cells falls.' },
+  { mode: 'silo', key: '4', name: 'Missile Silo', type: 'silo', input: 'build_silo', cost: SILO_BUILDING_COST,
+    preview: 'drawSiloPlacementPreview',
+    desc: 'Lets you fire missiles at targets within its range. Changes hands only if fully conquered.' },
+  { mode: 'mine', key: '5', name: 'Gold Mine', type: 'mine', input: 'build_mine', cost: MINE_BUILDING_COST,
+    preview: 'drawMinePlacementPreview',
+    desc: 'Raises your gold income by 10%.' },
+  { mode: 'antiair', key: '6', name: 'Anti-Air', type: 'antiair', input: 'build_antiair', cost: ANTIAIR_BUILDING_COST,
+    preview: 'drawAntiAirPlacementPreview',
+    desc: 'Shoots down missiles aimed at your land. Holds 3 interceptors.' },
+  { mode: 'city', key: '7', name: 'City', type: 'city', input: 'build_city', cost: CITY_BUILDING_COST,
+    preview: 'drawCityPlacementPreview',
+    desc: 'Raises your maximum population by 5%.' },
+];
+
+// Whole numbers in the HUD are always shown with thousands separators.
+export function fmtInt(n) {
+  return Math.max(0, Math.floor(n || 0)).toLocaleString('en-US');
+}
+
 // Troops/sec a player gains right now, given current troops and max population.
 // Same downward parabola the sim uses (peak at GROWTH_PEAK_RATIO, 0 at full pop).
 export function troopGrowthPerSec(troops, maxPop) {

@@ -1,8 +1,7 @@
 import './js/initDOM.js';
 import { socket, initNetwork, quitAndReload } from './js/network.js';
 import { initAuthUI } from './js/authUI.js';
-import { initGuildUI, showToast } from './js/guildUI.js';
-import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST, MISSILE_COST, MINE_BUILDING_COST, ANTIAIR_BUILDING_COST, CITY_BUILDING_COST } from './js/constants.js';
+import { initGuildUI } from './js/guildUI.js';
 import { initRankingsUI } from './js/rankingsUI.js';
 import { initFeedbackUI } from './js/feedbackUI.js';
 import { state } from './js/state.js';
@@ -14,23 +13,44 @@ import { generateTerrain, warmMapCache } from './js/mapGen.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
 import { renderProgressCards } from './js/progression.js';
+import { initBuildBar, handleBuildClick, cancelBuildMode, drawBuildPreview, syncBuildBarActive } from './js/buildBar.js';
 
 let wasmModule = null;
 let simulation = null;
 let renderer = null;
 
-// Global Error Handler
-window.addEventListener('error', function(e) {
-  const errDiv = document.createElement('div');
-  errDiv.style.position = 'absolute';
-  errDiv.style.top = '10px';
-  errDiv.style.left = '10px';
-  errDiv.style.color = 'red';
-  errDiv.style.backgroundColor = 'black';
-  errDiv.style.zIndex = '999999';
-  errDiv.style.padding = '10px';
-  errDiv.innerHTML = `Global Error: ${e.message} at ${e.filename}:${e.lineno}:${e.colno}<br>${e.error ? e.error.stack : ''}`;
-  document.body.appendChild(errDiv);
+// Global error surface. Details always go to the console; the player sees one
+// small dismissible notice (never a raw stack trace, and never markup built
+// from the error text). The full message is shown only with ?debug.
+function showErrorNotice(title, detail) {
+  let box = document.getElementById('errorNotice');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'errorNotice';
+    box.className = 'error-notice';
+    const text = document.createElement('div');
+    text.className = 'error-notice-text';
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.textContent = 'Reload';
+    reload.onclick = () => location.reload();
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.onclick = () => box.remove();
+    box.append(text, reload, close);
+    document.body.appendChild(box);
+  }
+  const showDetail = detail && new URLSearchParams(window.location.search).has('debug');
+  box.querySelector('.error-notice-text').textContent = showDetail ? `${title} — ${detail}` : title;
+}
+
+window.addEventListener('error', (e) => {
+  // Resource-load errors (an <img>/<script> 404) have no message; ignore them.
+  if (!e.message) return;
+  console.error('[client error]', e.message, e.filename, e.lineno, e.error);
+  showErrorNotice('Something went wrong. If the game misbehaves, reload the page.', e.message);
 });
 
 // Home Background Cellular Automata Animation
@@ -394,8 +414,12 @@ function initEscMenu() {
   const onEscKey = (e) => {
     if (e.key !== 'Escape') { return; }
 
-    // In a match, Esc always toggles the pause menu — highest priority, so a
-    // focused field (e.g. guild chat) can't swallow the first press.
+    // A placement / targeting mode is the innermost thing on screen: Esc backs
+    // out of it and nothing else (it must not also open the pause menu).
+    if (!isOpen() && cancelBuildMode()) { return; }
+
+    // In a match, Esc toggles the pause menu — before the lobby rules below, so
+    // a focused field (e.g. guild chat) can't swallow the first press.
     if (isInGame() || isOpen()) {
       if (isOpen()) { closeMenu(); } else { openMenu(); }
       return;
@@ -431,10 +455,10 @@ function initEscMenu() {
   // Low-graphics toggle — persisted in localStorage, never reset between games
   const toggleLowGraphics = document.getElementById('toggleLowGraphics');
   if (toggleLowGraphics) {
-    try { if (localStorage.getItem('lowGraphics') === '1') { state.lowGraphics = true; toggleLowGraphics.checked = true; } } catch (_) {}
+    try { if (localStorage.getItem('lowGraphics') === '1') { state.lowGraphics = true; toggleLowGraphics.checked = true; } } catch (_) { /* storage blocked */ }
     toggleLowGraphics.onchange = (e) => {
       state.lowGraphics = e.target.checked;
-      try { localStorage.setItem('lowGraphics', e.target.checked ? '1' : '0'); } catch (_) {}
+      try { localStorage.setItem('lowGraphics', e.target.checked ? '1' : '0'); } catch (_) { /* storage blocked */ }
     };
   }
 
@@ -472,6 +496,7 @@ if (_isMobile) {
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.has('debug')) {
   state.debug = true;
+  window.__owState = state; // lets scripts/smoke-browser.mjs inspect client state
   const debugDiv = document.createElement('div');
   debugDiv.id = 'debugUI';
   debugDiv.style.position = 'absolute';
@@ -537,8 +562,8 @@ async function startSimulationEngine() {
       // Eliminated players watching the rest of the match can't issue orders.
       if (state.isSpectating) return;
       if (e.button === 2) { // Right click
-        if (state.activePurchaseMode) {
-          state.activePurchaseMode = null;
+        if (cancelBuildMode()) {
+          // Right-click backs out of a placement / targeting mode.
         } else if (state.gameState === 'PLAYING') {
           const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
           if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
@@ -562,94 +587,12 @@ async function startSimulationEngine() {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
         if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
           const targetCell = row * 1920 + col;
-          if (state.activePurchaseMode === 'defense_building') {
-            // Pre-check gold so we don't send a request the server will reject.
-            // (The server re-verifies and is authoritative.)
-            if (state.playerGold < DEFENSE_BUILDING_COST) {
-              showToast(`Not enough gold — a Defense Tower costs ${DEFENSE_BUILDING_COST.toLocaleString()}.`, 'error');
-              state.activePurchaseMode = null;
-              return;
-            }
-            socket.emit('sim-input', {
-              type: 'build_defense',
-              payload: { targetCell }
-            });
-            state.activePurchaseMode = null;
-          } else if (state.activePurchaseMode === 'silo') {
-            if (state.playerGold < SILO_BUILDING_COST) {
-              showToast(`Not enough gold — a Missile Silo costs ${SILO_BUILDING_COST.toLocaleString()}.`, 'error');
-              state.activePurchaseMode = null;
-              return;
-            }
-            socket.emit('sim-input', {
-              type: 'build_silo',
-              payload: { targetCell }
-            });
-            state.activePurchaseMode = null;
-          } else if (state.activePurchaseMode === 'mine') {
-            if (state.playerGold < MINE_BUILDING_COST) {
-              showToast(`Not enough gold — a Gold Mine costs ${MINE_BUILDING_COST.toLocaleString()}.`, 'error');
-              state.activePurchaseMode = null;
-              return;
-            }
-            socket.emit('sim-input', {
-              type: 'build_mine',
-              payload: { targetCell }
-            });
-            state.activePurchaseMode = null;
-          } else if (state.activePurchaseMode === 'antiair') {
-            if (state.playerGold < ANTIAIR_BUILDING_COST) {
-              showToast(`Not enough gold — an Anti-Air Battery costs ${ANTIAIR_BUILDING_COST.toLocaleString()}.`, 'error');
-              state.activePurchaseMode = null;
-              return;
-            }
-            socket.emit('sim-input', {
-              type: 'build_antiair',
-              payload: { targetCell }
-            });
-            state.activePurchaseMode = null;
-          } else if (state.activePurchaseMode === 'city') {
-            if (state.playerGold < CITY_BUILDING_COST) {
-              showToast(`Not enough gold — a City costs ${CITY_BUILDING_COST.toLocaleString()}.`, 'error');
-              state.activePurchaseMode = null;
-              return;
-            }
-            socket.emit('sim-input', {
-              type: 'build_city',
-              payload: { targetCell }
-            });
-            state.activePurchaseMode = null;
-          } else if (state.activePurchaseMode === 'missile') {
-            // A missile must always be aimed at an enemy cell. Clicking your own
-            // land or nature is not allowed and shows NO message — just ignore it
-            // and stay in targeting mode. (Order matters: check target before gold.)
-            const targetOwner = getCellOwner(targetCell);
-            const myFaction = parseInt(state.playerFaction);
-            if (targetOwner === 0 || targetOwner === myFaction) {
-              return;
-            }
-            // The server validates that a completed silo is in range; we only
-            // pre-check affordability here (this one does warn).
-            if (state.playerGold < MISSILE_COST) {
-              showToast(`Not enough gold — a missile costs ${MISSILE_COST.toLocaleString()}.`, 'error');
-              state.activePurchaseMode = null;
-              return;
-            }
-            socket.emit('sim-input', {
-              type: 'fire_missile',
-              payload: { targetCell }
-            });
-            state.activePurchaseMode = null;
-          } else {
-            socket.emit('sim-input', {
-              type: 'expand',
-              payload: {
-                targetCell,
-                attackPercentage: state.attackPercentage
-              }
-            });
-            playSfx('order');
-          }
+          if (handleBuildClick(targetCell)) { return; }
+          socket.emit('sim-input', {
+            type: 'expand',
+            payload: { targetCell, attackPercentage: state.attackPercentage },
+          });
+          playSfx('order');
         }
       }
     };
@@ -687,8 +630,8 @@ async function startSimulationEngine() {
     });
     window.addEventListener('blur', () => { press = null; state.isPanning = false; });
 
-    // Space cancels an in-progress attack, recalling the attacking troops to defense.
-    // '3' toggles defense building placement mode.
+    // Space cancels every in-progress attack, recalling the troops to defense.
+    // (Build / missile hotkeys live in buildBar.js.)
     window.addEventListener('keydown', (e) => {
       const active = document.activeElement;
       const inField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
@@ -702,125 +645,14 @@ async function startSimulationEngine() {
         return;
       }
 
-      if (e.key === '3' && state.gameState === 'PLAYING') {
-        if (inField) return;
-        e.preventDefault();
-        state.activePurchaseMode = state.activePurchaseMode === 'defense_building'
-          ? null
-          : 'defense_building';
-        return;
-      }
-
-      // '4' toggles missile-silo placement mode.
-      if (e.key === '4' && state.gameState === 'PLAYING') {
-        if (inField) return;
-        e.preventDefault();
-        state.activePurchaseMode = state.activePurchaseMode === 'silo' ? null : 'silo';
-        return;
-      }
-
-      // '5' toggles gold mine placement mode.
-      if (e.key === '5' && state.gameState === 'PLAYING') {
-        if (inField) return;
-        e.preventDefault();
-        state.activePurchaseMode = state.activePurchaseMode === 'mine' ? null : 'mine';
-        return;
-      }
-
-      // '6' toggles anti-air battery placement mode.
-      if (e.key === '6' && state.gameState === 'PLAYING') {
-        if (inField) return;
-        e.preventDefault();
-        state.activePurchaseMode = state.activePurchaseMode === 'antiair' ? null : 'antiair';
-        return;
-      }
-
-      if (e.key === '7' && state.gameState === 'PLAYING') {
-        if (inField) return;
-        e.preventDefault();
-        state.activePurchaseMode = state.activePurchaseMode === 'city' ? null : 'city';
-        return;
-      }
-
-      // '2' toggles missile-targeting mode (fires from a completed silo in range).
-      if (e.key === '2' && state.gameState === 'PLAYING') {
-        if (inField) return;
-        e.preventDefault();
-        const mySilos = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo');
-        if (mySilos.length === 0) {
-          showToast('You must build a Missile Silo first.', 'error');
-          return;
-        }
-        // A silo under construction can't fire yet.
-        if (mySilos.every(b => b.constructing)) {
-          showToast('Your Missile Silo is still under construction.', 'error');
-          return;
-        }
-        if (state.playerGold < MISSILE_COST) {
-          showToast('Not enough gold to fire a missile.', 'error');
-          return;
-        }
-        state.activePurchaseMode = state.activePurchaseMode === 'missile' ? null : 'missile';
-        return;
-      }
-
-      if (e.code === 'Escape' && state.activePurchaseMode) {
-        state.activePurchaseMode = null;
-        return;
-      }
     });
 
-    // HUD Build Button Click Listeners
-    const bindBuildButton = (id, mode) => {
-      const btn = document.getElementById(id);
-      if (btn) {
-        btn.addEventListener('click', () => {
-          if (state.gameState !== 'PLAYING' || state.isSpectating) return;
-          playSfx('select');
-          if (btn.classList.contains('disabled')) {
-            if (mode === 'missile') {
-              const mySilos = state.buildings.filter(b => b.factionId === parseInt(state.playerFaction) && b.type === 'silo');
-              if (mySilos.length === 0) {
-                showToast('You must build a Missile Silo first.', 'error');
-                return;
-              }
-              if (mySilos.every(b => b.constructing)) {
-                showToast('Your Missile Silo is still under construction.', 'error');
-                return;
-              }
-            }
-            showToast('Not enough gold to build this.', 'error');
-            return;
-          }
-          state.activePurchaseMode = state.activePurchaseMode === mode ? null : mode;
-        });
-      }
-    };
-
-    // Need to wait slightly or bind them dynamically since the HUD is created 
-    // after startSimulationEngine if it's dynamic. Wait, gameUITemplate is in index.html already via main.js rendering it?
-    // Actually gameArea is rendered initially. Let's bind them right away.
-    bindBuildButton('btnBuildTower', 'defense_building');
-    bindBuildButton('btnBuildSilo', 'silo');
-    bindBuildButton('btnFireMissile', 'missile');
-    bindBuildButton('btnBuildMine', 'mine');
-    bindBuildButton('btnBuildAntiAir', 'antiair');
-    bindBuildButton('btnBuildCity', 'city');
+    initBuildBar({ emit: (input) => socket.emit('sim-input', input) });
 
     requestAnimationFrame(gameLoop);
   } catch (err) {
-    console.error("Failed to init WASM Simulation:", err);
-    alert("WASM INIT ERROR: " + err.message);
-    const errDiv = document.createElement('div');
-    errDiv.style.position = 'fixed';
-    errDiv.style.top = '0';
-    errDiv.style.left = '0';
-    errDiv.style.background = 'red';
-    errDiv.style.color = 'white';
-    errDiv.style.padding = '20px';
-    errDiv.style.zIndex = '9999';
-    errDiv.innerHTML = `<h3>WASM Init Error:</h3><pre>${err.stack || err.message}</pre>`;
-    document.body.appendChild(errDiv);
+    console.error('Failed to init WASM simulation:', err);
+    showErrorNotice('The game engine failed to start. Reload the page, or try another browser.', err.message);
   }
 }
 
@@ -858,20 +690,7 @@ function gameLoop(time) {
           if (gameCanvas) gameCanvas.style.cursor = 'default';
       }
 
-      // Sync HUD buttons active state
-      const btnTower = document.getElementById('btnBuildTower');
-      const btnSilo = document.getElementById('btnBuildSilo');
-      const btnMissile = document.getElementById('btnFireMissile');
-      const btnMine = document.getElementById('btnBuildMine');
-      const btnAntiAir = document.getElementById('btnBuildAntiAir');
-      const btnCity = document.getElementById('btnBuildCity');
-
-      if (btnTower) btnTower.classList.toggle('active', state.activePurchaseMode === 'defense_building');
-      if (btnSilo) btnSilo.classList.toggle('active', state.activePurchaseMode === 'silo');
-      if (btnMissile) btnMissile.classList.toggle('active', state.activePurchaseMode === 'missile');
-      if (btnMine) btnMine.classList.toggle('active', state.activePurchaseMode === 'mine');
-      if (btnAntiAir) btnAntiAir.classList.toggle('active', state.activePurchaseMode === 'antiair');
-      if (btnCity) btnCity.classList.toggle('active', state.activePurchaseMode === 'city');
+      syncBuildBarActive();
 
       if (overlayCanvas) {
         if (overlayCanvas.width !== window.innerWidth || overlayCanvas.height !== window.innerHeight) {
@@ -895,19 +714,7 @@ function gameLoop(time) {
           state.activeExplosions = renderer.drawExplosions(ctx, state.activeExplosions);
           // Active AA interceptor missiles
           state.activeInterceptors = renderer.drawInterceptors(ctx, state.activeInterceptors);
-          if (state.activePurchaseMode === 'defense_building' && state.hoveredCell.r >= 0) {
-            renderer.drawBuildingPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
-          } else if (state.activePurchaseMode === 'silo' && state.hoveredCell.r >= 0) {
-            renderer.drawSiloPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
-          } else if (state.activePurchaseMode === 'mine' && state.hoveredCell.r >= 0) {
-            renderer.drawMinePlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
-          } else if (state.activePurchaseMode === 'antiair' && state.hoveredCell.r >= 0) {
-            renderer.drawAntiAirPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
-          } else if (state.activePurchaseMode === 'city' && state.hoveredCell.r >= 0) {
-            renderer.drawCityPlacementPreview(ctx, state.hoveredCell.r, state.hoveredCell.c);
-          } else if (state.activePurchaseMode === 'missile') {
-            renderer.drawMissileTargeting(ctx, state.buildings, parseInt(state.playerFaction), state.hoveredCell.r, state.hoveredCell.c);
-          }
+          drawBuildPreview(renderer, ctx);
         }
       }
   }

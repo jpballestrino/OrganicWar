@@ -22,7 +22,7 @@ function getLogStream() {
 
   // Close previous stream if date rolled over
   if (_logStream) {
-    try { _logStream.end(); } catch {}
+    try { _logStream.end(); } catch { /* already closed */ }
   }
 
   try {
@@ -45,7 +45,7 @@ export function log(level, message, data = null) {
   if (stream) {
     const entry = { ts: timestamp, level, msg: message };
     if (data != null) entry.data = data instanceof Error ? data.message : data;
-    try { stream.write(JSON.stringify(entry) + '\n'); } catch {}
+    try { stream.write(JSON.stringify(entry) + '\n'); } catch { /* never let logging throw */ }
   }
 
   // Console output: human-readable (always)

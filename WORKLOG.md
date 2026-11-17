@@ -37,16 +37,16 @@ exactly after a pure-performance change (the sim is deterministic):
 ## Phases
 
 ### Phase 1 — UI review & fixes
-- [ ] 1.1 Esc in a build/targeting mode must cancel the mode only (today it also opens the pause menu).
-- [ ] 1.2 One `BUILDINGS` table (constants.js) drives the build bar, hotkeys, click placement, affordability, reject toasts. Bar ordered by hotkey, real `<button>`s, tooltips, owned-count badges; costs no longer hard-coded in the template.
-- [ ] 1.3 Consistent number formatting in the HUD (troops/land raw vs gold localized vs kills abbreviated).
-- [ ] 1.4 Leaderboard score and territory labels must include troops out on attack (score drops when you attack today).
-- [ ] 1.5 Friendly error surface instead of raw red stack + `alert()`; no `innerHTML` with error text.
-- [ ] 1.6 `spawnOverlay` inline style declares `display` twice (visible when it should be hidden); stale "5" placeholder.
-- [ ] 1.7 `building-destroyed` clears a fort zone for non-defense buildings; missile button "disabled" toast wording; duplicated colour tables.
-- [ ] 1.8 Bottom HUD overflows below ~1500 px wide — compact layout.
-- [ ] 1.9 Lint clean (5 errors, 4 warnings).
-- [ ] 1.10 Verify in a real browser (Playwright, headless Chromium) and screenshot.
+- [x] 1.1 Esc in a build/targeting mode must cancel the mode only (today it also opens the pause menu).
+- [x] 1.2 One `BUILDINGS` table (constants.js) drives the build bar, hotkeys, click placement, affordability, reject toasts. Bar ordered by hotkey, real `<button>`s, tooltips, owned-count badges; costs no longer hard-coded in the template.
+- [x] 1.3 Consistent number formatting in the HUD (troops/land raw vs gold localized vs kills abbreviated).
+- [x] 1.4 Leaderboard score includes troops out on attack. (Territory labels: same fix, server side — done with 2.3.)
+- [x] 1.5 Friendly error surface instead of raw red stack + `alert()`; no `innerHTML` with error text.
+- [x] 1.6 `spawnOverlay` inline style declares `display` twice (visible when it should be hidden); stale "5" placeholder.
+- [x] 1.7 `building-destroyed` clears a fort zone for non-defense buildings; missile button "disabled" toast wording; duplicated colour tables.
+- [x] 1.8 Bottom HUD overflows below ~1500 px wide — compact layout.
+- [x] 1.9 Lint clean (5 errors, 4 warnings).
+- [x] 1.10 Verify in a real browser (Playwright, headless Chromium) and screenshot.
 
 ### Phase 2 — MMO / scalability
 - [ ] 2.1 Sim CPU: skip uniform 16×16 blocks in the per-tick border scan (`process_war_fronts`, `bot_think_all`); no div/mod per neighbour. Must reproduce the baseline timeline exactly.
@@ -117,4 +117,7 @@ _(written in Phase 3.5)_
 ## Status log
 
 - Session 1: read CLAUDE.md and the whole codebase; installed toolchain;
-  captured baselines; wrote this plan. Starting Phase 1.
+  captured baselines; wrote this plan.
+- Phase 1 done: `src/js/buildBar.js` + `BUILD_ACTIONS` table; verified with
+  `scripts/smoke-browser.mjs` (17 checks, headless Chromium, needs the server
+  on :3000). Lint is clean. Next: Phase 2.1.
