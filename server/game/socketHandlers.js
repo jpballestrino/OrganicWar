@@ -1,6 +1,7 @@
 import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.js';
-import { MAX_FACTIONS, QUICK_PLAY_PLAYERS } from '../../src/js/constants.js';
-import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns, SAFE_ZONE_RADIUS } from './roomManager.js';
+import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
+import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
+import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
@@ -137,6 +138,23 @@ export function setupSocketHandlers(io) {
     socket.userId = userId;
     log('info', `Socket connected: ${socket.id} (User ID: ${socket.userId || 'guest'})`);
 
+    // ---------- PROGRESSION (XP) ----------
+    // Logged-in players' XP lives on the server (server/game/progression.js).
+    // The handshake carries the player's UTC offset so daily missions and
+    // streaks roll over at their own midnight.
+    socket.tzOffset = parseTzOffset(socket.handshake.auth && socket.handshake.auth.tzOffset);
+    if (socket.userId) sendProfile(socket);
+    let importUsed = false;
+    socket.on('progression-import', (raw) => {
+      // Only useful once per account (the server ignores it if a profile
+      // exists); one try per connection is plenty.
+      if (importUsed || !socket.userId) return;
+      importUsed = true;
+      try { importGuestProfile(socket, raw); } catch (err) {
+        log('error', `[Progression] import failed for user ${socket.userId}:`, err.message);
+      }
+    });
+
     function getFreshGuildInfo() {
       if (!userId) {return { guildId: null, guildTag: null };}
       const userObj = findUserById(userId);
@@ -228,12 +246,16 @@ export function setupSocketHandlers(io) {
       }
     });
 
-    socket.on('quick-play', ({ nickname }) => {
+    socket.on('quick-play', ({ nickname, mode } = {}) => {
       if (socket.displayName) { nickname = socket.displayName; }
       try {
-        let room = Object.values(activeRooms).find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout);
+        // Two Quick Battle queues: standard (20) and Mega (64). Each fills its
+        // own rooms; empty slots become bots when the countdown ends.
+        const size = mode === 'mega' ? MEGA_PLAY_PLAYERS : QUICK_PLAY_PLAYERS;
+        let room = Object.values(activeRooms)
+          .find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout && r.maxPlayers === size);
         if (!room) {
-          room = createRoom('Quick Game', randomMapId(), QUICK_PLAY_PLAYERS, true);
+          room = createRoom(mode === 'mega' ? 'Mega Battle' : 'Quick Game', randomMapId(), size, true);
           if (!room) {
             // The client hid the menu when it asked; this brings it back.
             socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
@@ -424,7 +446,7 @@ export function setupSocketHandlers(io) {
         for (let [otherFid, pos] of room.spawnSelections.entries()) {
           if (otherFid === fid) continue;
           let distSq = (pos.row - row) ** 2 + (pos.col - col) ** 2;
-          if (distSq < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS) {
+          if (distSq < room.safeZoneRadius * room.safeZoneRadius) {
             socket.emit('spawn-rejected', 'Too close to another player\'s safe zone.');
             return;
           }

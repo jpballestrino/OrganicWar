@@ -530,6 +530,18 @@ export class WebGLRenderer {
             ctx.fillStyle = isMe ? '#ffe07a' : '#ffffff';
             ctx.fillText(name, pos.x, pos.y - gap);
 
+            // The bounty target wears a tag above its name.
+            if (parseInt(fid) === state.bountyFid) {
+                const tagSize = Math.max(10, nameSize * 0.6);
+                ctx.font = `bold ${tagSize.toFixed(1)}px 'Orbitron', sans-serif`;
+                const tagY = pos.y - gap - nameSize * 0.95;
+                ctx.lineWidth = Math.max(3, tagSize * 0.3);
+                ctx.strokeText('🎯 BOUNTY', pos.x, tagY);
+                ctx.fillStyle = '#ff6b4a';
+                ctx.fillText('🎯 BOUNTY', pos.x, tagY);
+                ctx.lineWidth = Math.max(3, nameSize * 0.25);
+            }
+
             ctx.font = `${troopSize.toFixed(1)}px 'Orbitron', sans-serif`;
             ctx.strokeText(troopsText, pos.x, pos.y + gap);
             ctx.fillStyle = '#d0d0d0';

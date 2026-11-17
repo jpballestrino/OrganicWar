@@ -131,6 +131,7 @@ export function modalsTemplate() {
                     <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against that specific enemy.</li>
                     <li><strong>Cancel All Attacks:</strong> Press <strong>Space</strong> to instantly refund and cancel all active attacks.</li>
                     <li><strong>Blitz (Press '1'):</strong> For 6 seconds your attacks advance twice as fast and pay 40% less to take enemy land. Recharges in 45 seconds — save it for the breakthrough.</li>
+                    <li><strong>Bounty:</strong> When one empire runs away with the map (over twice its fair share and 1.5× the runner-up), it gets a 🎯 bounty. Everyone else pays 25% fewer troops to take its land and earns gold for every cell taken.</li>
                     <li><strong>Plunder:</strong> Eliminate a rival and you take their whole treasury. Razing an enemy Defense Tower pays 1,000 gold of salvage.</li>
                     <li><strong>Troops &amp; Gold:</strong> Troop cap, growth rate, and gold income all scale with territory owned.</li>
                     <li><strong>Attack size:</strong> The Attack slider (or <strong>Shift + mouse wheel</strong>) sets what share of your troops each click commits.</li>
@@ -142,6 +143,7 @@ export function modalsTemplate() {
                     <li><strong>Domination:</strong> Hold 65% of all land and you win immediately. Watch the leaderboard — it shows how close the biggest empire is.</li>
                     <li><strong>Sudden death:</strong> After 3 minutes the domination target starts falling (5% every 30 seconds, down to 40%), so the biggest empire has to be stopped or it wins.</li>
                     <li><strong>Last standing:</strong> Or simply eliminate every rival.</li>
+                    <li><strong>Mega Battle:</strong> The same rules with 64 commanders on one map — spawn zones are smaller and matches still end in about 4 minutes.</li>
                 </ul>
 
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🛡️ Buildings &amp; Weapons</h3>

@@ -1,15 +1,20 @@
 import { io } from 'socket.io-client';
 import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
-import { getToken } from './auth.js';
+import { getToken, isLoggedIn } from './auth.js';
+import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
 import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { onSnapshotStats } from './matchFeel.js';
 import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt } from './constants.js';
 import { updateBuildBar, rejectMessage } from './buildBar.js';
 
+// The handshake carries the player's UTC offset so the server rolls daily
+// missions and streaks over at the player's own midnight.
+export const socketAuth = () => ({ token: getToken(), tzOffset: new Date().getTimezoneOffset() });
+
 export const socket = io({
-  auth: { token: getToken() },
+  auth: socketAuth(),
 });
 
 export function quitAndReload() {
@@ -221,6 +226,21 @@ socket.io.on('reconnect_failed', () => {
 });
 
 export function initNetwork() {
+  // ── Progression for logged-in players (server/game/progression.js) ──
+  // The server owns their XP: it pushes the profile on connect and the scored
+  // result when their match ends. A first login offers this browser's guest
+  // XP for a one-time import (the server validates it).
+  setServerMode(isLoggedIn());
+  socket.on('progression-profile', ({ profile, canImport } = {}) => {
+    setServerMode(true);
+    setServerProfile(profile);
+    renderProgressCards();
+    if (canImport) {
+      const local = loadLocalProfile();
+      if (local.games > 0) socket.emit('progression-import', local);
+    }
+  });
+
   const savedToken = sessionStorage.getItem('reconnectToken');
   if (savedToken) {
     console.log('[RECONNECT] Sending token:', savedToken);
@@ -303,7 +323,7 @@ export function initNetwork() {
       if (state.isGuildWar) {
         title.innerHTML = `GUILD WAR: <span style="color:#ffc107">[${escapeHtml(state.guildA.tag)}]</span> vs <span style="color:#ff6b6b">[${escapeHtml(state.guildB.tag)}]</span>`;
       } else if (config.isQuickPlay) {
-        title.innerText = 'Quick Game Matchmaking';
+        title.innerText = config.maxPlayers > 20 ? `Mega Battle Matchmaking · ${config.maxPlayers} commanders` : 'Quick Game Matchmaking';
       } else {
         title.innerText = 'Custom Game Lobby';
       }
@@ -371,6 +391,7 @@ export function initNetwork() {
 
   socket.on('spawn-selection-start', (data) => {
     state.gameState = 'SPAWN_SELECTION';
+    if (data && data.safeZoneRadius) state.safeZoneRadius = data.safeZoneRadius;
 
     // Repaint the local terrain to the room's map before the spawn canvas shows,
     // so players pick spawns on the correct landmass. Falls back to the preset
@@ -676,7 +697,8 @@ const setText = (id, text) => {
   if (el && el.textContent !== text) el.textContent = text;
 };
 
-function applyStats({ landCells, dominationShare, players }) {
+function applyStats({ landCells, dominationShare, bountyFid, players }) {
+  state.bountyFid = bountyFid || 0;
   // Labels at each territory centroid, and the shader's per-faction opacity
   // (troops per cell, normalised so 25/cell is fully opaque).
   const centroids = {};
@@ -751,6 +773,8 @@ function applyStats({ landCells, dominationShare, players }) {
     dominationShare,
     landLeaderFid,
     landLeaderCells,
+    bountyFid: state.bountyFid,
+    bountyEarned: me.bountyEarned,
   });
 }
 
@@ -786,13 +810,14 @@ function updateLeaderboard(players) {
     const name = isMe ? 'You' : escapeHtml(slot && slot.nickname ? slot.nickname : `Player ${lb.fid}`);
     const score = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : fmtInt(lb.score);
     const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
+    const bounty = lb.fid === state.bountyFid ? '<span class="leaderboard-bounty" title="Bounty: their land is 25% cheaper to take and pays gold">🎯</span>' : '';
     const gap = index >= LEADERBOARD_ROWS ? '<div class="leaderboard-gap">⋯</div>' : '';
     return `${gap}
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${isMe ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
         <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
           <span style="font-size: 10px; color: #888; min-width: 14px; text-align: right;">${index + 1}.</span>
           <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; border: 1px solid #000;"></div>
-          <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>
+          <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>${bounty}
         </div>
         <span style="font-size: 13px; font-weight: bold; color: ${lb.isEliminated ? '#888' : '#ffc107'};">${score}</span>
       </div>`;

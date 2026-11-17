@@ -45,6 +45,9 @@ export const state = {
   playerMaxPop: 0,
   playerGold: 0,
   prices: null,          // per-action prices from the sim (sim-stats)
+  quickMode: 'standard', // last Quick Battle queue joined ('standard' | 'mega')
+  safeZoneRadius: 80,    // spawn safe-zone radius for this room (spawn-selection-start)
+  bountyFid: 0,          // faction with a bounty on its head (sim-stats), 0 = none
   blitzActiveUntil: 0,   // performance.now() deadlines from sim-stats
   blitzReadyAt: 0,
   
@@ -101,6 +104,8 @@ export function resetGameState() {
 
   state.playerGold = 0;
   state.prices = null;
+  state.safeZoneRadius = 80;
+  state.bountyFid = 0;
   state.blitzActiveUntil = 0;
   state.blitzReadyAt = 0;
   state.playerFaction = null;

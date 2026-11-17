@@ -1,5 +1,6 @@
 import { login, register, fetchProfile, logout, isLoggedIn, getUser, getToken, setToken, setUser } from './auth.js';
-import { socket } from './network.js';
+import { setServerMode, renderProgressCards } from './progression.js';
+import { socket, socketAuth } from './network.js';
 import { updateGuildChatVisibility } from './guildUI.js';
 
 function getE(id) { return document.getElementById(id); }
@@ -297,9 +298,12 @@ export async function setupLoggedInState() {
 
   getE('nicknameInput').value = user.displayName || user.display_name;
 
-  // Refresh socket connection so it sends auth token
+  // Refresh socket connection so it sends auth token (the server then pushes
+  // this account's progression — show "loading" instead of the guest profile).
+  setServerMode(true);
+  renderProgressCards();
   socket.disconnect();
-  socket.auth = { token: getToken() };
+  socket.auth = socketAuth();
   socket.connect();
     
   updateGuildChatVisibility();

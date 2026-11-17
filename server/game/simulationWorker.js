@@ -49,6 +49,10 @@ const BUILD_INPUTS = {
   build_antiair: { place: 'simulationstate_place_antiair',          btype: 3 },
   build_city:    { place: 'simulationstate_place_city',             btype: 4 },
 };
+// Holding 1st place on the scoreboard this long counts as "took the lead"
+// (mirrors the 3 s stability rule in src/js/matchFeel.js).
+const LEAD_HOLD_SEC = 3;
+
 // write_buildings() record width (BUILDING_EXPORT_FIELDS in lib.rs).
 const BUILDING_EXPORT_FIELDS = 7;
 
@@ -166,6 +170,15 @@ class RoomSimWorker {
     // survival time, who finished whom). JS-side only — the sim is untouched.
     this.startedAt = Date.now();
     this.peakCells = new Uint32Array(this.arraySize);
+    // Per-faction counters for server-side XP (server/game/progression.js):
+    // rivals eliminated, defense towers placed, missiles fired, and whether the
+    // faction ever held 1st place on the leaderboard for LEAD_HOLD_SEC.
+    this.eliminations = new Uint32Array(this.arraySize);
+    this.towersBuilt = new Uint32Array(this.arraySize);
+    this.missilesFired = new Uint32Array(this.arraySize);
+    this.tookLead = new Uint8Array(this.arraySize);
+    this.leadCandidate = 0;
+    this.leadSinceMs = 0;
     this.placements = {};
     this.survivedSec = {};
 
@@ -308,6 +321,7 @@ class RoomSimWorker {
       const btype = buf[i * 3 + 2];
       const payload = buildingPayload(btype, buf[i * 3 + 1], buf[i * 3]);
       payload.buildMs = (BUILDING_TYPES[btype] || BUILDING_TYPES[0]).buildMs;
+      if (btype === 0) this.towersBuilt[payload.factionId]++;
       parentPort.postMessage({ type: 'emit', event: 'building-placed', payload });
     }
     this.exports.simulationstate_clear_placed_buildings(this.statePtr);
@@ -324,6 +338,7 @@ class RoomSimWorker {
       const targetRow = buf[i * 5 + 2];
       const targetCol = buf[i * 5 + 3];
       const factionId = buf[i * 5 + 4];
+      if (factionId <= this.maxPlayers) this.missilesFired[factionId]++;
       parentPort.postMessage({ type: 'emit', event: 'missile-fired', payload: {
         sourceRow, sourceCol, targetRow, targetCol, factionId
       }});
@@ -464,10 +479,48 @@ class RoomSimWorker {
     for (let fid = 1; fid <= this.maxPlayers; fid++) {
       if (owned[fid] > this.peakCells[fid]) this.peakCells[fid] = owned[fid];
     }
+    this._trackLeader();
     const payload = this._packStats(tick);
     this.profileMetrics.totalPayloadBytes += payload.byteLength;
     this.load.bytes += payload.byteLength;
     parentPort.postMessage({ type: 'emit', event: 'sim-stats', payload, stream: true }, [payload]);
+  }
+
+  // Who leads the scoreboard (the client's score: gold spent + kills + troops
+  // incl. those on attack + land). A faction that stays #1 for LEAD_HOLD_SEC
+  // "took the lead" — the same rule the client uses for its announcement.
+  _trackLeader() {
+    const m = this.exports.memory.buffer;
+    const view = (fn, T) => new T(m, this.exports[fn](this.statePtr), this.arraySize);
+    const troops = view('simulationstate_get_player_total_troops_ptr', Float32Array);
+    const attack = view('simulationstate_get_player_attack_pool_ptr', Float32Array);
+    const kills = view('simulationstate_get_player_kill_count_ptr', Float32Array);
+    const spent = view('simulationstate_get_player_gold_spent_ptr', Float32Array);
+    const owned = view('simulationstate_get_player_owned_cells_ptr', Uint32Array);
+    let leader = 0;
+    let best = -1;
+    for (let fid = 1; fid <= this.maxPlayers; fid++) {
+      if (!owned[fid]) continue;
+      const score = Math.floor(spent[fid]) + Math.floor(kills[fid]) + Math.floor(troops[fid] + attack[fid]) + owned[fid];
+      if (score > best) { best = score; leader = fid; }
+    }
+    const now = Date.now();
+    if (leader !== this.leadCandidate) {
+      this.leadCandidate = leader;
+      this.leadSinceMs = now;
+    } else if (leader && now - this.leadSinceMs >= LEAD_HOLD_SEC * 1000) {
+      this.tookLead[leader] = 1;
+    }
+  }
+
+  // The XP counters for one faction (see the constructor).
+  _xpCounters(fid) {
+    return {
+      eliminations: this.eliminations[fid],
+      towers: this.towersBuilt[fid],
+      missiles: this.missilesFired[fid],
+      tookLead: this.tookLead[fid] === 1,
+    };
   }
 
   // Everything a client needs to rebuild the match from nothing — sent to one
@@ -530,14 +583,17 @@ class RoomSimWorker {
           const placement = nowAlive.size + 1;
           this.placements[fid] = placement;
           this.survivedSec[fid] = survivedSec;
+          const killerId = this._findKiller(fid);
+          if (killerId) this.eliminations[killerId]++;
           parentPort.postMessage({ type: 'emit', event: 'player-eliminated', payload: {
             factionId: fid,
-            killerId: this._findKiller(fid),
+            killerId,
             placement,
             aliveCount: nowAlive.size,
             survivedSec,
             peakCells: this.peakCells[fid],
             kills: Math.floor(killView[fid] || 0),
+            ...this._xpCounters(fid),
           } });
         }
       }
@@ -586,6 +642,7 @@ class RoomSimWorker {
             peakCells: this.peakCells[fid],
             placement: fid === winner ? 1 : (this.placements[fid] || 0),
             survivedSec: this.survivedSec[fid] ?? survivedSec,
+            ...this._xpCounters(fid),
           };
         }
 
@@ -639,6 +696,7 @@ class RoomSimWorker {
       if (this.exports[build.place](this.statePtr, factionId, row, col)) {
         const payload = buildingPayload(build.btype, factionId, targetCell);
         payload.buildMs = BUILDING_TYPES[build.btype].buildMs;
+        if (build.btype === 0) this.towersBuilt[factionId]++;
         parentPort.postMessage({ type: 'emit', event: 'building-placed', payload });
       } else {
         reject();

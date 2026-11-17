@@ -96,7 +96,7 @@ export function clearAllBuildingBits() {
   for (let i = 0; i < TOTAL_CELLS; i++) cells[i] &= keep;
 }
 
-// sim-stats: a 16-byte header then one 76-byte record per player (layout:
+// sim-stats: a 20-byte header then one 80-byte record per player (layout:
 // STATS_* consts in simulation-core/src/lib.rs — keep in sync). Returns
 // { tick, landCells, dominationShare, players } with players[1..n].
 export function decodeStats(buf) {
@@ -104,9 +104,10 @@ export function decodeStats(buf) {
   const dv = new DataView(bytes);
   const n = dv.getUint16(12, true);
   const rec = dv.getUint16(14, true);
+  const HEADER = 20;
   const players = [null];
   for (let f = 1; f <= n; f++) {
-    const o = 16 + (f - 1) * rec;
+    const o = HEADER + (f - 1) * rec;
     const troops = dv.getFloat32(o, true);
     const attacking = dv.getFloat32(o + 4, true);
     const flags = dv.getUint32(o + 40, true);
@@ -136,12 +137,14 @@ export function decodeStats(buf) {
       },
       blitzActive: dv.getFloat32(o + 68, true),   // seconds left
       blitzCooldown: dv.getFloat32(o + 72, true), // seconds until ready
+      bountyEarned: dv.getFloat32(o + 76, true),  // gold from bounties, match total
     });
   }
   return {
     tick: dv.getUint32(0, true),
     landCells: dv.getUint32(4, true),
     dominationShare: dv.getFloat32(8, true),
+    bountyFid: dv.getUint32(16, true), // faction with a price on its head, 0 = none
     players,
   };
 }

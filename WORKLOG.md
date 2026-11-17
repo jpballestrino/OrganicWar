@@ -200,3 +200,29 @@ the cap per second, so any fair exchange rate is either useless or decisive.
   above (bounty on the leader first — plunder feeds the snowball in big rooms),
   and whether to offer a 64-player mode in the UI (engine + custom rooms
   support it; Quick Battle stays 20).
+
+## Session 2 — bounty on the leader + Mega Battle (asked after PR #5 merged)
+
+- [x] Bounty on the leader (sim, stats header, bots, map tag, leaderboard 🎯,
+      banners, bounty-gold toasts, How to Play) + hysteresis against flicker.
+- [x] Mega Battle (64): second Quick Battle queue + home button, per-room
+      safe-zone radius (45 for 64), land-only spawn fallback, scaled land
+      milestones, Play Again remembers the mode.
+- [x] Tests: `bounty_on_a_runaway_leader`; browser suite in both modes
+      (`MODE=mega npm run test:browser`).
+- Measured before hysteresis: 64 players → domination at 4:00, final lands
+  54.9% vs 38.3% (was 52% vs 7.7%); 20 players → 3:40, 54.9% vs 45%.
+- After hysteresis + bots ganging up on the target (3 × 64 players, 1 × 20):
+  64p ends 4:13 / 4:34 / 4:44, runner-up 35.9% / 40.1% / 37.1% (was 6–8%);
+  20p ends 3:50, 55.0% vs 44.8%. Bounties last 2–21 s; the client announces
+  the same target at most once per 30 s.
+- [x] XP for Mega Battle: results scored as standard-battle equivalents
+      (`fieldScale` in progression.js) — land ×3.2, placement ÷3.2, Victory
+      150 → 480; mission cards show the Mega target. First JS test file
+      (`src/js/progression.test.js`, 8 tests); standard XP is unchanged.
+- [x] XP synced to the server for logged-in players: server-scored from the
+      worker's own match numbers (shared pure core in progression.js),
+      `user_progression` table (migration 006), pushed on connect / at match
+      end, one-time validated guest import, player-timezone days. Tests: 16
+      vitest (incl. server/game/progression.test.js) + scripts/e2e-progression.mjs
+      (real match eliminated / game over, import, win) + Chromium login flow.

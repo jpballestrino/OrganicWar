@@ -20,6 +20,8 @@ const { chromium } = createRequire(import.meta.url)('playwright');
 
 const URL = process.env.URL || 'http://localhost:3000';
 const SHOTS = process.env.SHOTS || '';
+// MODE=mega plays a Mega Battle (64 players) instead of a standard Quick Battle.
+const MODE = process.env.MODE === 'mega' ? 'mega' : 'standard';
 const failures = [];
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
@@ -48,13 +50,17 @@ await shot(page, '01-home');
 const guest = page.locator('#linkGuest:visible').first();
 if (await guest.count()) { await guest.click(); await page.waitForTimeout(400); }
 await shot(page, '01b-guest-home');
-const quick = page.locator('#btn-quick-play-guest:visible, #btn-quick-play:visible').first();
+const quick = MODE === 'mega'
+  ? page.locator('#btn-mega-play-guest:visible, #btn-mega-play:visible').first()
+  : page.locator('#btn-quick-play-guest:visible, #btn-quick-play:visible').first();
 await quick.click();
 
 // Spawn selection: pick a land cell near the middle of the screen.
 await page.waitForFunction(() => document.getElementById('spawnOverlay')?.style.display === 'flex', null, { timeout: 30000 });
 const timerText = await page.textContent('#spawnTimerText');
 check('spawn timer shows the server duration', /^\d+$/.test((timerText || '').trim()), `"${timerText}"`);
+const radius = await page.evaluate(() => window.__owState.safeZoneRadius);
+check('spawn safe zone fits the room size', radius === (MODE === 'mega' ? 45 : 80), `radius ${radius}`);
 for (const [x, y] of [[960, 540], [700, 400], [1200, 600], [800, 700], [1100, 350]]) {
   await page.mouse.click(x, y);
   await page.waitForTimeout(150);
@@ -127,6 +133,8 @@ const hud = await page.evaluate(() => ({
   leaderboardRows: document.getElementById('leaderboardList').children.length,
 }));
 check('HUD shows live numbers', parseInt(hud.land.replace(/,/g, '')) > 0 && hud.leaderboardRows > 0, JSON.stringify(hud));
+const players = await page.evaluate(() => Object.values(window.__owState.activePlayerSlots).filter(Boolean).length);
+check('room has the expected number of factions', players === (MODE === 'mega' ? 64 : 20), `${players} factions`);
 
 // --- Reload mid-match: the reconnect token must bring back map, HUD, buildings ---
 const ownedBefore = await page.evaluate(() => window.__owCountOwned(parseInt(window.__owState.playerFaction)));

@@ -6,7 +6,7 @@
 
 import { state } from './state.js';
 import { playSfx } from './sfx.js';
-import { applyMatchResult, loadProfile } from './progression.js';
+import { applyMatchResult, loadProfile, isServerMode, setServerProfile, renderProgressCards } from './progression.js';
 import { escapeHtml } from './escape.js';
 import { showToast } from './guildUI.js';
 import { getCellOwner } from './simBridge.js';
@@ -15,7 +15,12 @@ import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST } from './constants.js';
 const AUTO_QUICK_PLAY_KEY = 'ow_auto_quick_play';
 // A fair share of a 20-player map is ~63k land (everyone passes 50k in the first
 // 30s), so milestones start above that: each one marks a real power spike.
-const LAND_MILESTONES = [100000, 250000, 500000, 1000000];
+// Bigger rooms have a smaller fair share, so the milestones scale with it.
+const LAND_MILESTONES_20 = [100000, 250000, 500000, 1000000];
+const landMilestones = () => {
+  const scale = Math.min(1, 20 / Math.max(1, match.total || 20));
+  return LAND_MILESTONES_20.map(m => Math.round(m * scale / 5000) * 5000);
+};
 const ALIVE_CALLOUTS = {
   10: ['10 remain', 'The map is getting crowded'],
   5: ['Final 5', 'Every border is a front line'],
@@ -32,6 +37,14 @@ function freshMatch() {
     settled: false,
     startedAt: 0,
     total: 0,
+    bountyFid: 0,
+    bountyAnnouncedAt: {},
+    // Logged-in players: the server's XP result (progression-result), and the
+    // options the recap was last shown with, so it can be re-rendered.
+    pendingProgress: null,
+    endOpts: null,
+    bountyEarnedShown: 0,
+    lastBountyToastAt: 0,
     alive: 0,
     eliminations: 0,
     towers: 0,
@@ -127,6 +140,34 @@ function nextBanner() {
   }, 2100);
 }
 
+// Bounty on a runaway leader: announce when it is placed (on you or a rival)
+// and show what you have earned from it, at most every few seconds.
+function announceBounty(bountyFid, earned) {
+  if (!match.active || match.settled) return;
+  const me = myFid();
+  if (bountyFid !== match.bountyFid) {
+    match.bountyFid = bountyFid;
+    // Rivals gang up fast, so a bounty can lapse and return within seconds:
+    // announce the same target at most once every 30 s.
+    const now = performance.now();
+    const last = match.bountyAnnouncedAt[bountyFid] || 0;
+    if (!bountyFid || now - last < 30000) return;
+    match.bountyAnnouncedAt[bountyFid] = now;
+    if (bountyFid === me) {
+      announce('Bounty on your head', 'Rivals pay less to take your land and earn gold for it', 'red', 'alarm');
+    } else if (bountyFid) {
+      announce(`Bounty on ${factionName(bountyFid)}`, 'Their land is 25% cheaper to take and pays gold', 'gold', 'go');
+    }
+  }
+  const now = performance.now();
+  const gain = earned - (match.bountyEarnedShown || 0);
+  if (gain >= 250 && now - (match.lastBountyToastAt || 0) > 4000) {
+    match.bountyEarnedShown = earned;
+    match.lastBountyToastAt = now;
+    showToast(`Bounty +${Math.floor(gain).toLocaleString('en-US')} gold`, 'success');
+  }
+}
+
 function flashDanger() {
   const v = document.getElementById('dangerVignette');
   if (!v) return;
@@ -170,26 +211,29 @@ function beginMatch() {
   // New commanders get the controls on screen for the opening of the match.
   const hint = document.getElementById('controlsHint');
   if (hint) {
-    const isNew = loadProfile().games < 3;
+    const isNew = (loadProfile()?.games ?? 0) < 3;
     hint.style.display = isNew ? 'flex' : 'none';
     if (isNew) setTimeout(() => { hint.style.display = 'none'; }, 30000);
   }
 }
 
 function playAgain() {
-  try { sessionStorage.setItem(AUTO_QUICK_PLAY_KEY, '1'); } catch (_) { /* storage blocked */ }
+  // Remember which queue (standard / mega) to rejoin after the reload.
+  try { sessionStorage.setItem(AUTO_QUICK_PLAY_KEY, state.quickMode === 'mega' ? 'mega' : 'standard'); } catch (_) { /* storage blocked */ }
   quitFn();
 }
 
-// True once per page load if the previous page asked for an instant requeue.
+// The Quick Battle mode to rejoin ('standard' | 'mega'), once per page load,
+// if the previous page asked for an instant requeue; otherwise null.
 export function consumeAutoQuickPlay() {
   try {
-    if (sessionStorage.getItem(AUTO_QUICK_PLAY_KEY) === '1') {
+    const mode = sessionStorage.getItem(AUTO_QUICK_PLAY_KEY);
+    if (mode) {
       sessionStorage.removeItem(AUTO_QUICK_PLAY_KEY);
-      return true;
+      return mode === 'mega' ? 'mega' : 'standard'; // '1' from older pages = standard
     }
   } catch (_) { /* storage blocked */ }
-  return false;
+  return null;
 }
 
 // Lock in the result exactly once (own elimination or game over, whichever
@@ -211,7 +255,9 @@ function settle({ won, placement, survivedSec, killerId = 0, final = false, winn
     missiles: match.missiles,
     tookLead: match.tookLead,
   };
-  const progress = applyMatchResult(outcome);
+  // Guests score in the browser; a logged-in player's XP is scored by the
+  // server, which sends it as `progression-result` (possibly already here).
+  const progress = isServerMode() ? match.pendingProgress : applyMatchResult(outcome);
   match.result = { ...outcome, killerName: killerId ? factionName(killerId) : '', progress };
 
   state.activePurchaseMode = null;
@@ -234,6 +280,7 @@ function enterSpectate() {
 }
 
 function showEndScreen(result, { final = false, winner = null, animate = false, byDomination = false } = {}) {
+  match.endOpts = { final, winner, byDomination };
   const container = document.getElementById('gameArea') || document.body;
   const old = document.getElementById('matchEndOverlay');
   if (old) old.remove();
@@ -256,15 +303,36 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
     sub = result.killerName ? `Your empire fell to ${result.killerName}.` : 'Your empire has fallen.';
   }
 
+  // A logged-in player's XP is scored by the server: until progression-result
+  // arrives (normally within a moment) the XP part of the card is a placeholder.
   const p = result.progress;
-  const xpLines = p.lines.map(l => `
-    <div class="end-xp-line"><span>${escapeHtml(l.label)}</span><span>+${l.xp}</span></div>`).join('');
-  const missions = p.missions.map(m => `
+  const xpLines = p ? p.lines.map(l => `
+    <div class="end-xp-line"><span>${escapeHtml(l.label)}</span><span>+${l.xp}</span></div>`).join('') : '';
+  const missions = p ? p.missions.map(m => `
     <div class="pc-mission ${m.done ? 'done' : ''}">
       <span class="pc-mission-check">${m.done ? '✔' : '○'}</span>
       <span class="pc-mission-text">${escapeHtml(m.text)}</span>
       <span class="pc-mission-xp">+${m.xp} XP</span>
-    </div>`).join('');
+    </div>`).join('') : '';
+  const progressHtml = p ? `
+      <div class="end-xp">
+        ${xpLines}
+        <div class="end-xp-line end-xp-total"><span>Total</span><span>+${p.totalXp} XP</span></div>
+      </div>
+
+      <div class="end-level">
+        <div class="end-level-row">
+          <span id="endLevelLabel">Level ${p.before.level} · ${p.before.title}</span>
+          <span id="endLevelUp" class="end-level-up" style="visibility:hidden;">LEVEL UP!</span>
+        </div>
+        <div class="pc-bar"><div id="endLevelFill" class="pc-bar-fill" style="width:${animate ? p.before.pct : p.after.pct}%"></div></div>
+      </div>
+
+      <div class="end-missions">
+        <div class="pc-missions-label">Daily missions</div>
+        ${missions}
+      </div>` : `
+      <div class="end-xp end-xp-pending" id="endXpPending">Saving XP to your account…</div>`;
 
   const overlay = document.createElement('div');
   overlay.id = 'matchEndOverlay';
@@ -286,23 +354,7 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
         <div class="end-stat"><b>${result.missiles}</b><span>Missiles</span></div>
       </div>
 
-      <div class="end-xp">
-        ${xpLines}
-        <div class="end-xp-line end-xp-total"><span>Total</span><span>+${p.totalXp} XP</span></div>
-      </div>
-
-      <div class="end-level">
-        <div class="end-level-row">
-          <span id="endLevelLabel">Level ${p.before.level} · ${p.before.title}</span>
-          <span id="endLevelUp" class="end-level-up" style="visibility:hidden;">LEVEL UP!</span>
-        </div>
-        <div class="pc-bar"><div id="endLevelFill" class="pc-bar-fill" style="width:${animate ? p.before.pct : p.after.pct}%"></div></div>
-      </div>
-
-      <div class="end-missions">
-        <div class="pc-missions-label">Daily missions</div>
-        ${missions}
-      </div>
+${progressHtml}
 
       <div class="end-buttons">
         <button id="btnEndPlayAgain" class="feel-btn feel-btn-primary feel-btn-big">Play Again <kbd>Enter</kbd></button>
@@ -322,6 +374,15 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
     if (lbl) lbl.textContent = `Level ${info.level} · ${info.title}`;
   };
 
+  if (!p) {
+    // If the server's result never comes (connection trouble), say where the
+    // XP went rather than leave "saving…" up forever.
+    setTimeout(() => {
+      const box = document.getElementById('endXpPending');
+      if (box) box.textContent = 'Your XP is saved to your account and will show on your profile.';
+    }, 10000);
+    return;
+  }
   if (!animate) { setLevelLabel(p.after); return; }
 
   // Animate the XP bar: fill, and on a level-up roll over into the new level.
@@ -350,7 +411,8 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
 // ── Per-snapshot stats (called from network.js) ──────────────────────────────
 // stats: { cells, gold, rank, alive, leaderFid, landCells, dominationShare,
 //          landLeaderFid, landLeaderCells }
-export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells = 0, dominationShare = 0, landLeaderFid = 0, landLeaderCells = 0 }) {
+export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells = 0, dominationShare = 0, landLeaderFid = 0, landLeaderCells = 0, bountyFid = 0, bountyEarned = 0 }) {
+  announceBounty(bountyFid, bountyEarned);
   if (!match.active || match.settled) return;
   const now = performance.now();
   match.alive = alive;
@@ -449,9 +511,10 @@ export function onSnapshotStats({ cells, gold, rank, alive, leaderFid, landCells
   }
 
   // Land milestones.
-  while (match.landMilestoneIdx < LAND_MILESTONES.length && cells >= LAND_MILESTONES[match.landMilestoneIdx]) {
-    const reached = LAND_MILESTONES[match.landMilestoneIdx++];
-    if (cells < (LAND_MILESTONES[match.landMilestoneIdx] ?? Infinity)) {
+  const milestones = landMilestones();
+  while (match.landMilestoneIdx < milestones.length && cells >= milestones[match.landMilestoneIdx]) {
+    const reached = milestones[match.landMilestoneIdx++];
+    if (cells < (milestones[match.landMilestoneIdx] ?? Infinity)) {
       showToast(`🏴 ${reached.toLocaleString()} land — your empire is growing`, 'success');
       playSfx('milestone');
     }
@@ -554,6 +617,18 @@ export function initMatchFeel({ socket, quit }) {
   });
 
   socket.on('build-rejected', () => playSfx('error'));
+
+  // A logged-in player's XP for this match, scored and saved by the server.
+  socket.on('progression-result', (result = {}) => {
+    if (result.profile) { setServerProfile(result.profile); renderProgressCards(); }
+    if (!match.result) { match.pendingProgress = result; return; }
+    if (match.result.progress) return;
+    match.result.progress = result;
+    // Fill the recap in place if it is on screen (not while spectating).
+    if (document.getElementById('matchEndOverlay')) {
+      showEndScreen(match.result, { ...match.endOpts, animate: true });
+    }
+  });
 
   socket.on('gold-seized', ({ toId, gold, kind } = {}) => {
     if (!match.active || toId !== myFid()) return;

@@ -181,6 +181,23 @@ const RADAR_RANGE_MULT: f32 = 1.25;
 const ARMS_MISSILE_MULT: f32 = 0.75;
 const FLAK_RECHARGE_SECONDS: f32 = 20.0;
 
+// ── Bounty on the leader ────────────────────────────────────────────────────
+// A runaway leader gets a price on its head: when the largest empire holds more
+// than the production soft cap (GROWTH_FAIR_SHARE_MULT × its fair share) AND at
+// least BOUNTY_LEAD_RATIO × the runner-up's land, every other faction pays
+// BOUNTY_COST_MULT× the troops to take its cells and earns BOUNTY_GOLD_PER_CELL
+// gold per cell taken. Re-evaluated every tick (update_bounty). Counterweight to
+// plunder, which otherwise feeds the leader's snowball in big rooms.
+const BOUNTY_LEAD_RATIO: f32 = 1.5;
+// Hysteresis: once placed, the bounty stays on the same leader until its lead
+// drops below BOUNTY_KEEP_RATIO × the runner-up, or it falls under
+// BOUNTY_KEEP_CAP_SHARE × the soft cap — so it doesn't flicker on and off (and
+// re-announce) while the leader hovers at the threshold.
+const BOUNTY_KEEP_RATIO: f32 = 1.2;
+const BOUNTY_KEEP_CAP_SHARE: f32 = 0.85;
+const BOUNTY_COST_MULT: f32 = 0.75;
+const BOUNTY_GOLD_PER_CELL: f32 = 0.5;
+
 // Upper bound for per-cell difficulty_to_invade (troops-per-cell × enclosure).
 // The client uses this same value to normalize density to 0..1 for the shader,
 // so density == DIFFICULTY_CAP → fully solid interior at max enclosure.
@@ -199,16 +216,18 @@ const NEUTRAL_INVADE_COST: f32 = 0.2;
 // server ships a single buffer instead of one per field and the client never
 // has to re-derive economy numbers. All little-endian.
 //   header (STATS_HEADER_BYTES): u32 tick, u32 land_cells, f32 domination_share,
-//                                u16 num_players, u16 record_bytes
+//                                u16 num_players, u16 record_bytes,
+//                                u32 bounty faction (0 = no bounty)
 //   record (STATS_RECORD_BYTES), players 1..=num_players:
 //     f32 home troops, f32 troops on attack, f32 effective max population,
 //     u32 owned cells, f32 gold, f32 gold income /s, f32 troop growth /s,
 //     f32 kills, f32 gold spent, u16 centroid row, u16 centroid col, u32 flags,
 //     f32 price × 6 (defense, silo, mine, anti-air, city, missile — what this
-//     player pays right now), f32 blitz seconds left, f32 blitz cooldown left
+//     player pays right now), f32 blitz seconds left, f32 blitz cooldown left,
+//     f32 bounty gold earned (match total)
 // Decoded by src/js/simBridge.js (decodeStats) — change both together.
-const STATS_HEADER_BYTES: usize = 16;
-const STATS_RECORD_BYTES: usize = 76;
+const STATS_HEADER_BYTES: usize = 20;
+const STATS_RECORD_BYTES: usize = 80;
 const STAT_FLAG_ALIVE: u32 = 1;
 const STAT_FLAG_BOT: u32 = 2;
 // write_buildings() emits this many u32s per building.
@@ -350,6 +369,10 @@ pub struct SimulationState {
     // the tick the next one may start.
     player_blitz_until: Vec<u32>,
     player_blitz_ready: Vec<u32>,
+    // The faction with a bounty on its head (0 = none) and the gold each
+    // faction has collected from bounties this match. See update_bounty.
+    bounty_faction: usize,
+    player_bounty_earned: Vec<f32>,
     // Gold changing hands outside the normal economy, for the server to
     // announce: (victim, beneficiary, amount, kind) u32 quads; kind 0 = plunder
     // (elimination), 1 = salvage (tower razed by conquest).
@@ -430,6 +453,8 @@ impl SimulationState {
             player_gold_spent: vec![0.0; PLAYER_ARRAY_SIZE],
             player_blitz_until: vec![0; PLAYER_ARRAY_SIZE],
             player_blitz_ready: vec![0; PLAYER_ARRAY_SIZE],
+            bounty_faction: 0,
+            player_bounty_earned: vec![0.0; PLAYER_ARRAY_SIZE],
             plunder_buf: Vec::new(),
             player_population_growth_rate: vec![0; PLAYER_ARRAY_SIZE],
             player_income_per_sec: vec![0.0; PLAYER_ARRAY_SIZE],
@@ -608,6 +633,7 @@ impl SimulationState {
             self.player_gold[i] = 0.0;
             self.player_blitz_until[i] = 0;
             self.player_blitz_ready[i] = 0;
+            self.player_bounty_earned[i] = 0.0;
             self.player_population_growth_rate[i] = 0;
             self.player_max_population_cap[i] = 0;
             self.player_account_id[i] = 0;
@@ -618,6 +644,7 @@ impl SimulationState {
 
         let actual_players = if num_players as usize > MAX_PLAYERS { MAX_PLAYERS } else { num_players as usize };
         self.num_players = actual_players;
+        self.bounty_faction = 0;
 
         // Anti-snowball: set the production soft cap at GROWTH_FAIR_SHARE_MULT ×
         // each player's fair share of the land. Terrain is generated (by the
@@ -794,6 +821,11 @@ impl SimulationState {
         // i.e. what a plain row-major scan would have met first. Keeps the choice
         // independent of the order blocks are visited in.
         let mut weakest_enemy_key = [u64::MAX; PLAYER_ARRAY_SIZE];
+        // A cell of the bounty target bordering each bot (lowest key wins, as
+        // above, so the pick is independent of scan order).
+        let bounty = self.bounty_faction;
+        let mut bounty_cell = [-1i64; PLAYER_ARRAY_SIZE];
+        let mut bounty_key = [u64::MAX; PLAYER_ARRAY_SIZE];
 
         for br in 0..BLOCKS_H {
             for bc in 0..BLOCKS_W {
@@ -830,8 +862,14 @@ impl SimulationState {
                                     best_neutral_cell[o] = n_idx as i64;
                                 }
                             } else if n_owner < PLAYER_ARRAY_SIZE {
+                                if n_owner == bounty {
+                                    let key = (cell * 8 + dir) as u64;
+                                    if key < bounty_key[o] { bounty_key[o] = key; bounty_cell[o] = n_idx as i64; }
+                                }
                                 let cells = self.player_owned_cells[n_owner].max(1) as f32;
-                                let strength = self.player_total_troops[n_owner] / cells;
+                                let mut strength = self.player_total_troops[n_owner] / cells;
+                                // The bounty target is cheaper to hit; bots know it.
+                                if n_owner == self.bounty_faction { strength *= BOUNTY_COST_MULT; }
                                 let key = (cell * 8 + dir) as u64;
                                 if strength < weakest_enemy_strength[o]
                                     || (strength == weakest_enemy_strength[o] && key < weakest_enemy_key[o])
@@ -865,7 +903,12 @@ impl SimulationState {
             // runs out — holding back instead was tried and deadlocks the endgame.
             let peace = self.current_tick < BOT_PEACE_SECONDS * self.tick_hz;
 
-            let target_cell = if has_neutral && (!can_overpower || peace) {
+            // "Stop the leader": a bot bordering the bounty target turns on it
+            // (outside the truce) — the counterweight only works if the
+            // runaway's neighbours actually gang up on it.
+            let target_cell = if !peace && bounty_cell[f] != -1 {
+                bounty_cell[f]
+            } else if has_neutral && (!can_overpower || peace) {
                 best_neutral_cell[f]
             } else if has_enemy && !peace {
                 weakest_enemy_cell[f]
@@ -891,6 +934,7 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn tick(&mut self) {
         self.current_tick += 1;
+        self.update_bounty();
         self.apply_production();
         self.process_war_fronts();
         self.process_inflight_missiles();
@@ -1208,7 +1252,10 @@ impl SimulationState {
                 // fronts pushes each at its own rate.
                 let blitz = self.player_blitz_until[f] > self.current_tick;
                 let speed_mult = if blitz { BLITZ_SPEED_MULT } else { 1 };
-                let enemy_cost_mult = if blitz { BLITZ_COST_MULT } else { 1.0 };
+                let mut enemy_cost_mult = if blitz { BLITZ_COST_MULT } else { 1.0 };
+                // A front aimed at the bounty target is cheaper (and pays, below).
+                let bounty_front = t != 0 && t == self.bounty_faction;
+                if bounty_front { enemy_cost_mult *= BOUNTY_COST_MULT; }
                 let max_conquers = ((self.front_pool[fi] * EXPANSION_CELLS_PER_TROOP) as usize)
                     .clamp(MIN_CONQUERS_PER_TICK, MAX_CONQUERS_PER_TICK) * speed_mult;
                 let mut conquers = 0;
@@ -1306,6 +1353,10 @@ impl SimulationState {
                         self.player_row_sum[f] += nr;
                         self.player_col_sum[f] += nc;
                         conquers += 1;
+                        if bounty_front {
+                            self.player_gold[f] += BOUNTY_GOLD_PER_CELL;
+                            self.player_bounty_earned[f] += BOUNTY_GOLD_PER_CELL;
+                        }
                         if n_owner != 0 && self.player_owned_cells[n_owner] == 0 {
                             self.plunder(n_owner, f);
                         }
@@ -1499,6 +1550,7 @@ impl SimulationState {
         let n = self.num_players.max(1);
         buf.extend_from_slice(&(n as u16).to_le_bytes());
         buf.extend_from_slice(&(STATS_RECORD_BYTES as u16).to_le_bytes());
+        buf.extend_from_slice(&(self.bounty_faction as u32).to_le_bytes());
         debug_assert_eq!(buf.len(), STATS_HEADER_BYTES);
         for f in 1..=n {
             let cells = self.player_owned_cells[f];
@@ -1531,6 +1583,7 @@ impl SimulationState {
             let left = |until: u32| until.saturating_sub(self.current_tick) as f32 / hz;
             buf.extend_from_slice(&left(self.player_blitz_until[f]).to_le_bytes());
             buf.extend_from_slice(&left(self.player_blitz_ready[f]).to_le_bytes());
+            buf.extend_from_slice(&self.player_bounty_earned[f].to_le_bytes());
         }
         debug_assert_eq!(buf.len(), STATS_HEADER_BYTES + n * STATS_RECORD_BYTES);
         let len = buf.len() as u32;
@@ -1590,6 +1643,30 @@ impl SimulationState {
             }
         }
         best
+    }
+
+    /// Decide who (if anyone) has a bounty on its head this tick: the largest
+    /// empire, once it is past the production soft cap and BOUNTY_LEAD_RATIO×
+    /// the runner-up. O(players); runs every tick.
+    fn update_bounty(&mut self) {
+        let mut first = (0usize, 0u32);
+        let mut second = 0u32;
+        for f in 1..PLAYER_ARRAY_SIZE {
+            if self.player_is_alive[f] == 0 { continue; }
+            let c = self.player_owned_cells[f];
+            if c > first.1 { second = first.1; first = (f, c); } else if c > second { second = c; }
+        }
+        let (leader, cells) = first;
+        let (ratio, cap) = if leader != 0 && leader == self.bounty_faction {
+            (BOUNTY_KEEP_RATIO, self.growth_soft_cap as f32 * BOUNTY_KEEP_CAP_SHARE)
+        } else {
+            (BOUNTY_LEAD_RATIO, self.growth_soft_cap as f32)
+        };
+        let runaway = leader != 0
+            && self.growth_soft_cap > 0
+            && cells as f32 > cap
+            && cells as f32 >= second as f32 * ratio;
+        self.bounty_faction = if runaway { leader } else { 0 };
     }
 
     /// `victim` just lost its last cell to `attacker`: the attacker takes the
@@ -2742,6 +2819,54 @@ mod tests {
         assert_eq!(s.building_links[city] & LINK_WALLED_CITY, 0);
         assert_eq!(s.building_links[city] & LINK_WORKFORCE, LINK_WORKFORCE, "the mine link stays");
         assert_eq!(s.building_links.len(), s.defense_buildings.len(), "parallel vecs stay aligned");
+    }
+
+    // Bounty: a runaway leader is marked, is cheaper to attack and pays gold.
+    #[test]
+    fn bounty_on_a_runaway_leader() {
+        let mut s = SimulationState::new();
+        s.init_players(4, 0, 50, 5000);
+        s.set_tick_hz(25);
+        for (f, (r, c)) in [(1u32, (300usize, 300usize)), (2, (300, 700)), (3, (700, 300)), (4, (700, 700))] {
+            s.spawn_faction(f, r, c);
+        }
+        s.tick();
+        assert_eq!(s.bounty_faction, 0, "equal empires: no bounty");
+
+        // Faction 1 grabs everything east of faction 2's nucleus (the test map
+        // is all land, so 2× fair share is ~1M cells): bounty.
+        for r in 0..MAP_HEIGHT {
+            for c in 713..MAP_WIDTH {
+                if s.cell_owner(r * MAP_WIDTH + c) == 0 { s.set_cell_owner(r * MAP_WIDTH + c, 1); s.player_owned_cells[1] += 1; }
+            }
+        }
+        assert!(s.player_owned_cells[1] > s.growth_soft_cap);
+        s.tick();
+        assert_eq!(s.bounty_faction, 1);
+        s.write_stats(1, 0.5);
+        assert_eq!(u32::from_le_bytes(s.stats_buf[16..20].try_into().unwrap()), 1, "bounty target in the stats header");
+
+        // Faction 2 conquers some of faction 1's cells: gold per cell.
+        s.player_gold[2] = 0.0;
+        let before = s.player_owned_cells[1];
+        for _ in 0..5 {
+            s.player_total_troops[2] = 200_000.0;
+            s.execute_expansion(2, (300 * MAP_WIDTH + 720) as u32, 50); // a faction-1 cell
+            s.tick();
+        }
+        let taken = before.saturating_sub(s.player_owned_cells[1]);
+        assert!(taken > 0, "faction 2 took bounty land");
+        assert!(s.player_bounty_earned[2] >= taken as f32 * BOUNTY_GOLD_PER_CELL * 0.99);
+        assert_eq!(s.player_bounty_earned[1], 0.0, "the target earns nothing");
+
+        // Hysteresis: a lead of 1.3× (under the 1.5× trigger) keeps the bounty...
+        s.player_owned_cells[3] = (s.player_owned_cells[1] as f32 / 1.3) as u32;
+        s.tick();
+        assert_eq!(s.bounty_faction, 1, "an existing bounty survives a small dip");
+        // ...but once the lead is really gone, so is the bounty.
+        s.player_owned_cells[3] = s.player_owned_cells[1];
+        s.tick();
+        assert_eq!(s.bounty_faction, 0);
     }
 
     // Full 20-bot match on an all-plains map, driven on the same cadence as

@@ -633,3 +633,10 @@
     font-size: 11px;
     line-height: 10px;
 }
+
+/* Bounty target marker in the leaderboard. */
+.leaderboard-bounty {
+    margin-left: 4px;
+    font-size: 11px;
+    filter: drop-shadow(0 0 4px rgba(255, 107, 74, 0.8));
+}

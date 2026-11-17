@@ -5,8 +5,9 @@ import { activeRooms, guildWarQueue, rankedQueue } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
 import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
-import { MAX_FACTIONS } from '../../src/js/constants.js';
+import { MAX_FACTIONS, safeZoneRadiusFor } from '../../src/js/constants.js';
 import { roomRefusal } from './capacity.js';
+import { awardMatchXp } from './progression.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
 const BOT_ADJECTIVES = [
@@ -193,6 +194,7 @@ function buildRoomObject({ roomId, name, sim, maxPlayers, preset, isQuickPlay, i
     spawnSelections: new Map(),
     preset: preset || 'north_america',
     maxPlayers,
+    safeZoneRadius: safeZoneRadiusFor(maxPlayers),
     isQuickPlay: isQuickPlay || false,
     isRankedMatch: isRankedMatch || false,
     isGuildWar: isGuildWar || false,
@@ -254,7 +256,8 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
   sim.initSimulation(preset);
 
   if (isQuickPlay) {
-    let ticks = 5;
+    // A Mega Battle waits a little longer for humans before bots fill in.
+    let ticks = maxPlayers > 20 ? 10 : 5;
 
     room.countdownInterval = setInterval(() => {
       ticks--;
@@ -403,7 +406,6 @@ export function matchmakeGuildWars() {
   }
 }
 
-export const SAFE_ZONE_RADIUS = 80;
 // Seconds players get to pick a spawn. The map is on screen for the first time
 // here, so 5s was too short to read it; the phase ends early once every human
 // has picked (see the select-spawn handler).
@@ -431,7 +433,9 @@ export function startSpawnSelection(room) {
   
   // mapId (= room.preset) lets the client repaint the correct terrain before
   // players pick spawns — this is the first screen that renders the map canvas.
-  io.to(room.id).emit('spawn-selection-start', { duration: SPAWN_SELECTION_SECONDS, mapId: room.preset });
+  io.to(room.id).emit('spawn-selection-start', {
+    duration: SPAWN_SELECTION_SECONDS, mapId: room.preset, safeZoneRadius: room.safeZoneRadius,
+  });
   log('info', `[Room ${room.id}] Entering spawn selection phase (map: ${room.preset})`);
 
   updateLobbyList();
@@ -489,7 +493,7 @@ export function finalizeSpawns(room) {
         let tooClose = false;
         for (let [, pos] of room.spawnSelections.entries()) {
           let distSq = (pos.row - row) ** 2 + (pos.col - col) ** 2;
-          if (distSq < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS) {
+          if (distSq < room.safeZoneRadius * room.safeZoneRadius) {
             tooClose = true;
             break;
           }
@@ -500,10 +504,12 @@ export function finalizeSpawns(room) {
         }
       }
       
-      // Fallback if we couldn't find a spot (rare, but just in case)
-      if (!valid) {
-        row = Math.floor(Math.random() * 800) + 100;
-        col = Math.floor(Math.random() * 1700) + 100;
+      // Fallback if every land cell is inside a safe zone (crowded rooms): any
+      // land cell will do — a spawn on water would be dead on arrival.
+      for (let guard = 0; !valid && guard < 20000; guard++) {
+        row = Math.floor(Math.random() * 1080);
+        col = Math.floor(Math.random() * 1920);
+        valid = terrainAt(col / 1920, row / 1080, room.preset) !== TERRAIN.WATER;
       }
       
       room.spawnSelections.set(fid, { row, col });
@@ -541,6 +547,8 @@ export function startMatchNow(room) {
       mapId: room.preset,
       domination: room.isGuildWar ? null : DOMINATION,
       onGameOver: (winnerId, stats, byDomination) => handleGameOver(room, winnerId, stats, byDomination),
+      // XP for a logged-in player whose faction was just eliminated.
+      onPlayerEliminated: (p) => awardMatchXp(io, room, p.factionId, { ...p, won: false }),
       onError: (message) => {
         log('error', `[Room ${room.id}] Simulation crashed: ${message}`);
         io.to(room.id).emit('server-error', { message: 'The game simulation crashed. Please return to the main menu.' });
@@ -588,6 +596,9 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
   }
 
   let isAllianceWin = winnerFaction ? !!room.sim.alliances[winnerFaction] : false;
+  const sameTeam = (fid) => winnerFaction && (
+    fid === winnerFaction
+    || (isAllianceWin && room.sim.alliances[fid] === room.sim.alliances[winnerFaction]));
 
   io.to(room.id).emit('game-over', {
     winner: winnerFaction,
@@ -595,6 +606,15 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
     byDomination,
     durationSec: Math.floor((Date.now() - room.createdAt) / 1000),
   });
+
+  // XP for every logged-in player still in the match (the eliminated ones were
+  // awarded at their elimination; awardMatchXp skips them and guests).
+  for (const key of Object.keys(room.humanPlayers || {})) {
+    const fid = parseInt(key);
+    const s = matchStats[fid] || {};
+    const won = !!sameTeam(fid);
+    awardMatchXp(io, room, fid, { ...s, won, placement: won ? 1 : (s.placement || 2) });
+  }
 
   if (room.isGuildWar && winnerFaction) {
     let winningGuild = winnerFaction <= room.teamSize ? room.guildA : room.guildB;

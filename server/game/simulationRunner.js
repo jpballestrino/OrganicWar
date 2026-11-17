@@ -15,6 +15,7 @@ export class RoomSim {
     this.io = io;
     this.onGameOver = opts.onGameOver || null;
     this.onReady = opts.onReady || null;
+    this.onPlayerEliminated = opts.onPlayerEliminated || null;
     this.onError = opts.onError || null;
     this.destroyed = false;
     this.load = null; // latest load-report from the worker
@@ -65,6 +66,11 @@ export class RoomSim {
       case 'emit':
         // Broadcast to the entire room
         this.io.to(this.roomId).emit(msg.event, msg.payload);
+        // A faction's match ends at its elimination: the room manager awards
+        // XP then (after the broadcast, so the client's recap is already up).
+        if (msg.event === 'player-eliminated' && this.onPlayerEliminated) {
+          this.onPlayerEliminated(msg.payload);
+        }
         break;
 
       case 'emitToSocket':

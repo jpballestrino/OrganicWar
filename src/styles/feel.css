@@ -564,3 +564,26 @@ body.in-match #notificationContainer {
 .pc-mission.done .pc-mission-xp {
     color: #4ade80;
 }
+
+/* "· top 16 in Mega Battle": the same daily mission's target in a 64-player room. */
+.pc-mission-mega {
+    color: #e8834a;
+    font-size: 0.85em;
+    white-space: nowrap;
+}
+
+/* Logged-in recap while the server scores the match (progression-result). */
+.end-xp-pending {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 13px;
+    padding: 14px 0;
+}
+
+/* Home progress card while a logged-in player's profile loads. */
+.pc-loading {
+    color: #64748b;
+    font-size: 12px;
+    text-align: center;
+    padding: 10px 0;
+}

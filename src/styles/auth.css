@@ -229,6 +229,18 @@
     animation: btnPulseGreen 2.5s infinite ease-in-out;
 }
 
+/* Mega Battle (64 players): the second Quick Battle queue. */
+.home-btn-mega {
+    background: linear-gradient(135deg, #a8380c 0%, #e8692a 50%, #c9531b 100%);
+    border-color: rgba(232, 105, 42, 0.35);
+    box-shadow: 0 4px 20px rgba(232, 105, 42, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.home-btn-mega:hover {
+    box-shadow: 0 6px 30px rgba(232, 105, 42, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    border-color: rgba(232, 105, 42, 0.6);
+}
+
 .home-btn-play:hover {
     box-shadow: 0 6px 30px rgba(40, 199, 86, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.15);
     border-color: rgba(40, 199, 86, 0.6);

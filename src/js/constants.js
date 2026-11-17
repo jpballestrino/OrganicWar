@@ -15,6 +15,15 @@ export const MAX_FACTIONS = 64;
 // Players in a Quick Battle. Pacing, missions and milestones are calibrated
 // for 20 (see progression.js / matchFeel.js) — re-measure before changing.
 export const QUICK_PLAY_PLAYERS = 20;
+// Players in a Mega Battle (the second Quick Battle queue). Measured with
+// scripts/bench-room.mjs: ~7% of a core per room, ends by domination in ~4 min.
+export const MEGA_PLAY_PLAYERS = 64;
+// Spawn safe-zone radius (cells) for a room of `players`. 80 suits 20 players;
+// 64 circles of radius 80 would cover nearly all the land, so the radius
+// shrinks with the square root of the player count (equal total area).
+export function safeZoneRadiusFor(players) {
+  return Math.round(Math.max(40, Math.min(80, 80 * Math.sqrt(20 / Math.max(1, players)))));
+}
 
 // Packed per-cell layout (one u16 per cell). Mirrors the bit layout in
 // simulation-core/src/lib.rs — keep both in lockstep.
