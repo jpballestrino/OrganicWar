@@ -1,15 +1,32 @@
 import express from 'express';
 import crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
-import { createUser, findUserByEmail, findUserByUsername, findUserById, updateLastLogin, findUserByOAuth, createOAuthUser, linkOAuthToUser, createPasswordResetToken, findValidResetToken, markResetTokenUsed, updateUserPassword, findGuildById, createEmailVerificationToken, findEmailVerificationToken, markEmailVerificationTokenUsed, setEmailVerified } from '../database.js';
+import { createUser, findUserByEmail, findUserByUsername, findUserById, updateLastLogin, findUserByOAuth, createOAuthUser, linkOAuthToUser, createPasswordResetToken, findValidResetToken, markResetTokenUsed, invalidateResetTokens, updateUserPassword, findGuildById, createEmailVerificationToken, findEmailVerificationToken, markEmailVerificationTokenUsed, setEmailVerified } from '../database.js';
 import { generateToken, verifyToken, hashPassword, comparePassword, OAUTH_PLACEHOLDER } from '../auth.js';
-import { sendPasswordResetEmail, sendVerificationEmail } from '../email.js';
+import { sendPasswordResetEmail, sendVerificationEmail, emailConfigured } from '../email.js';
 import { isProfane } from '../utils/contentFilter.js';
+import { rateLimit } from '../rateLimit.js';
+
+const HOUR = 3600e3;
+const emailKey = (req) => (typeof req.body?.email === 'string' ? `email:${req.body.email.trim().toLowerCase()}` : '');
+const limitRegister = rateLimit({ name: 'register', max: 10, windowMs: HOUR, message: 'Too many accounts created from this network.' });
+const limitLogin = rateLimit({ name: 'login', max: 30, windowMs: 15 * 60e3, message: 'Too many login attempts.' });
+const limitEmails = (name) => rateLimit({ name, max: 5, windowMs: HOUR, key: emailKey, message: 'Too many emails requested.' });
+const limitReset = rateLimit({ name: 'reset', max: 20, windowMs: HOUR, message: 'Too many attempts.' });
+
+// The SMTP server refusing a message must not lose the request: log it and
+// report "not sent" so the caller can fall back.
+async function trySend(send, ...args) {
+  try { return await send(...args); } catch (err) {
+    console.error('[EMAIL] Sending failed:', err.message);
+    return false;
+  }
+}
 
 const authRouter = express.Router();
 const googleOAuthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-authRouter.post('/register', async (req, res) => {
+authRouter.post('/register', limitRegister, async (req, res) => {
   const { username, email, password, displayName } = req.body;
     
   if (!username || typeof username !== 'string' || username.length < 3 || username.length > 15 || !/^[a-zA-Z0-9_]+$/.test(username)) {
@@ -47,13 +64,14 @@ authRouter.post('/register', async (req, res) => {
     const expiresAt = new Date(Date.now() + 86400000).toISOString().replace('T', ' ').replace('Z', '');
     createEmailVerificationToken(user.id, emailToken, expiresAt);
 
-    const sent = await sendVerificationEmail(email, emailToken);
+    const sent = await trySend(sendVerificationEmail, email, emailToken);
     if (sent) {
       // SMTP is working — hold login until the user clicks the link.
-      return res.json({ requiresVerification: true, message: 'Account created! Check your email to verify your address before logging in.' });
+      return res.json({ requiresVerification: true, email: user.email, message: 'Account created! Check your email to verify your address before logging in.' });
     }
 
-    // SMTP not configured (dev/local) — auto-verify and log the link so dev can click it.
+    // SMTP not configured (dev/local), or the mail server refused the message:
+    // auto-verify rather than create an account nobody can ever log in to.
     setEmailVerified(user.id);
     const appUrl = process.env.APP_URL || 'http://localhost:3000';
     console.log(`[EMAIL] Verification URL (SMTP off): ${appUrl}/api/auth/verify-email?token=${emailToken}`);
@@ -69,18 +87,22 @@ authRouter.post('/register', async (req, res) => {
   }
 });
 
-authRouter.post('/login', (req, res) => {
+authRouter.post('/login', limitLogin, (req, res) => {
   const { username, password } = req.body;
     
-  if (!username || !password) {
+  if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'Username and password required.' });
   }
 
-  const user = findUserByUsername(username);
+  // Players often type their email here: accept either.
+  const user = username.includes('@') ? findUserByEmail(username.trim()) : findUserByUsername(username.trim());
   if (!user) {
     return res.status(401).json({ error: 'Invalid credentials.' });
   }
 
+  if (user.password_hash === OAUTH_PLACEHOLDER) {
+    return res.status(401).json({ error: 'This account uses Google or Discord sign-in. Use that button below.' });
+  }
   if (!comparePassword(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid credentials.' });
   }
@@ -376,16 +398,21 @@ authRouter.get('/verify-email', (req, res) => {
   res.redirect('/?email_verified=success');
 });
 
-authRouter.post('/resend-verification', async (req, res) => {
+authRouter.post('/resend-verification', limitEmails('resend'), async (req, res) => {
   const { email } = req.body;
   const genericMsg = 'If that account exists and is unverified, a new email has been sent.';
 
   if (!email || typeof email !== 'string') {
     return res.json({ message: genericMsg });
   }
+  // Without email set up nobody would ever receive the link: say so instead
+  // of pretending it was sent (this reveals nothing about any account).
+  if (!emailConfigured()) {
+    return res.status(503).json({ error: 'Password reset by email is not available yet. Please contact us through the feedback form.' });
+  }
 
   try {
-    const user = findUserByEmail(email);
+    const user = findUserByEmail(email.trim());
     if (!user || user.email_verified) {
       return res.json({ message: genericMsg });
     }
@@ -393,7 +420,7 @@ authRouter.post('/resend-verification', async (req, res) => {
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 86400000).toISOString().replace('T', ' ').replace('Z', '');
     createEmailVerificationToken(user.id, token, expiresAt);
-    await sendVerificationEmail(email, token);
+    await trySend(sendVerificationEmail, user.email, token);
     res.json({ message: genericMsg });
   } catch (err) {
     console.error('[AUTH] resend-verification error:', err);
@@ -402,7 +429,7 @@ authRouter.post('/resend-verification', async (req, res) => {
 });
 
 // ---------- FORGOT / RESET PASSWORD ----------
-authRouter.post('/forgot-password', async (req, res) => {
+authRouter.post('/forgot-password', limitEmails('forgot'), async (req, res) => {
   const { email } = req.body;
   const genericMsg = 'If an account with that email exists, a reset link has been sent.';
 
@@ -422,7 +449,7 @@ authRouter.post('/forgot-password', async (req, res) => {
     const expiresAt = new Date(Date.now() + 1800000).toISOString().replace('T', ' ').replace('Z', '');
     createPasswordResetToken(user.id, token, expiresAt);
 
-    await sendPasswordResetEmail(email, token);
+    await trySend(sendPasswordResetEmail, user.email, token);
     res.json({ message: genericMsg });
   } catch (err) {
     console.error('[AUTH] forgot-password error:', err);
@@ -430,14 +457,14 @@ authRouter.post('/forgot-password', async (req, res) => {
   }
 });
 
-authRouter.post('/reset-password', (req, res) => {
+authRouter.post('/reset-password', limitReset, (req, res) => {
   const { token, newPassword } = req.body;
 
   if (!token || !newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   }
 
-  const resetRow = findValidResetToken(token);
+  const resetRow = typeof token === 'string' ? findValidResetToken(token) : null;
   if (!resetRow) {
     return res.status(400).json({ error: 'Invalid or expired reset link.' });
   }
@@ -445,6 +472,9 @@ authRouter.post('/reset-password', (req, res) => {
   const hashedPassword = hashPassword(newPassword);
   updateUserPassword(resetRow.user_id, hashedPassword);
   markResetTokenUsed(resetRow.id);
+  invalidateResetTokens(resetRow.user_id); // other links sent earlier stop working too
+  // The account's address is proven now (the link was emailed to it).
+  setEmailVerified(resetRow.user_id);
 
   res.json({ message: 'Password updated successfully. You can now log in.' });
 });

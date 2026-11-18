@@ -8,7 +8,8 @@ import {
   createGuildInvite, getPendingInvites,
   createGuildRequest, getGuildRequests, findGuildRequestById, respondToGuildRequest,
 } from '../database.js';
-import { userSocketMap } from '../game/state.js';
+import { userSocketMap, guildWarQueue } from '../game/state.js';
+import { socketOfUser, joinGuildRoom, leaveGuildRoom } from '../game/guildRooms.js';
 import { isProfane } from '../utils/contentFilter.js';
 
 // Shared guild field validation, used by both create and update routes.
@@ -68,6 +69,12 @@ export default function(io) {
     return m ? m.role : null;
   };
 
+  // A disbanded guild can't stay in the Guild War queue.
+  const dropFromWarQueue = (guildId) => {
+    const i = guildWarQueue.findIndex(q => q.guildId === guildId);
+    if (i !== -1) guildWarQueue.splice(i, 1);
+  };
+
   // Helper: Emit to online guild members
   const emitToGuild = (guildId, eventName, data) => {
     const members = getGuildMembers(guildId);
@@ -93,14 +100,7 @@ export default function(io) {
     try {
       const guild = createGuild(name, tag, description || '', req.user.id, color || '#ffc107', isOpen ? 1 : 0);
             
-      // Join socket to guild room
-      const socketId = userSocketMap.get(req.user.id);
-      if (socketId) {
-        const socket = io.sockets.sockets.get(socketId);
-        if (socket) {
-          socket.join(`guild:${guild.id}`);
-        }
-      }
+      joinGuildRoom(io, socketOfUser(io, req.user.id), guild.id, req.user.display_name);
             
       res.json({ guild });
     } catch (err) {
@@ -258,13 +258,7 @@ export default function(io) {
       if (accept) {
         emitToGuild(invite.guild_id, 'guild-update', { type: 'join', username: req.user.username });
                 
-        const socketId = userSocketMap.get(req.user.id);
-        if (socketId) {
-          const socket = io.sockets.sockets.get(socketId);
-          if (socket) {
-            socket.join(`guild:${invite.guild_id}`);
-          }
-        }
+        joinGuildRoom(io, socketOfUser(io, req.user.id), invite.guild_id, req.user.display_name);
       }
             
       res.json({ success: true, accepted: accept });
@@ -363,9 +357,10 @@ export default function(io) {
       if (accept) {
         const targetUser = findUserById(request.user_id);
         emitToGuild(request.guild_id, 'guild-update', { type: 'join', username: targetUser.username });
-        const targetSocketId = userSocketMap.get(targetUser.id);
-        if (targetSocketId) {
-          io.to(targetSocketId).emit('guild-update', { type: 'join' });
+        const targetSocket = socketOfUser(io, targetUser.id);
+        if (targetSocket) {
+          targetSocket.emit('guild-update', { type: 'accepted', guildId: request.guild_id });
+          joinGuildRoom(io, targetSocket, request.guild_id, targetUser.display_name);
         }
       }
             
@@ -388,13 +383,7 @@ export default function(io) {
       addGuildMember(req.user.id, guild.id, 'member');
       emitToGuild(guild.id, 'guild-update', { type: 'join', username: req.user.username });
             
-      const socketId = userSocketMap.get(req.user.id);
-      if (socketId) {
-        const socket = io.sockets.sockets.get(socketId);
-        if (socket) {
-          socket.join(`guild:${guild.id}`);
-        }
-      }
+      joinGuildRoom(io, socketOfUser(io, req.user.id), guild.id, req.user.display_name);
             
       res.json({ success: true });
     } catch (err) {
@@ -417,6 +406,8 @@ export default function(io) {
         const others = guild.members.filter(m => m.user_id !== req.user.id);
         if (others.length === 0) {
           disbandGuild(guildId);
+          dropFromWarQueue(guildId);
+          leaveGuildRoom(io, socketOfUser(io, req.user.id), guildId);
           return res.json({ success: true, disbanded: true });
         } else {
           const nextOfficer = others.find(m => m.role === 'officer');
@@ -428,13 +419,7 @@ export default function(io) {
       removeGuildMember(req.user.id, guildId);
       emitToGuild(guildId, 'guild-update', { type: 'leave', username: req.user.username });
             
-      const socketId = userSocketMap.get(req.user.id);
-      if (socketId) {
-        const socket = io.sockets.sockets.get(socketId);
-        if (socket) {
-          socket.leave(`guild:${guildId}`);
-        }
-      }
+      leaveGuildRoom(io, socketOfUser(io, req.user.id), guildId);
             
       res.json({ success: true });
     } catch (err) {
@@ -454,8 +439,8 @@ export default function(io) {
         return res.status(403).json({ error: 'Not authorized to kick.' });
       }
             
-      const { userId } = req.body;
-      if (parseInt(userId) === req.user.id) {return res.status(400).json({ error: "Cannot kick yourself. Use 'Leave' instead." });}
+      const userId = parseInt(req.body.userId, 10);
+      if (userId === req.user.id) {return res.status(400).json({ error: "Cannot kick yourself. Use 'Leave' instead." });}
       const targetRole = getRole(guild.members, userId);
       if (!targetRole) {return res.status(404).json({ error: 'User not in guild.' });}
             
@@ -466,13 +451,10 @@ export default function(io) {
       removeGuildMember(userId, guildId);
       emitToGuild(guildId, 'guild-update', { type: 'kick', targetId: userId });
             
-      const targetSocketId = userSocketMap.get(userId);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('guild-update', { type: 'kicked' });
-        const socket = io.sockets.sockets.get(targetSocketId);
-        if (socket) {
-          socket.leave(`guild:${guildId}`);
-        }
+      const targetSocket = socketOfUser(io, userId);
+      if (targetSocket) {
+        targetSocket.emit('guild-update', { type: 'kicked' });
+        leaveGuildRoom(io, targetSocket, guildId);
       }
             
       res.json({ success: true });
@@ -491,7 +473,8 @@ export default function(io) {
       const myRole = getRole(guild.members, req.user.id);
       if (myRole !== 'leader') {return res.status(403).json({ error: 'Only the leader can promote/demote.' });}
             
-      const { userId, role } = req.body;
+      const { role } = req.body;
+      const userId = parseInt(req.body.userId, 10);
       if (userId === req.user.id) {return res.status(400).json({ error: 'Cannot change your own role.' });}
       if (role !== 'officer' && role !== 'member') {return res.status(400).json({ error: 'Invalid role.' });}
             
@@ -520,17 +503,9 @@ export default function(io) {
       emitToGuild(guildId, 'guild-update', { type: 'disbanded' });
             
       const members = getGuildMembers(guildId);
-      members.forEach(m => {
-        const socketId = userSocketMap.get(m.user_id);
-        if (socketId) {
-          const socket = io.sockets.sockets.get(socketId);
-          if (socket) {
-            socket.leave(`guild:${guildId}`);
-          }
-        }
-      });
-            
       disbandGuild(guildId);
+      dropFromWarQueue(guildId);
+      members.forEach(m => leaveGuildRoom(io, socketOfUser(io, m.user_id), guildId));
             
       res.json({ success: true });
     } catch (err) {

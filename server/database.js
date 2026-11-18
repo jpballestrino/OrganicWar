@@ -291,6 +291,10 @@ export function disbandGuild(guildId) {
     for (const member of members) {
       stmts.updateUserGuild.run(null, member.user_id);
     }
+    // match_history.guild_id has no ON DELETE action, so with foreign keys on
+    // a guild that ever played a Guild War could not be deleted. Keep the
+    // players' match records, just unlink them from the guild.
+    db.prepare('UPDATE match_history SET guild_id = NULL WHERE guild_id = ?').run(guildId);
     stmts.deleteGuild.run(guildId);
   });
   transaction();
@@ -374,6 +378,10 @@ export function findValidResetToken(token) {
 
 export function markResetTokenUsed(tokenId) {
   db.prepare('UPDATE password_reset_tokens SET used = 1 WHERE id = ?').run(tokenId);
+}
+
+export function invalidateResetTokens(userId) {
+  db.prepare('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0').run(userId);
 }
 
 export function updateUserPassword(userId, passwordHash) {

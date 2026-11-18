@@ -2,12 +2,13 @@ import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.
 import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
-import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
+import { handlePlayerDisconnect, reclaimSlot, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
-import { findUserById, updateLastLogin, getGuildMessages, getUserProfile, findGuildById, findGuildByTag, addGuildMessage } from '../database.js';
+import { findUserById, updateLastLogin, getUserProfile, findGuildById, findGuildByTag, addGuildMessage } from '../database.js';
+import { joinGuildRoom } from './guildRooms.js';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { createRequire } from 'module';
@@ -45,6 +46,15 @@ const createRoomSchema = z.object({
   preset: z.enum(['north_america', 'europe', 'africa']).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
+
+// Guild-war challenges sent and not yet answered: "challengerId>targetId" →
+// {teamSize, expiresAt}. The client shows a challenge for 60 s.
+const WAR_CHALLENGE_TTL_MS = 65000;
+const pendingWarChallenges = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of pendingWarChallenges) if (v.expiresAt < now) pendingWarChallenges.delete(k);
+}, 60000).unref();
 
 const guildChatSchema = z.object({
   message: z.string().min(1).max(200),
@@ -107,29 +117,7 @@ export function setupSocketHandlers(io) {
         updateLastLogin(userId);
             
         if (guildId) {
-          const guildRoom = `guild:${guildId}`;
-          socket.join(guildRoom);
-          socket.to(guildRoom).emit('guild-member-online', { userId, displayName });
-                
-          const rawHistory = getGuildMessages(guildId, 200);
-          const history = rawHistory.map(row => ({
-            id: row.id,
-            userId: row.user_id,
-            displayName: row.display_name,
-            message: row.message,
-            timestamp: row.created_at,
-          }));
-          socket.emit('guild-chat-history', history);
-                
-          const roomSockets = io.sockets.adapter.rooms.get(guildRoom);
-          const onlineIds = [];
-          if (roomSockets) {
-            for (const sid of roomSockets) {
-              const s = io.sockets.sockets.get(sid);
-              if (s && s.userId) { onlineIds.push(s.userId); }
-            }
-          }
-          socket.emit('guild-online-members', onlineIds);
+          joinGuildRoom(io, socket, guildId, displayName);
         }
       } else {
         log('warn', `Invalid token provided by socket ${socket.id}`);
@@ -548,8 +536,8 @@ export function setupSocketHandlers(io) {
       let msg = parsed.data.message.trim();
       if (msg.length === 0) { return; }
         
-      msg = msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        
+      // No HTML escaping here: the client renders chat with textContent, so
+      // escaping would show "&lt;3" instead of "<3".
       if (profanityFilter.isProfane(msg)) {
         msg = profanityFilter.clean(msg);
       }
@@ -634,6 +622,9 @@ export function setupSocketHandlers(io) {
         return;
       }
         
+      // Remember the challenge: only a challenge that was really sent (and is
+      // under a minute old) can be accepted.
+      pendingWarChallenges.set(`${profile.guild_id}>${targetGuild.id}`, { teamSize, expiresAt: Date.now() + WAR_CHALLENGE_TTL_MS });
       io.to(`guild:${targetGuild.id}`).emit('guild-war-challenge-received', {
         challengerGuild: {
           id: profile.guild_id,
@@ -646,14 +637,23 @@ export function setupSocketHandlers(io) {
       socket.emit('notification', { message: `Challenge sent to [${targetGuild.tag}]`, type: 'success' });
     });
 
-    socket.on('guild-war-accept', ({ challengerGuildId, teamSize }) => {
+    socket.on('guild-war-accept', (data) => {
       if (!userId) { return; }
       const freshGuild = getFreshGuildInfo();
       if (!freshGuild.guildId) { return; }
       let profile = getUserProfile(username);
       if (!profile) { return; }
       if (profile.guild_role !== 'leader' && profile.guild_role !== 'officer') { return; }
-        
+      const challengerGuildId = parseInt(data && data.challengerGuildId, 10);
+      const key = `${challengerGuildId}>${freshGuild.guildId}`;
+      const challenge = pendingWarChallenges.get(key);
+      pendingWarChallenges.delete(key);
+      if (!challenge || challenge.expiresAt < Date.now()) {
+        socket.emit('notification', { message: 'That challenge has expired.', type: 'error' });
+        return;
+      }
+      const teamSize = challenge.teamSize;
+
       let targetGuild = findGuildById(freshGuild.guildId);
       let challengerGuild = findGuildById(challengerGuildId);
         
@@ -707,7 +707,9 @@ export function setupSocketHandlers(io) {
     socket.on('disconnect', () => {
       log('debug', `Socket disconnected: ${socket.id}`);
         
-      if (userId) {
+      // Only if this is still the user's current socket: after a re-login the
+      // map already points at the new connection, which is online.
+      if (userId && userSocketMap.get(userId) === socket.id) {
         userSocketMap.delete(userId);
         const freshGuild = getFreshGuildInfo();
         if (freshGuild.guildId) {
@@ -738,63 +740,75 @@ export function setupSocketHandlers(io) {
       }
     });
 
-    socket.on('quit-game', () => {
+    socket.on('quit-game', (ack) => {
+      const done = () => { if (typeof ack === 'function') ack(); };
       try {
         let room = activeRooms[socket.roomId];
-        if (!room) { return; }
+        if (!room) { done(); return; }
         handlePlayerDisconnect(room, socket.id, true);
         io.to(room.id).emit('slots-update', room.activePlayerSlots);
         socket.assignedFaction = null;
         socket.roomId = null;
+        socket.leave(room.id);
       } catch (err) {
         log('error', '[quit-game] handler failed:', err.message);
       }
+      done();
     });
 
-    socket.on('reconnect-to-game', ({ token }) => {
+    socket.on('reconnect-to-game', (payload) => {
       try {
+        const token = payload && payload.token;
         if (typeof token !== 'string' || token.length > 100) {return;}
-        log('info', `[RECONNECT] Token received: ${token}`);
         let found = false;
         for (let roomId in activeRooms) {
           let room = activeRooms[roomId];
-          if (room.reconnectTokens.has(token)) {
-            let data = room.reconnectTokens.get(token);
-            let fid = data.factionId;
-            log('info', `[RECONNECT] Found token in room ${roomId} for faction ${fid}`);
-                    
-            if (room.activePlayerSlots[fid]) {
-              log('info', `[RECONNECT] Slot ${fid} exists. Reclaiming.`);
-              if (room.disconnectTimers[fid]) {
-                clearTimeout(room.disconnectTimers[fid]);
-                delete room.disconnectTimers[fid];
-              }
-                        
-              room.activePlayerSlots[fid].socketId = socket.id;
-              room.activePlayerSlots[fid].disconnected = false;
-              socket.assignedFaction = fid;
+          if (!room.reconnectTokens.has(token)) continue;
+          let data = room.reconnectTokens.get(token);
+          let fid = data.factionId;
+          const slot = room.activePlayerSlots[fid];
+          if (!slot || slot.left) continue;
 
-              socket.roomId = room.id;
-              socket.join(room.id);
-                        
-              sendInitConfig(socket, room);
-              socket.emit('reconnect-success', {
-                factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay,
-                inMatch: !!(room.matchStarted && room.simReal),
-              });
-              // Deltas only carry changes: bring this client fully up to date.
-              if (room.matchStarted && room.simReal) room.simReal.sendFullState(socket.id);
-              io.to(room.id).emit('slots-update', room.activePlayerSlots);
-              found = true;
-              log('info', `[RECONNECT] Success for ${fid}`);
-              break;
-            }
+          // A previous socket of this player may still look connected (the
+          // server notices a dead connection only at the next ping).
+          if (slot.socketId && slot.socketId !== socket.id) {
+            const old = io.sockets.sockets.get(slot.socketId);
+            if (old) { old.roomId = null; old.leave(room.id); }
           }
+          slot.socketId = socket.id;
+          socket.assignedFaction = fid;
+          socket.roomId = room.id;
+          socket.join(room.id);
+          reclaimSlot(room, fid);
+
+          sendInitConfig(socket, room);
+          const inMatch = !!(room.matchStarted && room.simReal);
+          socket.emit('reconnect-success', {
+            factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay,
+            inMatch, phase: room.phase,
+          });
+          if (inMatch) {
+            // Deltas only carry changes: bring this client fully up to date.
+            room.simReal.sendFullState(socket.id);
+          } else if (room.phase === 'SPAWN_SELECTION') {
+            // Back into the spawn picker with the time that is left.
+            socket.emit('spawn-selection-start', {
+              duration: Math.max(1, room.spawnTicksLeft || 1), mapId: room.preset, safeZoneRadius: room.safeZoneRadius,
+            });
+            const selections = {};
+            for (let [f, p] of room.spawnSelections.entries()) selections[f] = p;
+            socket.emit('spawn-selections-update', selections);
+          }
+          io.to(room.id).emit('slots-update', room.activePlayerSlots);
+          found = true;
+          log('info', `[RECONNECT] Faction ${fid} back in room ${roomId}`);
+          break;
         }
         if (!found) {
-          log('warn', '[RECONNECT] Token not found! Failing.');
-          socket.emit('reconnect-failed');
-          socket.emit('notification', { message: 'Session expired. Please start a new game.', type: 'error' });
+          const ended = endedMatchFor(token);
+          socket.emit('reconnect-failed', ended
+            ? { reason: 'ended', winnerName: ended.winnerName }
+            : { reason: 'expired' });
         }
       } catch (err) {
         log('error', '[reconnect-to-game] handler failed:', err.message);

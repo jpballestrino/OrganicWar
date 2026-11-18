@@ -189,10 +189,8 @@ export function guildTemplate() {
                 <label
                     style="display: block; font-size: 12px; font-weight: bold; color: #ccc; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">Player
                     Username</label>
-                <input type="text" id="inviteUsername" placeholder="Enter username..."
-                    style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 15px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box;"
-                    onfocus="this.style.borderColor='#ffc107'; this.style.boxShadow='0 0 8px rgba(255,193,7,0.3)';"
-                    onblur="this.style.borderColor='rgba(255,255,255,0.15)'; this.style.boxShadow='none';">
+                <input type="text" id="inviteUsername" class="ow-focus-input" placeholder="Enter username..."
+                    style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 15px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box;">
             </div>
             <div style="display: flex; gap: 12px; margin-top: 10px;">
                 <button id="btnCancelInvite" class="home-btn"
@@ -217,10 +215,8 @@ export function guildTemplate() {
             <div style="margin-bottom: 20px;">
                 <label
                     style="display: block; font-size: 12px; font-weight: bold; color: #ccc; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">Description</label>
-                <textarea id="egDesc" placeholder="Enter guild description..." maxlength="100"
-                    style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box; resize: vertical; min-height: 80px;"
-                    onfocus="this.style.borderColor='#ffc107'; this.style.boxShadow='0 0 8px rgba(255,193,7,0.3)';"
-                    onblur="this.style.borderColor='rgba(255,255,255,0.15)'; this.style.boxShadow='none';"></textarea>
+                <textarea id="egDesc" class="ow-focus-input" placeholder="Enter guild description..." maxlength="100"
+                    style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box; resize: vertical; min-height: 80px;"></textarea>
             </div>
 
             <div
@@ -265,7 +261,7 @@ export function guildTemplate() {
             <div id="emojiPickerContainer" style="display:none; position:absolute; bottom:50px; right:10px; z-index:1000; box-shadow:0 4px 15px rgba(0,0,0,0.5); border-radius:8px;"></div>
             <div
                 style="padding:10px; border-top:1px solid rgba(255,255,255,0.1); background:rgba(0,0,0,0.3); border-radius:0 0 10px 10px; display:flex; gap:8px; align-items:center;">
-                <button id="btnEmojiToggle" style="background:transparent; border:none; cursor:pointer; font-size:18px; padding:0; filter:grayscale(0.2); transition:filter 0.2s;" onmouseover="this.style.filter='grayscale(0)'" onmouseout="this.style.filter='grayscale(0.2)'">😀</button>
+                <button id="btnEmojiToggle" class="emoji-toggle-btn">😀</button>
                 <input type="text" id="guildChatInput" placeholder="Type message..." maxlength="200"
                     style="flex:1; padding:8px 12px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:#fff; border-radius:15px; outline:none; font-family:'Inter'; box-sizing:border-box; font-size:13px;">
             </div>

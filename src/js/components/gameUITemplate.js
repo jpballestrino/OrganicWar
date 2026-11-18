@@ -138,6 +138,8 @@ export function gameUITemplate() {
             <div style="width:48px; height:48px; border:4px solid rgba(255,193,7,0.2); border-top-color:#ffc107; border-radius:50%; animation:spin 0.9s linear infinite;"></div>
             <div style="font-family:'Orbitron',sans-serif; font-size:18px; font-weight:700; color:#ffc107; letter-spacing:2px; text-transform:uppercase; text-shadow:0 0 20px rgba(255,193,7,0.5);">Reconnecting…</div>
             <div id="reconnectAttemptText" style="font-size:13px; color:#94a3b8; font-family:'Inter',sans-serif;">Attempting to restore your session</div>
+            <div id="reconnectHoldText" style="font-size:12px; color:#64748b; font-family:'Inter',sans-serif; max-width:340px; text-align:center;"></div>
+            <button id="btnReconnectLeave" style="margin-top:6px; padding:8px 18px; font-size:12px; background:transparent; color:#94a3b8; border:1px solid rgba(148,163,184,0.4); border-radius:6px; cursor:pointer; font-family:'Inter',sans-serif;">Leave match</button>
         </div>
 
         <!-- Server-error / unreachable modal — shown after repeated failures -->

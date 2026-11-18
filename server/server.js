@@ -14,6 +14,7 @@ import { verifyToken } from './auth.js';
 import { findUserById, getUserProfile, prepareStatements, db, dbPath } from './database.js';
 import { clientIp, TRUST_PROXY } from './clientIp.js';
 import { adsConfig, adsTxt, cspDirectives, describeAds } from './ads.js';
+import { emailConfigured } from './email.js';
 import { runMigrations } from './migrate.js';
 import guildRoutes from './routes/guilds.js';
 import authRouter from './routes/authRoutes.js';
@@ -77,6 +78,11 @@ export const io = new Server(httpServer, {
   // Compress only frames worth it: the 20×/s owner deltas are mostly small,
   // and deflating every tiny frame for every client costs more CPU than it saves.
   perMessageDeflate: { threshold: 2048 },
+  // Notice dead connections within ~20 s instead of the default ~45 s, so a
+  // player whose network died is shown as reconnecting (and their faction
+  // handed to a bot after the grace period) promptly.
+  pingInterval: 10000,
+  pingTimeout: 10000,
 });
 
 // Connection-rate limiter (counts connections in a ~60s rolling window, halved each minute).
@@ -176,7 +182,12 @@ app.get('/privacy', (req, res) => {
 // What the client needs to show ads; null = ads off.
 app.get('/api/client-config', (req, res) => {
   res.set('Cache-Control', 'no-cache');
-  res.json({ ads: adsConfig() });
+  res.json({
+    ads: adsConfig(),
+    // Which sign-in buttons work on this server (hidden when not configured).
+    oauth: { google: !!process.env.GOOGLE_CLIENT_ID, discord: !!process.env.DISCORD_CLIENT_ID },
+    email: emailConfigured(),
+  });
 });
 // Google requires /ads.txt on the domain before it serves ads there.
 app.get('/ads.txt', (req, res) => {

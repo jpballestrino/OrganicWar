@@ -1,5 +1,5 @@
 import { getUser, fetchProfile } from './auth.js';
-import { setupLoggedInState } from './authUI.js';
+import { renderAccountHeader } from './authUI.js';
 import { socket } from './network.js';
 import { escapeHtml } from './escape.js';
 import 'emoji-picker-element';
@@ -34,7 +34,7 @@ export function updateGuildChatVisibility() {
   if (!panel) {return;}
     
   const user = getUser();
-  const hasGuild = currentGuildId || (user && (user.guild_id || user.guildId || user.guildTag));
+  const hasGuild = !!user && !!(user.guild_id || user.guildId);
     
   if (hasGuild && !isCurrentlyInGame) {
     panel.style.display = 'flex';
@@ -115,25 +115,23 @@ export function initGuildUI() {
   });
 
   socket.on('guild-update', async (data) => {
-    if (getE('guildHallOverlay').style.display === 'flex') {
-      if (data.type === 'kicked') {
-        showToast('You have been kicked from the guild.', 'error');
-        currentGuildId = null;
-        updateGuildChatVisibility();
-        await fetchProfile();
-        if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
-        openGuildHall();
-      } else if (data.type === 'disbanded') {
-        showToast('Your guild has been disbanded.', 'error');
-        currentGuildId = null;
-        updateGuildChatVisibility();
-        await fetchProfile();
-        if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
-        openGuildHall();
-      } else if (currentGuildId) {
-        renderGuildView();
-      }
+    const hallOpen = getE('guildHallOverlay').style.display === 'flex';
+    // Our own membership changed (kicked, guild disbanded, join request
+    // accepted): refresh the account header, the chat panel and, if it is
+    // open, the Guild Hall — whether or not the hall is open.
+    if (data.type === 'kicked' || data.type === 'disbanded' || data.type === 'accepted') {
+      if (data.type === 'kicked') {showToast('You have been kicked from the guild.', 'error');}
+      else if (data.type === 'disbanded') {showToast('Your guild has been disbanded.', 'error');}
+      else {showToast('Your request to join the guild was accepted!', 'success');}
+      currentGuildId = data.type === 'accepted' ? data.guildId : null;
+      currentGuildRole = data.type === 'accepted' ? 'member' : null;
+      await fetchProfile();
+      renderAccountHeader();
+      updateGuildChatVisibility();
+      if (hallOpen) {openGuildHall();}
+      return;
     }
+    if (hallOpen && currentGuildId) {renderGuildView();}
   });
 
   socket.on('guild-war-queue-status', (data) => {
@@ -408,7 +406,7 @@ async function createGuild() {
     currentGuildId = res.guild.id;
     currentGuildRole = 'leader';
     await fetchProfile();
-    if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
+    renderAccountHeader();
     openGuildHall();
   } catch (err) {
     showGuildError(err.message);
@@ -495,7 +493,7 @@ window.joinGuild = async function(id, btnElement) {
     await api(`/${id}/join`, 'POST');
     showToast('Successfully joined the guild!', 'success');
     await fetchProfile();
-    if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
+    renderAccountHeader();
     
     currentGuildId = id;
     if (getE('guildHallOverlay').style.display === 'flex') {
@@ -613,7 +611,7 @@ async function respondInvite(id, accept) {
     showToast(accept ? 'Joined guild!' : 'Invite declined.', accept ? 'success' : 'info');
     if (accept) {
       await fetchProfile();
-      if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
+      renderAccountHeader();
       openGuildHall();
     } else {
       loadPendingInvites();
@@ -766,7 +764,7 @@ window.leaveGuild = async function() {
     }
     currentGuildId = null;
     await fetchProfile();
-    if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
+    renderAccountHeader();
     openGuildHall();
   } catch(e) { showGuildError(e.message); }
 };
@@ -778,7 +776,7 @@ window.disbandGuild = async function() {
     showToast('Guild disbanded.', 'info');
     currentGuildId = null;
     await fetchProfile();
-    if (typeof setupLoggedInState === 'function') {await setupLoggedInState();}
+    renderAccountHeader();
     openGuildHall();
   } catch(e) { showGuildError(e.message); }
 };
@@ -884,11 +882,11 @@ window.openEditModal = function(name, tag, isOpen, maxMembers, color, desc) {
     const nameTagHtml = `
             <div style="margin-bottom: 20px;">
                 <label style="display: block; font-size: 12px; font-weight: bold; color: #ccc; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">Guild Name</label>
-                <input type="text" id="egName" class="login-input" maxlength="25" style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box;" onfocus="this.style.borderColor='#ffc107'; this.style.boxShadow='0 0 8px rgba(255,193,7,0.3)';" onblur="this.style.borderColor='rgba(255,255,255,0.15)'; this.style.boxShadow='none';">
+                <input type="text" id="egName" class="login-input ow-focus-input" maxlength="25" style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box;">
             </div>
             <div style="margin-bottom: 20px;">
                 <label style="display: block; font-size: 12px; font-weight: bold; color: #ccc; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px;">Guild Tag</label>
-                <input type="text" id="egTag" class="login-input" maxlength="5" style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box; text-transform: uppercase;" onfocus="this.style.borderColor='#ffc107'; this.style.boxShadow='0 0 8px rgba(255,193,7,0.3)';" onblur="this.style.borderColor='rgba(255,255,255,0.15)'; this.style.boxShadow='none';">
+                <input type="text" id="egTag" class="login-input ow-focus-input" maxlength="5" style="width: 100%; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box; text-transform: uppercase;">
             </div>
         `;
     getE('editGuildErrorMsg').insertAdjacentHTML('afterend', nameTagHtml);
@@ -959,7 +957,8 @@ export function toggleInGameIndicator(show) {
   isCurrentlyInGame = show;
   const ind = getE('ingameGuildIndicator');
   if (ind) {
-    ind.style.display = (show && currentGuildId) ? 'block' : 'none';
+    const u = getUser();
+    ind.style.display = (show && (currentGuildId || (u && (u.guild_id || u.guildId)))) ? 'block' : 'none';
   }
   updateGuildChatVisibility();
 }

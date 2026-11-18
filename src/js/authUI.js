@@ -115,7 +115,8 @@ export async function initAuthUI() {
     getE('formLogin').style.display = '';
   });
   getE('btnForgotSubmit').addEventListener('click', async () => {
-    const email = getE('forgotEmail').value;
+    const email = getE('forgotEmail').value.trim();
+    getE('forgotSuccess').style.display = 'none';
     if (!email) {return showError('forgotError', 'Enter your email');}
     try {
       getE('btnForgotSubmit').style.opacity = '0.5';
@@ -124,7 +125,8 @@ export async function initAuthUI() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {return showError('forgotError', data.error || 'Failed to send reset email');}
       getE('forgotSuccess').textContent = data.message;
       getE('forgotSuccess').style.display = 'block';
     } catch (e) {
@@ -223,6 +225,30 @@ export async function initAuthUI() {
     }
   });
 
+  // Enter submits the visible form (login, register, forgot password).
+  const submitOnEnter = (inputIds, buttonId) => inputIds.forEach((id) => {
+    getE(id)?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); getE(buttonId).click(); }
+    });
+  });
+  submitOnEnter(['loginUsername', 'loginPassword'], 'btnLoginSubmit');
+  submitOnEnter(['regUsername', 'regEmail', 'regPassword'], 'btnRegSubmit');
+  submitOnEnter(['forgotEmail'], 'btnForgotSubmit');
+
+  // Hide the Google / Discord buttons when the server has no keys for them
+  // (they would only lead to "not enabled on this server").
+  fetch('/api/client-config', { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      if (!cfg || !cfg.oauth) {return;}
+      getE('btnGoogleLogin').style.display = cfg.oauth.google ? '' : 'none';
+      getE('btnDiscordLogin').style.display = cfg.oauth.discord ? '' : 'none';
+      if (!cfg.oauth.google && !cfg.oauth.discord) {
+        document.querySelectorAll('.auth-oauth-divider, .auth-oauth-buttons').forEach((el) => { el.style.display = 'none'; });
+      }
+    })
+    .catch(() => {});
+
   // Logout
   getE('linkLogout').addEventListener('click', (e) => {
     e.preventDefault();
@@ -271,13 +297,38 @@ export async function initAuthUI() {
 }
 
 export async function setupLoggedInState() {
-  const user = getUser();
   getE('homeStateAuth').style.display = 'none';
   getE('homeStateGuest').style.display = 'none';
   getE('homeStateLoggedIn').style.display = 'block';
   const sv = getE('homeStateVerification');
   if (sv) { sv.style.display = 'none'; }
 
+  renderAccountHeader();
+
+  const footerLinks = document.querySelectorAll('.auth-footer-links');
+  footerLinks.forEach(l => l.style.display = 'inline');
+  const footerAuthRow = document.querySelector('.home-footer-auth-row');
+  if (footerAuthRow) footerAuthRow.style.display = 'flex';
+
+  getE('nicknameInput').value = getUser().displayName || getUser().display_name;
+
+  // Refresh socket connection so it sends auth token (the server then pushes
+  // this account's progression — show "loading" instead of the guest profile).
+  setServerMode(true);
+  renderProgressCards();
+  socket.disconnect();
+  socket.auth = socketAuth();
+  socket.connect();
+
+  updateGuildChatVisibility();
+}
+
+// The logged-in header (name, ELO, guild tag) from the stored user. Used on
+// login and whenever the guild changes (no reconnect needed then: the server
+// moves the socket between guild chat rooms itself).
+export function renderAccountHeader() {
+  const user = getUser();
+  if (!user) {return;}
   getE('lblWelcomeName').textContent = `Welcome, ${user.displayName || user.display_name}`;
   getE('lblElo').textContent = `ELO: ${user.eloRating !== undefined ? user.eloRating : user.elo_rating}`;
     
@@ -290,23 +341,6 @@ export async function setupLoggedInState() {
       lblGuild.style.display = 'none';
     }
   }
-    
-  const footerLinks = document.querySelectorAll('.auth-footer-links');
-  footerLinks.forEach(l => l.style.display = 'inline');
-  const footerAuthRow = document.querySelector('.home-footer-auth-row');
-  if (footerAuthRow) footerAuthRow.style.display = 'flex';
-
-  getE('nicknameInput').value = user.displayName || user.display_name;
-
-  // Refresh socket connection so it sends auth token (the server then pushes
-  // this account's progression — show "loading" instead of the guest profile).
-  setServerMode(true);
-  renderProgressCards();
-  socket.disconnect();
-  socket.auth = socketAuth();
-  socket.connect();
-    
-  updateGuildChatVisibility();
 }
 
 function setupLoggedOutState() {

@@ -21,17 +21,17 @@ export function homeTemplate() {
                 <!-- Login Form -->
                 <div id="formLogin" class="auth-form active">
                     <div class="home-input-group">
-                        <label class="home-label">USERNAME</label>
+                        <label class="home-label">USERNAME OR EMAIL</label>
                         <div class="home-input-wrap">
                             <span class="home-input-icon">👤</span>
-                            <input type="text" id="loginUsername" placeholder="Enter your username" autocomplete="off">
+                            <input type="text" id="loginUsername" placeholder="Username or email" autocomplete="username" autocapitalize="off" spellcheck="false">
                         </div>
                     </div>
                     <div class="home-input-group">
                         <label class="home-label">PASSWORD</label>
                         <div class="home-input-wrap">
                             <span class="home-input-icon">🔑</span>
-                            <input type="password" id="loginPassword" placeholder="Enter your password" autocomplete="off">
+                            <input type="password" id="loginPassword" placeholder="Enter your password" autocomplete="current-password">
                         </div>
                     </div>
                     <div id="loginError" class="auth-error"></div>
@@ -85,7 +85,7 @@ export function homeTemplate() {
                         <label class="home-label">ENTER YOUR EMAIL</label>
                         <div class="home-input-wrap">
                             <span class="home-input-icon">📧</span>
-                            <input type="email" id="forgotEmail" placeholder="commander@domain.com">
+                            <input type="email" id="forgotEmail" placeholder="commander@domain.com" autocomplete="email">
                         </div>
                     </div>
                     <div id="forgotError" class="auth-error"></div>
@@ -108,22 +108,22 @@ export function homeTemplate() {
                         <label class="home-label">USERNAME</label>
                         <div class="home-input-wrap">
                             <span class="home-input-icon">👤</span>
-                            <input type="text" id="regUsername" maxlength="20" placeholder="username"
-                                autocomplete="off">
+                            <input type="text" id="regUsername" maxlength="15" placeholder="3-15 letters, numbers or _"
+                                autocomplete="username" autocapitalize="off" spellcheck="false">
                         </div>
                     </div>
                     <div class="home-input-group">
                         <label class="home-label">EMAIL</label>
                         <div class="home-input-wrap">
                             <span class="home-input-icon">📧</span>
-                            <input type="email" id="regEmail" placeholder="commander@domain.com">
+                            <input type="email" id="regEmail" placeholder="commander@domain.com" autocomplete="email">
                         </div>
                     </div>
                     <div class="home-input-group">
                         <label class="home-label">PASSWORD</label>
                         <div class="home-input-wrap">
                             <span class="home-input-icon">🔑</span>
-                            <input type="password" id="regPassword" placeholder="••••••••">
+                            <input type="password" id="regPassword" placeholder="At least 6 characters" autocomplete="new-password">
                         </div>
                     </div>
                     <div id="regError" class="auth-error"></div>

@@ -255,3 +255,58 @@ the cap per second, so any fair exchange rate is either useless or decisive.
 - [ ] **Owner:** own domain → AdSense approval → set ADSENSE_* + CONTACT_EMAIL;
       apply for H5 Games Ads for between-match ads; publish the GDPR message;
       review /privacy.
+
+## Session 5 — accounts, password reset, guilds and chat checked before launch
+
+Tested live with a local mail catcher (the emailed links really followed) and
+in a real browser with two players. Bugs found and fixed:
+- [x] Guild chat membership was only set when the socket connected: a player
+      whose join request was accepted got no chat until reloading; the UI
+      ignored kicks/disbands unless the Guild Hall was open (chat panel stayed).
+      → `server/game/guildRooms.js`, used by every membership route; the client
+      reacts to `guild-update` live.
+- [x] Chat showed `&lt;3` for `<3` (server HTML-escaped, client uses textContent).
+- [x] Disbanding a guild that had played a Guild War crashed (foreign key).
+- [x] Any officer could start a Guild War against any guild by forging
+      `guild-war-accept` (no check a challenge was sent; team size unchecked).
+- [x] Re-login could mark the player offline / drop them from the socket map.
+- [x] No rate limits on login / register / reset emails → `server/rateLimit.js`.
+- [x] If the mail server refused the verification email, the account was
+      created but could never log in (500, then "username taken").
+- [x] Older reset links kept working after a reset; forgot-password claimed to
+      send an email when email isn't configured (now says it's unavailable).
+- [x] Enter didn't submit login/register/forgot; login now also takes the email;
+      register box allowed 20 chars (server max 15); password-manager hints.
+- [x] Google/Discord buttons shown even when not configured (now hidden).
+- [x] Inline onfocus/onmouseover handlers in the guild modals were blocked by
+      the CSP (console errors) → CSS.
+- [x] SMTP port 465 (SSL) didn't work (secure was hard-coded off).
+Tests: `server/accounts.test.js` (6), `scripts/e2e-accounts.mjs` (67 checks),
+`scripts/smoke-accounts.mjs` (32 browser checks), vitest 27/27.
+- [ ] Known, not changed: a password reset doesn't log out sessions already
+      open elsewhere (JWTs stay valid up to 7 days).
+- [ ] **Owner:** configure email (DEPLOY.md) before launch, or "Forgot password"
+      stays unavailable.
+
+## Session 6 — bad connections, reconnecting and quitting
+
+Tested with `scripts/smoke-network.mjs`: two players in one match, one behind a
+TCP proxy that freezes (lag) or cuts (drop) its connection. Before the fix:
+lag showed nothing (map just froze, up to ~45 s before anything noticed);
+other players were never told; after the 30 s grace a bot took over and the
+player could **never** get back (dumped to the menu); a solo player's room was
+deleted the moment the bot took over; a drop during spawn selection left the
+player stuck. Fixed:
+- [x] Watchdog: stats stop for 2.5 s → "Connection unstable" overlay; 7 s →
+      forced new connection. Retries every 0.5–2 s; server pings 10 s/10 s.
+- [x] Overlay explains the faction holds for the grace period, then a bot
+      plays until you're back; "Leave match" button.
+- [x] Returning after the grace period takes the faction back from the bot
+      (token valid all match); rooms with only away humans live 2 more minutes.
+- [x] `player-connection` notices to everyone (feed + leaderboard 📡/🤖).
+- [x] Match ended while away → "The match ended while you were disconnected —
+      X won" instead of a silent menu.
+- [x] Reconnect during spawn selection → back in the picker with the time left.
+- [x] Quit waits for the server's acknowledgement before reloading.
+- [x] "Logged in elsewhere" no longer leaves an endless "Reconnecting…".
+Settings: `RECONNECT_GRACE_SECONDS` (30), `AWAY_KEEP_SECONDS` (120).
