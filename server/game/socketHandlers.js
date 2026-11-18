@@ -2,7 +2,7 @@ import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.
 import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
-import { handlePlayerDisconnect, reclaimSlot, leaveRankedQueue, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
+import { handlePlayerDisconnect, reclaimSlot, leaveRankedQueue, startGuildWarCountdown, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
@@ -229,7 +229,9 @@ export function setupSocketHandlers(io) {
       try {
         if (typeof roomId !== 'string' || roomId.length > 10) {return;}
         let room = activeRooms[roomId];
-        if (!room || !room.isOpen) {
+        const guildMember = room && room.isGuildWar && !room.countdownInterval && !room.matchStarted
+          && [room.guildA.id, room.guildB.id].includes(getFreshGuildInfo().guildId);
+        if (!room || (!room.isOpen && !guildMember)) {
           socket.emit('notification', { message: 'Room not found or is closed.', type: 'error' });
           return;
         }
@@ -248,6 +250,13 @@ export function setupSocketHandlers(io) {
         socket.join(room.id);
         sendInitConfig(socket, room);
         updateLobbyList();
+        // Guild war: take the first free slot on your guild's side at once.
+        if (guildMember) {
+          const lo = getFreshGuildInfo().guildId === room.guildA.id ? 1 : room.teamSize + 1;
+          for (let f = lo; f < lo + room.teamSize; f++) {
+            if (room.activePlayerSlots[f] === null) { joinFaction({ factionId: f }); break; }
+          }
+        }
       } catch (err) {
         log('error', `[ERROR] join-room failed for socket ${socket.id}:`, err.message);
         socket.emit('notification', { message: 'Server error occurred', type: 'error' });
@@ -353,7 +362,8 @@ export function setupSocketHandlers(io) {
       }
     });
 
-    socket.on('join-faction', ({ factionId, nickname, doctrine }) => {
+    socket.on('join-faction', (data) => joinFaction(data || {}));
+    function joinFaction({ factionId, nickname, doctrine }) {
       if (socket.displayName) { nickname = socket.displayName; }
       try {
         let room = activeRooms[socket.roomId];
@@ -413,26 +423,16 @@ export function setupSocketHandlers(io) {
         log('info', `[Room ${room.id}] Faction ${fid} claimed by ${socket.id} (${nickname})`);
         updateLobbyList();
             
-        if (room.isGuildWar && !room.countdownInterval && !room.matchStarted) {
-          if (Object.values(room.activePlayerSlots).every(s => s !== null)) {
-            let ticks = 5;
-            io.to(room.id).emit('custom-game-starting');
-            io.to(room.id).emit('waiting-tick', ticks);
-            room.countdownInterval = setInterval(() => {
-              ticks--;
-              io.to(room.id).emit('waiting-tick', ticks);
-              if (ticks <= 0) {
-                clearInterval(room.countdownInterval);
-                startSpawnSelection(room);
-              }
-            }, 1000);
-          }
+        // Full roster: the war starts now (otherwise at the muster deadline).
+        if (room.isGuildWar && !room.countdownInterval && !room.matchStarted
+            && Object.values(room.activePlayerSlots).every(s => s !== null)) {
+          startGuildWarCountdown(room);
         }
       } catch (err) {
         log('error', `[ERROR] join-faction failed for socket ${socket.id}:`, err.message);
         socket.emit('notification', { message: 'Server error occurred', type: 'error' });
       }
-    });
+    }
 
     socket.on('select-spawn', ({ row, col }) => {
       try {

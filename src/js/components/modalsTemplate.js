@@ -38,7 +38,7 @@ export function modalsTemplate() {
     <!-- Profile Modal -->
     <div id="profileModal" class="game-overlay"
         style="display: none; pointer-events: auto; justify-content: center; z-index: 1060;">
-        <div class="setup-container profile-container" style="width: 450px;">
+        <div class="setup-container profile-container" style="width: 520px; max-width: 94vw;">
             <div class="modal-header">
                 <span class="modal-title" style="font-size: 13px;">Commander Profile</span>
                 <button id="btn-close-profile" class="modal-close">&times;</button>
@@ -55,40 +55,21 @@ export function modalsTemplate() {
                 </div>
                 <div style="text-align: right;">
                     <div id="profileRankTier" style="font-size: 18px; font-weight: bold; color: #ccc;">Unranked</div>
-                    <div id="profileEloRating" style="font-size: 14px; color: #888; margin-top: 4px;">1000 ELO</div>
+                    <div id="profileEloRating" style="font-size: 14px; color: #888; margin-top: 4px;">1000 rating</div>
+                    <div id="profilePosition" style="font-size: 12px; color: #ffc107; margin-top: 2px;"></div>
                 </div>
             </div>
 
-            <div class="profile-stats-grid"
-                style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
-                <div class="stat-box"
-                    style="background: rgba(255, 255, 255, 0.05); padding: 10px; border-radius: 6px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">
-                    <div style="font-size: 11px; color: #888; text-transform: uppercase;">Wins</div>
-                    <div id="profileWins" style="font-size: 20px; color: #4ade80; font-weight: bold;">0</div>
-                </div>
-                <div class="stat-box"
-                    style="background: rgba(255, 255, 255, 0.05); padding: 10px; border-radius: 6px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">
-                    <div style="font-size: 11px; color: #888; text-transform: uppercase;">Losses</div>
-                    <div id="profileLosses" style="font-size: 20px; color: #f87171; font-weight: bold;">0</div>
-                </div>
-                <div class="stat-box"
-                    style="background: rgba(255, 255, 255, 0.05); padding: 10px; border-radius: 6px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">
-                    <div style="font-size: 11px; color: #888; text-transform: uppercase;">Games</div>
-                    <div id="profileGames" style="font-size: 20px; color: #60a5fa; font-weight: bold;">0</div>
-                </div>
-            </div>
+            <!-- Ranked: rating, leaderboard position, record (filled by authUI.renderProfileModal) -->
+            <div class="profile-section-title">Ranked</div>
+            <div id="profileRankedStats" class="profile-stats-grid"></div>
+            <div id="profileTierProgress" class="profile-tier-progress"></div>
 
-            <div style="margin-bottom: 20px;">
-                <div style="display: flex; justify-content: space-between; font-size: 12px; color: #ccc; margin-bottom: 4px;">
-                    <span>Win Rate</span>
-                    <span id="profileWinRateText">0%</span>
-                </div>
-                <div style="width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
-                    <div id="profileWinRateBar"
-                        style="height: 100%; width: 0%; background: #ffc107; border-radius: 3px; transition: width 0.5s ease;">
-                    </div>
-                </div>
-            </div>
+            <div class="profile-section-title">All modes</div>
+            <div id="profileOverallStats" class="profile-stats-grid"></div>
+
+            <div class="profile-section-title">Recent form</div>
+            <div id="profileForm" class="profile-form"></div>
 
             <div style="margin-bottom: 20px;">
                 <h3 style="font-size: 14px; color: #ccc; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; margin-bottom: 10px;">
@@ -225,7 +206,7 @@ export function modalsTemplate() {
     <!-- Rankings Modal -->
     <div id="rankingsModal" class="game-overlay"
         style="display: none; pointer-events: auto; justify-content: center; z-index: 1045;">
-        <div class="setup-container profile-container" style="width: 600px; max-height: 80vh; display: flex; flex-direction: column;">
+        <div class="setup-container profile-container" style="width: 740px; max-width: 94vw; max-height: 80vh; display: flex; flex-direction: column;">
             <div class="modal-header">
                 <span class="modal-title">🏆 Global Rankings</span>
                 <button id="btnCloseRankings" class="modal-close">&times;</button>

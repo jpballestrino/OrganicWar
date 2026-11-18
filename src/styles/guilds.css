@@ -97,3 +97,26 @@
   filter: grayscale(0.2); transition: filter 0.2s;
 }
 #btnEmojiToggle.emoji-toggle-btn:hover { filter: grayscale(0); }
+
+/* Profile: competitive stats */
+.profile-section-title { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin: 12px 0 6px; }
+.profile-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.profile-stats-grid .stat-box { background: rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; text-align: center; border: 1px solid rgba(255,255,255,0.1); }
+.profile-stats-grid .stat-label { font-size: 10px; color: #888; text-transform: uppercase; }
+.profile-stats-grid .stat-value { font-size: 18px; font-weight: bold; }
+.profile-tier-progress { font-size: 11px; color: #94a3b8; margin-top: 6px; text-align: right; }
+.profile-empty { grid-column: 1 / -1; text-align: center; color: #666; font-size: 13px; padding: 8px; }
+.profile-form { display: flex; gap: 4px; flex-wrap: wrap; }
+.form-chip { min-width: 30px; padding: 3px 5px; border-radius: 4px; font-size: 11px; font-weight: bold; text-align: center; background: rgba(255,255,255,0.06); color: #cbd5e1; }
+.form-chip.win { background: rgba(74,222,128,0.2); color: #4ade80; }
+.form-chip.good { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.form-chip.loss { background: rgba(248,113,113,0.12); color: #f87171; }
+.form-chip.quit { background: rgba(156,163,175,0.15); color: #9ca3af; }
+.profile-match { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 4px; font-size: 12px; color: #ccc; }
+.profile-match .pm-res { font-weight: bold; width: 14px; text-align: center; }
+.profile-match .pm-mode { width: 62px; color: #94a3b8; }
+.profile-match .pm-place { width: 46px; color: #fff; }
+.profile-match .pm-delta { width: 30px; font-weight: bold; }
+.profile-match .pm-stat { width: 58px; color: #888; }
+.profile-match .pm-date { margin-left: auto; color: #666; white-space: nowrap; }
+.profile-container { max-height: 92vh; overflow-y: auto; }

@@ -378,13 +378,13 @@ export function initNetwork() {
   });
 
   // Another player's connection: reconnecting / back / bot playing / left.
-  socket.on('player-connection', ({ factionId, state: st } = {}) => {
+  socket.on('player-connection', ({ factionId, state: st, bot } = {}) => {
     if (factionId === parseInt(state.playerFaction) || state.gameState !== 'PLAYING') return;
     const text = {
       reconnecting: 'is reconnecting…',
       back: 'is back',
-      away: 'lost connection — a bot plays for now',
-      left: 'left the match — a bot takes over',
+      away: bot ? 'lost connection — a bot plays for now' : 'lost connection — their land stands idle',
+      left: bot ? 'left the match — a bot takes over' : 'left the match',
     }[st];
     // (The leaderboard shows 📡 / 🤖 next to the name from the slot flags.)
     if (text) addFeedLine(st === 'back' ? '📶' : st === 'reconnecting' ? '📡' : '🤖', factionId, ` ${text}`);
@@ -917,14 +917,19 @@ function updateLeaderboard(players) {
     const bounty = lb.fid === state.bountyFid ? '<span class="leaderboard-bounty" title="Bounty: their land is 25% cheaper to take and pays gold">🎯</span>' : '';
     const conn = !slot || isMe ? ''
       : slot.disconnected ? '<span class="leaderboard-conn" title="Reconnecting…">📡</span>'
-        : slot.away ? '<span class="leaderboard-conn" title="Disconnected — a bot plays until they return">🤖</span>'
-          : slot.left ? '<span class="leaderboard-conn" title="Left the match — a bot plays">🤖</span>' : '';
+        : slot.away ? (slot.isBot ? '<span class="leaderboard-conn" title="Disconnected — a bot plays until they return">🤖</span>'
+          : '<span class="leaderboard-conn" title="Disconnected — their land stands idle">💤</span>')
+          : slot.left ? (slot.isBot ? '<span class="leaderboard-conn" title="Left the match — a bot plays">🤖</span>'
+            : '<span class="leaderboard-conn" title="Left the match">🏳️</span>') : '';
+    // Guild wars: show each player's side.
+    const side = state.isGuildWar && state.guildA && state.guildB
+      ? `<span style="font-size:10px; color:${lb.fid <= state.teamSize ? '#ffc107' : '#ff6b6b'};">[${escapeHtml(lb.fid <= state.teamSize ? state.guildA.tag : state.guildB.tag)}]</span>` : '';
     const gap = index >= LEADERBOARD_ROWS ? '<div class="leaderboard-gap">⋯</div>' : '';
     return `${gap}
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${isMe ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
         <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
           <span style="font-size: 10px; color: #888; min-width: 14px; text-align: right;">${index + 1}.</span>
-          <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; border: 1px solid #000;"></div>
+          <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; border: 1px solid #000;"></div>${side}
           <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>${conn}${bounty}
         </div>
         <span style="font-size: 13px; font-weight: bold; color: ${lb.isEliminated ? '#888' : '#ffc107'};">${score}</span>

@@ -336,3 +336,26 @@ Bugs found and fixed:
 - [x] New: the recap shows "Rating 1000 → 1020 (+20) · #1 of 2 players".
 Tests: ranked.test.js (9), e2e-ranked.mjs (18), smoke-ranked.mjs (10);
 smoke-network 23/23 and vitest 36/36 still pass.
+
+## Session 8 — guild wars and competitive statistics
+
+Guild wars, bugs found and fixed:
+- [x] The simulation had no teams: allies could attack each other, and a war
+      only ended when one faction was left — teammates had to finish each
+      other off. → worker `teams`: no attacks/missiles on allies, team victory
+      (last team standing or 75%→50% of the land together).
+- [x] A missing member blocked the war forever (it started only with a full
+      roster). → 60 s muster: start with whoever came, or call it off.
+- [x] Bots: a disconnected player's bot would have attacked its own team. → no
+      bots in guild wars.
+- [x] Guild rating +30/−20 for equal guilds (inflationary). → zero-sum Elo.
+- [x] Individual ratings: unchanged by guild wars (only ranked changes them).
+- [x] The war room was public and players had to find their side's slot. →
+      private, auto-seated. The client never knew it was a guild war (no
+      init-config flags), so team victory/"GUILD WAR" title never showed.
+Statistics: rankings only list rated players (global positions, tier, ranked
+win rate / avg place); guild W–L; profile split ranked / all modes with
+placements, kills, land, form and match history with mode, place and rating
+change (migration 007).
+Tests: stats.test.js (5), e2e-guildwar.mjs (19), TEAMS=2 bench; vitest 41/41,
+e2e-ranked 18/18, smoke-ranked 10/10.

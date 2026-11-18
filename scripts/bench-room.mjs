@@ -20,6 +20,7 @@ const WORKER = path.join(__dirname, '..', 'server', 'game', 'simulationWorker.js
 const PLAYERS = parseInt(process.env.PLAYERS) || 20;
 const MAP = process.env.MAP || 'north_america';
 const SECONDS = parseInt(process.env.SECONDS) || 600;
+const TEAMS = process.env.TEAMS === '2';
 const TOTAL_CELLS = 1920 * 1080;
 
 const fail = (msg) => { console.error(`FAIL  ${msg}`); process.exitCode = 1; };
@@ -43,7 +44,13 @@ const worker = new Worker(WORKER, {
     roomId: 'BENCH',
     numPlayers: PLAYERS,
     mapId: MAP,
-    opts: { domination: { share: 0.65, decayStartSec: 180, decayEverySec: 30, decayStep: 0.05, floor: 0.40 } },
+    opts: {
+      domination: TEAMS ? { share: 0.75, decayStartSec: 240, decayEverySec: 30, decayStep: 0.05, floor: 0.5 }
+        : { share: 0.65, decayStartSec: 180, decayEverySec: 30, decayStep: 0.05, floor: 0.40 },
+      // TEAMS=2 splits the factions into two teams (as in a guild war):
+      // the first half is team "A", the rest team "B".
+      teams: TEAMS ? Object.fromEntries(Array.from({ length: PLAYERS }, (_, i) => [i + 1, i < PLAYERS / 2 ? 'A' : 'B'])) : null,
+    },
     env: { SIM_TICK_HZ: process.env.SIM_TICK_HZ },
   },
 });
@@ -125,6 +132,11 @@ worker.on('message', (msg) => {
   if (msg.type === 'gameOver') {
     const secs = (Date.now() - started) / 1000;
     console.log(`${elapsed()}  GAME OVER — winner ${msg.winner}${msg.byDomination ? ' (domination)' : ''}`);
+    if (TEAMS) {
+      const team = (f) => (f <= PLAYERS / 2 ? 'A' : 'B');
+      const firsts = Object.entries(msg.stats).filter(([, st]) => st.placement === 1).map(([f]) => Number(f));
+      console.log(`           team ${team(msg.winner)} wins; placement 1: factions ${firsts.join(', ')} (${firsts.every(f => team(f) === team(msg.winner)) ? 'all on the winning team' : 'MIXED TEAMS — bug'})`);
+    }
     report(secs);
     clearTimeout(limit);
     worker.postMessage({ type: 'destroy' });

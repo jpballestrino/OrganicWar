@@ -112,8 +112,12 @@ const ENDED_KEEP_MS = 10 * 60 * 1000;
 
 function emitConnection(room, fid, state) {
   const slot = room.activePlayerSlots[fid];
-  io.to(room.id).emit('player-connection', { factionId: parseInt(fid), nickname: slot ? slot.nickname : '', state });
+  io.to(room.id).emit('player-connection', { factionId: parseInt(fid), nickname: slot ? slot.nickname : '', state, bot: !!(slot && slot.isBot) });
 }
+
+// Guild wars have no bots: a player who quits or drops leaves their faction
+// idle (a bot could attack its own team).
+const botsAllowed = (room) => !room.isGuildWar;
 
 function syncBots(room) {
   if (!room.simReal) return;
@@ -126,7 +130,8 @@ function syncBots(room) {
 
 export function checkRoomGC(room) {
   const slots = Object.values(room.activePlayerSlots).filter(Boolean);
-  const hasHumans = slots.some(s => !s.isBot);
+  // Humans still playing (not bots, not away, not gone).
+  const hasHumans = slots.some(s => !s.isBot && !s.away && !s.left);
   const now = Date.now();
   // Humans who are away (a bot plays for them) may still come back.
   const awayUntil = Math.max(0, ...slots.filter(s => s.away).map(s => s.awaySince + AWAY_KEEP_SECONDS * 1000));
@@ -199,7 +204,7 @@ export function handlePlayerDisconnect(room, socketId, immediate = false) {
       // Quit from the menu: final.
       if (room.matchStarted && room.simReal) {
         slot.socketId = null;
-        slot.isBot = true;
+        slot.isBot = botsAllowed(room);
         delete slot.disconnected;
         delete slot.away;
         slot.left = true;
@@ -231,7 +236,7 @@ export function handlePlayerDisconnect(room, socketId, immediate = false) {
       if (room.matchStarted && room.simReal) {
         // A bot plays until the player comes back (their token stays valid).
         s.socketId = null;
-        s.isBot = true;
+        s.isBot = botsAllowed(room);
         s.away = true;
         s.awaySince = Date.now();
         delete s.disconnected;
@@ -472,13 +477,73 @@ export function createGuildWarRoom(guildA, guildB, teamSize) {
     extra: { guildA, guildB, teamSize },
   });
 
+  room.isOpen = false; // only members of the two guilds can join (join-room)
   activeRooms[roomId] = room;
   sim.initSimulation('north_america');
 
-  io.to(`guild:${guildA.id}`).emit('guild-war-matched', { roomId, opponent: guildB, teamSize });
-  io.to(`guild:${guildB.id}`).emit('guild-war-matched', { roomId, opponent: guildA, teamSize });
+  io.to(`guild:${guildA.id}`).emit('guild-war-matched', { roomId, opponent: guildB, teamSize, musterSec: GUILD_WAR_MUSTER_SECONDS });
+  io.to(`guild:${guildB.id}`).emit('guild-war-matched', { roomId, opponent: guildA, teamSize, musterSec: GUILD_WAR_MUSTER_SECONDS });
+
+  // Members have GUILD_WAR_MUSTER_SECONDS to take their slots. A full roster
+  // starts at once (join-faction); at the deadline the war starts with
+  // whoever came if both guilds have someone there, or is called off.
+  let left = GUILD_WAR_MUSTER_SECONDS;
+  room.musterInterval = setInterval(() => {
+    left--;
+    if (room.countdownInterval || room.matchStarted || !activeRooms[room.id]) {
+      clearInterval(room.musterInterval);
+      return;
+    }
+    io.to(room.id).emit('waiting-tick', left);
+    if (left > 0) return;
+    clearInterval(room.musterInterval);
+    const present = (lo, hi) => Object.entries(room.activePlayerSlots)
+      .some(([f, sl]) => sl && !sl.isBot && Number(f) >= lo && Number(f) <= hi);
+    if (present(1, teamSize) && present(teamSize + 1, teamSize * 2)) {
+      startGuildWarCountdown(room);
+    } else {
+      cancelGuildWar(room, 'Not enough members joined in time. The war was called off (no rating change).');
+    }
+  }, 1000);
 
   return room;
+}
+
+export const GUILD_WAR_MUSTER_SECONDS = Math.max(10, parseInt(process.env.GUILD_WAR_MUSTER_SECONDS, 10) || 60);
+
+// 5-second countdown, then spawn selection (full roster, or the muster
+// deadline with both guilds present).
+export function startGuildWarCountdown(room) {
+  if (room.countdownInterval || room.matchStarted) return;
+  if (room.musterInterval) clearInterval(room.musterInterval);
+  let ticks = 5;
+  io.to(room.id).emit('custom-game-starting');
+  io.to(room.id).emit('waiting-tick', ticks);
+  room.countdownInterval = setInterval(() => {
+    ticks--;
+    io.to(room.id).emit('waiting-tick', ticks);
+    if (ticks <= 0) {
+      clearInterval(room.countdownInterval);
+      startSpawnSelection(room);
+    }
+  }, 1000);
+}
+
+function cancelGuildWar(room, message) {
+  for (const g of [room.guildA, room.guildB]) {
+    io.to(`guild:${g.id}`).emit('notification', { message: `Guild War [${room.guildA.tag}] vs [${room.guildB.tag}]: ${message}`, type: 'error' });
+  }
+  io.to(room.id).emit('server-error', { message });
+  if (room.countdownInterval) clearInterval(room.countdownInterval);
+  delete activeRooms[room.id];
+  updateLobbyList();
+  log('info', `[Room ${room.id}] Guild war cancelled: ${message}`);
+}
+
+// Guild rating after a war: plain Elo between the two guilds (zero-sum).
+export function guildEloDelta(winnerElo, loserElo, K = 32) {
+  const expected = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
+  return Math.max(1, Math.round(K * (1 - expected)));
 }
 
 export function matchmakeGuildWars() {
@@ -489,7 +554,11 @@ export function matchmakeGuildWars() {
       let q1 = guildWarQueue[i];
       let q2 = guildWarQueue[j];
 
-      if (q1.teamSize === q2.teamSize && Math.abs(q1.eloRating - q2.eloRating) <= 200) {
+      // Same team size and close ratings; the accepted gap widens with the
+      // longer wait (same rule as ranked).
+      const waited = (Date.now() - Math.min(q1.queuedAt || Date.now(), q2.queuedAt || Date.now())) / 1000;
+      if (q1.teamSize === q2.teamSize && q1.guildId !== q2.guildId
+          && Math.abs(q1.eloRating - q2.eloRating) <= ratingWindow(waited) + 100) {
         guildWarQueue.splice(j, 1);
         guildWarQueue.splice(i, 1);
 
@@ -525,6 +594,15 @@ const DOMINATION = {
   decayEverySec: 30,
   decayStep: 0.05,
   floor: 0.40,
+};
+// Guild wars are two teams, whose land adds up quickly: a team must hold 75%
+// of the map together, easing from 4:00 down to an outright majority.
+const GUILD_WAR_DOMINATION = {
+  share: 0.75,
+  decayStartSec: 240,
+  decayEverySec: 30,
+  decayStep: 0.05,
+  floor: 0.5,
 };
 
 export function startSpawnSelection(room) {
@@ -567,7 +645,9 @@ export function finalizeSpawns(room) {
     Object.values(room.activePlayerSlots).filter(Boolean).map(s => s.nickname)
   );
   for (let fid = 1; fid <= room.maxPlayers; fid++) {
-    if (room.activePlayerSlots[fid] === null) {
+    // Guild wars are guild against guild: no bots; a missing member's
+    // faction simply isn't in the match.
+    if (room.activePlayerSlots[fid] === null && !room.isGuildWar) {
       let botName = randomBotName();
       // Avoid duplicate names within the room.
       let guard = 0;
@@ -579,6 +659,7 @@ export function finalizeSpawns(room) {
   
   // Validate and pick random land cells outside all existing safe zones
   for (let fid = 1; fid <= room.maxPlayers; fid++) {
+    if (!room.activePlayerSlots[fid]) continue; // empty guild-war slot
     if (!room.spawnSelections.has(fid)) {
       let valid = false;
       let attempts = 0;
@@ -647,7 +728,10 @@ export function startMatchNow(room) {
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
       mapId: room.preset,
-      domination: room.isGuildWar ? null : DOMINATION,
+      // Guild wars: teams (no friendly fire; a team wins together, by last
+      // team standing or by holding the domination share together).
+      domination: room.isGuildWar ? GUILD_WAR_DOMINATION : DOMINATION,
+      teams: room.isGuildWar ? { ...room.sim.alliances } : null,
       onGameOver: (winnerId, stats, byDomination) => handleGameOver(room, winnerId, stats, byDomination),
       // XP for a logged-in player whose faction was just eliminated.
       onPlayerEliminated: (p) => {
@@ -732,16 +816,17 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
     let winningGuild = winnerFaction <= room.teamSize ? room.guildA : room.guildB;
     let losingGuild = winnerFaction <= room.teamSize ? room.guildB : room.guildA;
 
-    let eloDeltaWin = Math.floor(30 + (losingGuild.elo_rating - winningGuild.elo_rating) * 0.1);
-    eloDeltaWin = Math.max(10, Math.min(50, eloDeltaWin));
-
-    let eloDeltaLoss = Math.floor(-20 + (losingGuild.elo_rating - winningGuild.elo_rating) * 0.1);
-    eloDeltaLoss = Math.max(-40, Math.min(-5, eloDeltaLoss));
-
+    // Only the guilds' rating changes in a guild war (zero-sum Elo between the
+    // two guilds); the players' own ranked rating is untouched.
+    const delta = guildEloDelta(winningGuild.elo_rating || 1000, losingGuild.elo_rating || 1000);
     try {
-      updateGuildMatchStats(winningGuild.id, true, eloDeltaWin);
-      updateGuildMatchStats(losingGuild.id, false, eloDeltaLoss);
+      updateGuildMatchStats(winningGuild.id, true, delta);
+      updateGuildMatchStats(losingGuild.id, false, -delta);
     } catch (e) { log('error', 'Guild match stats error', e); }
+    const result = (g, d) => ({ guildId: g.id, tag: g.tag, eloBefore: g.elo_rating || 1000, eloDelta: d });
+    io.to(room.id).emit('guild-war-result', {
+      winner: result(winningGuild, delta), loser: result(losingGuild, -delta),
+    });
 
     for (let fid in room.humanPlayers) {
       if (room.humanPlayers[fid]) {
@@ -759,6 +844,9 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
     const p = matchStats[fid] && matchStats[fid].placement;
     return p > 0 ? p : Number.MAX_SAFE_INTEGER;
   };
+  const matchMode = room.isRankedMatch ? 'ranked' : room.isGuildWar ? 'guild'
+    : room.isQuickPlay ? (room.maxPlayers > 20 ? 'mega' : 'quick') : 'custom';
+  const factionsInMatch = Object.values(room.activePlayerSlots).filter(Boolean).length;
   // Players who quit rank below everyone who stayed, whatever their bot did.
   const quit = (fid) => (room.humanPlayers[fid].status === 'abandoned' ? 1 : 0);
   Object.keys(room.humanPlayers || {})
@@ -788,6 +876,10 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
     }
 
     const playerStats = matchStats[fid] || { cells: 0, gold: 0, kills: 0 };
+    // Quitters count as last, whatever their bot did after they left.
+    const simPlace = player.status === 'abandoned' ? null
+      : sameTeam(parseInt(fid)) ? 1 : (playerStats.placement > 0 ? playerStats.placement : null);
+    const eloDelta = room.isRankedMatch ? (eloDeltas[fid] || 0) : 0;
     let stats = {
       cells: playerStats.cells,
       kills: playerStats.kills,
@@ -795,6 +887,14 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
       duration: Math.floor((Date.now() - room.createdAt) / 1000),
       isGuildMatch: player.isGuildMatch || false,
       guildId: player.guildId || null,
+      // Competitive stats (profile, rankings).
+      mode: matchMode,
+      placement: simPlace || factionsInMatch,
+      players: factionsInMatch,
+      humanPlace: player.placement,
+      humans: totalHumans,
+      eloDelta,
+      eloAfter: room.isRankedMatch ? Math.max(0, (player.elo || 1000) + eloDelta) : null,
     };
 
     try {

@@ -134,6 +134,10 @@ class RoomSimWorker {
     this.landCells = land;
     // Domination rule: { share, decayStartSec, decayEverySec, decayStep, floor }
     // (null/absent disables). See _dominationShare() for the schedule.
+    // Teams (guild wars): { fid: teamId }. Teammates can't attack each other,
+    // and the match is won by a team — the last one standing, or the one
+    // holding the domination share of the land together.
+    this.teams = opts.teams && Object.keys(opts.teams).length ? opts.teams : null;
     const dom = opts.domination;
     this.domination = dom && Number(dom.share) > 0 ? {
       share: Number(dom.share),
@@ -604,7 +608,29 @@ class RoomSimWorker {
       // Domination: one faction holds the winning share of all land.
       let dominator = 0;
       const share = this._dominationShare(this.exports.simulationstate_get_current_tick(this.statePtr));
-      if (share > 0 && nowAlive.size > 1) {
+      const teamOf = (fid) => (this.teams ? this.teams[fid] : fid);
+      let winningTeam = null;
+      if (this.teams) {
+        // Team game: last team standing, or a team holding the share together.
+        const aliveTeams = new Set([...nowAlive].map(teamOf));
+        const prevTeams = new Set([...this.prevAlive].map(teamOf));
+        if (prevTeams.size >= 2 && aliveTeams.size === 1) winningTeam = [...aliveTeams][0];
+        if (winningTeam === null && share > 0 && aliveTeams.size > 1) {
+          const land = {};
+          for (const fid of nowAlive) land[teamOf(fid)] = (land[teamOf(fid)] || 0) + cellsView[fid];
+          let best = null;
+          for (const t of Object.keys(land)) {
+            if (land[t] >= this.landCells * share && (best === null || land[t] > land[best])) best = t;
+          }
+          if (best !== null) winningTeam = best;
+        }
+        if (winningTeam !== null) {
+          // The match's "winner" is the team's largest surviving member; every
+          // member of the team shares the win (placement 1).
+          dominator = [...nowAlive].filter((f) => String(teamOf(f)) === String(winningTeam))
+            .sort((a, b) => cellsView[b] - cellsView[a])[0] || 0;
+        }
+      } else if (share > 0 && nowAlive.size > 1) {
         // Largest qualifying empire wins (matters once the target is below 50%).
         for (const fid of nowAlive) {
           if (cellsView[fid] >= this.landCells * share
@@ -614,14 +640,15 @@ class RoomSimWorker {
         }
       }
 
-      const lastStanding = this.prevAlive.size >= 2 && nowAlive.size <= 1;
+      const lastStanding = !this.teams && this.prevAlive.size >= 2 && nowAlive.size <= 1;
       if ((lastStanding || dominator) && !this.gameOverFired) {
         this.gameOverFired = true;
         const winner = dominator || (nowAlive.size === 1 ? [...nowAlive][0] : null);
+        const onWinningTeam = (fid) => winningTeam !== null && String(teamOf(fid)) === String(winningTeam);
 
         // On a domination win the survivors are ranked behind the winner by land.
         if (dominator) {
-          [...nowAlive].filter(fid => fid !== winner)
+          [...nowAlive].filter(fid => fid !== winner && !onWinningTeam(fid))
             .sort((a, b) => cellsView[b] - cellsView[a])
             .forEach((fid, i) => { this.placements[fid] = i + 2; });
         }
@@ -640,13 +667,13 @@ class RoomSimWorker {
             kills: Math.floor(killView[fid] || 0),
             goldSpent: Math.floor(goldSpentView[fid] || 0),
             peakCells: this.peakCells[fid],
-            placement: fid === winner ? 1 : (this.placements[fid] || 0),
+            placement: fid === winner || onWinningTeam(fid) ? 1 : (this.placements[fid] || 0),
             survivedSec: this.survivedSec[fid] ?? survivedSec,
             ...this._xpCounters(fid),
           };
         }
 
-        parentPort.postMessage({ type: 'gameOver', winner, stats, byDomination: !!dominator });
+        parentPort.postMessage({ type: 'gameOver', winner, stats, byDomination: !!dominator && !(this.teams && [...nowAlive].every(onWinningTeam)) });
       }
     }
 
@@ -709,6 +736,18 @@ class RoomSimWorker {
         parentPort.postMessage({ type: 'emit', event: 'blitz-started', payload: { factionId } });
       }
       return;
+    }
+
+    // No attacking teammates (guild wars): an expansion or missile aimed at an
+    // ally's land is refused.
+    if (this.teams && (input.type === 'expand' || input.type === 'fire_missile') && validCell(targetCell)) {
+      const owner = new Uint16Array(this.exports.memory.buffer,
+        this.exports.simulationstate_get_cell_data_ptr(this.statePtr), TOTAL_CELLS)[targetCell] & 0x7F;
+      if (owner && owner !== factionId && String(this.teams[owner]) === String(this.teams[factionId])) {
+        parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'notification',
+          payload: { message: "That's your ally — you can't attack them.", type: 'error' } });
+        return;
+      }
     }
 
     if (input.type === 'expand') {

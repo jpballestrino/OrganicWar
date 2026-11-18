@@ -74,9 +74,9 @@ export function prepareStatements() {
     getGuildMembers: db.prepare('SELECT gm.user_id, u.username, u.display_name, gm.role, u.elo_rating FROM guild_members gm JOIN users u ON gm.user_id = u.id WHERE gm.guild_id = ?'),
     createGuildInvite: db.prepare('INSERT INTO guild_invites (guild_id, inviter_id, invitee_id) VALUES (?, ?, ?)'),
     getPendingInvites: db.prepare('SELECT gi.*, g.name as guild_name, g.tag as guild_tag FROM guild_invites gi JOIN guilds g ON gi.guild_id = g.id WHERE gi.invitee_id = ? AND gi.status = \'pending\''),
-    recordMatch: db.prepare('INSERT INTO match_history (room_id, user_id, faction_id, result, cells_conquered, kills, gold_earned, duration_seconds, is_guild_match, guild_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    recordMatch: db.prepare('INSERT INTO match_history (room_id, user_id, faction_id, result, cells_conquered, kills, gold_earned, duration_seconds, is_guild_match, guild_id, mode, placement, players, human_place, humans, elo_delta, elo_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     getUserProfile: db.prepare('SELECT u.id, u.username, u.display_name, u.total_wins, u.total_losses, u.total_games, u.total_cells_conquered, u.total_kills, u.elo_rating, u.guild_id, g.name as guild_name, g.tag as guild_tag, g.color as guild_color, g.elo_rating as guild_elo, gm.role as guild_role FROM users u LEFT JOIN guilds g ON u.guild_id = g.id LEFT JOIN guild_members gm ON gm.user_id = u.id AND gm.guild_id = u.guild_id WHERE u.username = ?'),
-    getMatchHistory: db.prepare('SELECT * FROM match_history WHERE user_id = (SELECT id FROM users WHERE username = ?) ORDER BY played_at DESC LIMIT ? OFFSET ?'),
+    getMatchHistory: db.prepare('SELECT * FROM match_history WHERE user_id = (SELECT id FROM users WHERE username = ?) ORDER BY id DESC LIMIT ? OFFSET ?'),
     updateUserElo: db.prepare('UPDATE users SET elo_rating = MAX(0, elo_rating + ?) WHERE id = ?'),
     updateGuildSettings: db.prepare('UPDATE guilds SET name = ?, tag = ?, description = ?, color = ?, is_open = ?, max_members = ? WHERE id = ?'),
     searchGuilds: db.prepare('SELECT id, name, tag, member_count, is_open, max_members, description, color, elo_rating FROM guilds WHERE name LIKE ? OR tag LIKE ?'),
@@ -323,8 +323,81 @@ export function getPendingInvites(userId) {
   return stmts.getPendingInvites.all(userId);
 }
 
+// stats: cells, kills, gold, duration, isGuildMatch, guildId, and the
+// competitive fields: mode ('ranked' | 'quick' | 'mega' | 'guild' | 'custom'),
+// placement / players (among all factions), humanPlace / humans (among the
+// human players), eloDelta / eloAfter (ranked only).
 export function recordMatch(roomId, userId, factionId, result, stats) {
-  stmts.recordMatch.run(roomId, userId, factionId, result, stats.cells || 0, stats.kills || 0, stats.gold || 0, stats.duration || 0, stats.isGuildMatch ? 1 : 0, stats.guildId || null);
+  stmts.recordMatch.run(roomId, userId, factionId, result, stats.cells || 0, stats.kills || 0, stats.gold || 0, stats.duration || 0,
+    stats.isGuildMatch ? 1 : 0, stats.guildId || null, stats.mode || 'casual', stats.placement || null, stats.players || null,
+    stats.humanPlace || null, stats.humans || null, stats.eloDelta || 0, stats.eloAfter ?? null);
+}
+
+// ---------- COMPETITIVE STATS ----------
+// Players who have played at least one ranked match, ranked by rating
+// (position is the global one, also when searching).
+const RANKED_PLAYERS_CTE = `
+  WITH r AS (
+    SELECT user_id, COUNT(*) AS ranked_games, SUM(human_place = 1) AS ranked_wins,
+           AVG(human_place) AS avg_place, MAX(elo_after) AS peak_rating
+    FROM match_history WHERE mode = 'ranked' GROUP BY user_id
+  ), ranked AS (
+    SELECT u.id, u.username, u.display_name, u.elo_rating, u.guild_id,
+           r.ranked_games, r.ranked_wins, r.avg_place, MAX(COALESCE(r.peak_rating, 0), u.elo_rating) AS peak_rating,
+           RANK() OVER (ORDER BY u.elo_rating DESC) AS position
+    FROM users u JOIN r ON r.user_id = u.id
+  )`;
+
+export function getRankedPlayersPage(search, page, limit) {
+  const like = search ? `%${search.replace(/[%_\\]/g, '\\$&')}%` : null;
+  const where = like ? "WHERE (ranked.username LIKE @like ESCAPE '\\' OR ranked.display_name LIKE @like ESCAPE '\\')" : '';
+  const rows = db.prepare(`${RANKED_PLAYERS_CTE}
+    SELECT ranked.*, g.tag AS guild_tag, g.name AS guild_name, g.color AS guild_color
+    FROM ranked LEFT JOIN guilds g ON g.id = ranked.guild_id ${where}
+    ORDER BY ranked.position, ranked.ranked_games DESC LIMIT @limit OFFSET @offset`)
+    .all({ like, limit, offset: (page - 1) * limit });
+  const { count } = db.prepare(`${RANKED_PLAYERS_CTE} SELECT COUNT(*) AS count FROM ranked ${where}`).get({ like });
+  return { rows, total: count };
+}
+
+// Guilds that have fought at least one war first (by rating, with their
+// global position), then the unrated ones (most members first).
+export function getGuildRankingsPage(search, page, limit) {
+  const like = search ? `%${search.replace(/[%_\\]/g, '\\$&')}%` : null;
+  const where = like ? "WHERE (name LIKE @like ESCAPE '\\' OR tag LIKE @like ESCAPE '\\')" : '';
+  const base = `WITH gr AS (
+      SELECT id, name, tag, member_count, elo_rating, total_guild_wins, total_guild_losses, color, is_open, max_members,
+             (total_guild_wins + total_guild_losses) AS wars,
+             CASE WHEN total_guild_wins + total_guild_losses > 0
+                  THEN RANK() OVER (PARTITION BY (total_guild_wins + total_guild_losses > 0) ORDER BY elo_rating DESC) END AS position
+      FROM guilds)`;
+  const rows = db.prepare(`${base} SELECT * FROM gr ${where}
+    ORDER BY (wars > 0) DESC, CASE WHEN wars > 0 THEN elo_rating END DESC, member_count DESC, id
+    LIMIT @limit OFFSET @offset`).all({ like, limit, offset: (page - 1) * limit });
+  const { count } = db.prepare(`${base} SELECT COUNT(*) AS count FROM gr ${where}`).get({ like });
+  return { rows, total: count };
+}
+
+// Everything the profile shows beyond the users row.
+export function getCompetitiveStats(userId) {
+  const ranked = db.prepare(`${RANKED_PLAYERS_CTE}
+    SELECT ranked_games, ranked_wins, avg_place, peak_rating, position,
+           (SELECT COUNT(*) FROM ranked) AS ranked_players
+    FROM ranked WHERE id = ?`).get(userId) || null;
+  const overall = db.prepare(`SELECT
+      COUNT(placement) AS placed_games,
+      SUM(placement <= 3) AS top3,
+      AVG(placement) AS avg_placement,
+      AVG(CAST(placement AS REAL) / players) AS avg_percentile,
+      MIN(placement) AS best_placement,
+      MAX(cells_conquered) AS best_land,
+      MAX(kills) AS best_kills
+    FROM match_history WHERE user_id = ? AND placement IS NOT NULL`).get(userId);
+  const form = db.prepare(`SELECT mode, result, placement, players, human_place, humans, elo_delta
+    FROM match_history WHERE user_id = ? ORDER BY id DESC LIMIT 10`).all(userId);
+  const byMode = db.prepare(`SELECT mode, COUNT(*) AS games, SUM(result = 'win') AS wins
+    FROM match_history WHERE user_id = ? GROUP BY mode`).all(userId);
+  return { ranked, overall, form, byMode };
 }
 
 export function getUserProfile(username) {
