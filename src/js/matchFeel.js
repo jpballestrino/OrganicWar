@@ -44,6 +44,7 @@ function freshMatch() {
     // options the recap was last shown with, so it can be re-rendered.
     pendingProgress: null,
     endOpts: null,
+    ranked: null, // ranked-result: rating change, when this is a ranked match
     bountyEarnedShown: 0,
     lastBountyToastAt: 0,
     alive: 0,
@@ -251,6 +252,19 @@ export function consumeAutoQuickPlay() {
 
 // Lock in the result exactly once (own elimination or game over, whichever
 // comes first), award XP, and show the recap.
+// Ranked matches: "Rating 1000 → 1020 (+20) · 1st of 3 players"; until the
+// match ends (a player eliminated early sees the recap first) a note says the
+// rating is decided at the end.
+function rankedHtml(result) {
+  if (!state.isRankedMatch) return '';
+  const r = result.ranked || match.ranked;
+  if (!r) return '<div class="end-ranked end-ranked-pending">Ranked: your rating changes when the match ends.</div>';
+  const after = r.eloBefore + r.eloDelta;
+  const sign = r.eloDelta > 0 ? '+' : '';
+  const cls = r.eloDelta > 0 ? 'up' : r.eloDelta < 0 ? 'down' : '';
+  return `<div class="end-ranked ${cls}">Rating ${r.eloBefore} → <b>${after}</b> (${sign}${r.eloDelta}) · #${r.place} of ${r.humans} players</div>`;
+}
+
 function settle({ won, placement, survivedSec, killerId = 0, final = false, winner = null, byDomination = false }) {
   if (match.settled) return;
   match.settled = true;
@@ -361,6 +375,7 @@ function showEndScreen(result, { final = false, winner = null, animate = false, 
         <span class="end-placement-of">of ${result.totalPlayers}</span>
       </div>
 
+${rankedHtml(result)}
       <div class="end-stats">
         <div class="end-stat"><b>${result.eliminations}</b><span>Eliminations</span></div>
         <div class="end-stat"><b>${result.peakCells.toLocaleString()}</b><span>Peak land</span></div>
@@ -634,6 +649,15 @@ export function initMatchFeel({ socket, quit }) {
   });
 
   socket.on('build-rejected', () => playSfx('error'));
+
+  // Ranked: this player's rating change, sent when the match ends.
+  socket.on('ranked-result', (r = {}) => {
+    match.ranked = r;
+    if (match.result) match.result.ranked = r;
+    if (match.result && document.getElementById('matchEndOverlay')) {
+      showEndScreen(match.result, { ...match.endOpts, animate: false });
+    }
+  });
 
   // A logged-in player's XP for this match, scored and saved by the server.
   socket.on('progression-result', (result = {}) => {

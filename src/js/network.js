@@ -422,6 +422,8 @@ export function initNetwork() {
       const title = document.getElementById('waitingTitle');
       if (state.isGuildWar) {
         title.innerHTML = `GUILD WAR: <span style="color:#ffc107">[${escapeHtml(state.guildA.tag)}]</span> vs <span style="color:#ff6b6b">[${escapeHtml(state.guildB.tag)}]</span>`;
+      } else if (config.isRankedMatch) {
+        title.innerText = 'Ranked Match · get ready';
       } else if (config.isQuickPlay) {
         title.innerText = config.maxPlayers > 20 ? `Mega Battle Matchmaking · ${config.maxPlayers} commanders` : 'Quick Game Matchmaking';
       } else {
@@ -441,11 +443,12 @@ export function initNetwork() {
     updateDevDashboard();
   });
 
-  socket.on('ranked-queue-update', (data) => {
+  socket.on('ranked-queue-update', ({ count, range } = {}) => {
     const lblPlayers = document.getElementById('lblRankedPlayers');
-    if (lblPlayers) {
-      lblPlayers.innerText = `Players: ${data.count}/${data.required}`;
-    }
+    if (!lblPlayers) return;
+    const who = count > 1 ? `${count} players in the queue` : 'Searching for opponents…';
+    const span = range ? ` · rating ±${range}` : ' · any rating';
+    lblPlayers.innerText = who + span;
   });
 
   socket.on('ranked-match-found', () => {

@@ -2,7 +2,7 @@ import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.
 import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
-import { handlePlayerDisconnect, reclaimSlot, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
+import { handlePlayerDisconnect, reclaimSlot, leaveRankedQueue, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
@@ -144,6 +144,15 @@ export function setupSocketHandlers(io) {
       }
     });
 
+    // Whether this socket still plays in a room (lobby, spawn selection or a
+    // running match). One match at a time: it must quit that one first, or a
+    // later "quit" would apply to the wrong room.
+    function holdsSlotInRoom() {
+      const room = socket.roomId && activeRooms[socket.roomId];
+      if (!room || room.gameOverHandled) return false;
+      return Object.values(room.activePlayerSlots).some(sl => sl && sl.socketId === socket.id);
+    }
+
     function getFreshGuildInfo() {
       if (!userId) {return { guildId: null, guildTag: null };}
       const userObj = findUserById(userId);
@@ -164,6 +173,11 @@ export function setupSocketHandlers(io) {
     });
 
     socket.on('create-custom-room', (data) => {
+      leaveRankedQueue(socket); // can't wait for ranked while playing another match
+      if (holdsSlotInRoom()) {
+        socket.emit('notification', { message: 'You are already in a match. Leave it first.', type: 'error' });
+        return;
+      }
       try {
         const parsed = createRoomSchema.safeParse(data);
         if (!parsed.success) {
@@ -207,6 +221,11 @@ export function setupSocketHandlers(io) {
     });
 
     socket.on('join-room', ({ roomId }) => {
+      leaveRankedQueue(socket); // can't wait for ranked while playing another match
+      if (holdsSlotInRoom()) {
+        socket.emit('notification', { message: 'You are already in a match. Leave it first.', type: 'error' });
+        return;
+      }
       try {
         if (typeof roomId !== 'string' || roomId.length > 10) {return;}
         let room = activeRooms[roomId];
@@ -236,6 +255,11 @@ export function setupSocketHandlers(io) {
     });
 
     socket.on('quick-play', ({ nickname, mode } = {}) => {
+      leaveRankedQueue(socket); // can't wait for ranked while playing another match
+      if (holdsSlotInRoom()) {
+        socket.emit('notification', { message: 'You are already in a match. Leave it first.', type: 'error' });
+        return;
+      }
       if (socket.displayName) { nickname = socket.displayName; }
       try {
         // Two Quick Battle queues: standard (20) and Mega (64). Each fills its
@@ -668,39 +692,26 @@ export function setupSocketHandlers(io) {
 
     // ---------- RANKED MATCHMAKING ----------
     socket.on('join-ranked-queue', () => {
-      if (!socket.userId) {
-        socket.emit('notification', { message: 'Must be logged in to play ranked.', type: 'error' });
-        return;
-      }
-        
-      if (socket.roomId) {
-        socket.emit('notification', { message: 'You are already in a room.', type: 'error' });
-        return;
-      }
+      const refuse = (message) => {
+        socket.emit('notification', { message, type: 'error' });
+        socket.emit('ranked-queue-left', { reason: message });
+      };
+      if (!socket.userId) { refuse('Log in to play ranked.'); return; }
+      if (holdsSlotInRoom()) { refuse('You are already in a match.'); return; }
 
       const userObj = findUserById(socket.userId);
-      if (!userObj) { return; }
+      if (!userObj) { refuse('Account not found.'); return; }
 
-      if (!rankedQueue.some(p => p.socket.id === socket.id)) {
+      // One entry per account (and per socket).
+      if (!rankedQueue.some(p => p.socket.id === socket.id || p.socket.userId === socket.userId)) {
         rankedQueue.push({ socket, elo: userObj.elo_rating, joinedAt: Date.now() });
-            
-        for (let p of rankedQueue) {
-          p.socket.emit('ranked-queue-update', { count: rankedQueue.length, required: 2 });
-        }
-        log('info', `User ${socket.userId} joined ranked queue. Total: ${rankedQueue.length}`);
-        matchmakeRanked();
+        log('info', `User ${socket.userId} (rating ${userObj.elo_rating}) joined ranked queue. Total: ${rankedQueue.length}`);
       }
+      matchmakeRanked();
     });
 
     socket.on('leave-ranked-queue', () => {
-      let idx = rankedQueue.findIndex(p => p.socket.id === socket.id);
-      if (idx !== -1) {
-        rankedQueue.splice(idx, 1);
-        for (let p of rankedQueue) {
-          p.socket.emit('ranked-queue-update', { count: rankedQueue.length, required: 2 });
-        }
-        log('info', `User ${socket.userId} left ranked queue.`);
-      }
+      if (leaveRankedQueue(socket)) log('info', `User ${socket.userId} left ranked queue.`);
     });
 
     // ---------- DISCONNECT ----------
@@ -717,13 +728,7 @@ export function setupSocketHandlers(io) {
         }
       }
 
-      let idx = rankedQueue.findIndex(p => p.socket.id === socket.id);
-      if (idx !== -1) {
-        rankedQueue.splice(idx, 1);
-        for (let p of rankedQueue) {
-          p.socket.emit('ranked-queue-update', { count: rankedQueue.length, required: 2 });
-        }
-      }
+      leaveRankedQueue(socket);
 
       try {
         if (socket.roomId) {

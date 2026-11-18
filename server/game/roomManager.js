@@ -8,6 +8,7 @@ import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
 import { MAX_FACTIONS, safeZoneRadiusFor } from '../../src/js/constants.js';
 import { roomRefusal } from './capacity.js';
 import { awardMatchXp } from './progression.js';
+import { planRankedMatches, rankedEloDeltas, ratingWindow, RANKED_FIELD, RANKED_MIN_HUMANS } from './ranked.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
 const BOT_ADJECTIVES = [
@@ -203,12 +204,14 @@ export function handlePlayerDisconnect(room, socketId, immediate = false) {
         delete slot.away;
         slot.left = true;
         syncBots(room);
-        emitConnection(room, f, 'left');
+        if (!(room.humanPlayers[f] && room.humanPlayers[f].eliminated)) emitConnection(room, f, 'left');
         io.to(room.id).emit('slots-update', room.activePlayerSlots);
       } else {
         room.activePlayerSlots[f] = null;
       }
-      if (room.humanPlayers && room.humanPlayers[f]) {
+      // Quitting mid-match counts as abandoning it; leaving after your
+      // faction was eliminated is just going back to the menu.
+      if (room.humanPlayers && room.humanPlayers[f] && !room.humanPlayers[f].eliminated) {
         room.humanPlayers[f].status = 'abandoned';
       }
       for (let [t, data] of room.reconnectTokens.entries()) {
@@ -359,16 +362,20 @@ export function createRankedRoom(players) {
   }
 
   const roomId = generateUniqueRoomId();
-  const maxPlayers = players.length;
+  // A normal-size battle (bots fill the other factions); only the humans'
+  // order counts for rating.
+  const maxPlayers = Math.max(RANKED_FIELD, players.length);
   const sim = new MockSimulation(maxPlayers);
+  const mapId = randomMapId();
 
   const room = buildRoomObject({
-    roomId, name: 'Ranked Match', sim, maxPlayers, preset: 'north_america',
+    roomId, name: 'Ranked Match', sim, maxPlayers, preset: mapId,
     isRankedMatch: true,
   });
+  room.isOpen = false; // never listed in, or joinable from, the public lobby
 
   activeRooms[roomId] = room;
-  sim.initSimulation('north_america');
+  sim.initSimulation(mapId);
 
   for (let i = 0; i < players.length; i++) {
     let p = players[i];
@@ -389,12 +396,12 @@ export function createRankedRoom(players) {
     const token = crypto.randomUUID();
     room.reconnectTokens.set(token, { roomId: room.id, factionId: fid, nickname: room.activePlayerSlots[fid].nickname });
     p.socket.emit('join-success', { factionId: fid, nickname: room.activePlayerSlots[fid].nickname, isQuickPlay: false, isRankedMatch: true, reconnectToken: token });
-    p.socket.emit('ranked-match-found', { roomId });
+    p.socket.emit('ranked-match-found', { roomId, humans: players.length });
   }
 
   io.to(room.id).emit('slots-update', room.activePlayerSlots);
 
-  let ticks = 15;
+  let ticks = 5; // they already waited in the queue
   io.to(room.id).emit('waiting-tick', ticks);
   room.countdownInterval = setInterval(() => {
     ticks--;
@@ -409,19 +416,39 @@ export function createRankedRoom(players) {
   return room;
 }
 
-export function matchmakeRanked(force = false) {
-  const REQUIRED_PLAYERS = force ? Math.max(1, rankedQueue.length) : 2;
+// Players leave the queue when they disconnect, leave it, or enter any other
+// room; the matchmaker (every 5 s and on each join) starts every group that is
+// ready — see server/game/ranked.js.
+export function leaveRankedQueue(socket) {
+  const idx = rankedQueue.findIndex(p => p.socket.id === socket.id);
+  if (idx === -1) return false;
+  rankedQueue.splice(idx, 1);
+  sendRankedQueueStatus();
+  return true;
+}
 
-  while (rankedQueue.length >= REQUIRED_PLAYERS && rankedQueue.length > 0) {
-    let matchPlayers = rankedQueue.splice(0, REQUIRED_PLAYERS);
-    let room = createRankedRoom(matchPlayers);
-    if (!room) { break; }
-    log('info', `Ranked Match created with ${REQUIRED_PLAYERS} players. Room: ${room.id}`);
-
-    for (let p of rankedQueue) {
-      p.socket.emit('ranked-queue-update', { count: rankedQueue.length, required: 2 });
-    }
+export function sendRankedQueueStatus(now = Date.now()) {
+  for (const p of rankedQueue) {
+    const w = ratingWindow((now - p.joinedAt) / 1000);
+    p.socket.emit('ranked-queue-update', {
+      count: rankedQueue.length, required: RANKED_MIN_HUMANS,
+      range: Number.isFinite(w) ? Math.round(w) : null,
+    });
   }
+}
+
+export function matchmakeRanked(now = Date.now()) {
+  // Drop entries whose socket went away (entering another room already
+  // removes a player from the queue).
+  for (let i = rankedQueue.length - 1; i >= 0; i--) {
+    if (!rankedQueue[i].socket.connected) rankedQueue.splice(i, 1);
+  }
+  for (const group of planRankedMatches(rankedQueue, now)) {
+    for (const p of group) rankedQueue.splice(rankedQueue.indexOf(p), 1);
+    const room = createRankedRoom(group);
+    if (room) log('info', `Ranked match created with ${group.length} players (ratings ${group.map(p => p.elo).join(', ')}). Room: ${room.id}`);
+  }
+  sendRankedQueueStatus(now);
 }
 
 export function createGuildWarRoom(guildA, guildB, teamSize) {
@@ -623,7 +650,11 @@ export function startMatchNow(room) {
       domination: room.isGuildWar ? null : DOMINATION,
       onGameOver: (winnerId, stats, byDomination) => handleGameOver(room, winnerId, stats, byDomination),
       // XP for a logged-in player whose faction was just eliminated.
-      onPlayerEliminated: (p) => awardMatchXp(io, room, p.factionId, { ...p, won: false }),
+      onPlayerEliminated: (p) => {
+        // Leaving after being eliminated is not quitting (see handlePlayerDisconnect).
+        if (room.humanPlayers[p.factionId]) room.humanPlayers[p.factionId].eliminated = true;
+        awardMatchXp(io, room, p.factionId, { ...p, won: false });
+      },
       onError: (message) => {
         log('error', `[Room ${room.id}] Simulation crashed: ${message}`);
         io.to(room.id).emit('server-error', { message: 'The game simulation crashed. Please return to the main menu.' });
@@ -721,15 +752,6 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
   }
 
   let totalHumans = Object.keys(room.humanPlayers || {}).length;
-  let averageRoomElo = 1000;
-  if (room.isRankedMatch && totalHumans > 0) {
-    let totalElo = 0;
-    for (let fid in room.humanPlayers) {
-      totalElo += (room.humanPlayers[fid].elo || 1000);
-    }
-    averageRoomElo = totalElo / totalHumans;
-  }
-
   // Rank the humans against each other by how the sim placed them (1 = winner,
   // higher = eliminated earlier; 0/missing = unknown, ranked last). Previously
   // every non-winner got last place, so ranked ELO ignored how long you survived.
@@ -737,26 +759,32 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
     const p = matchStats[fid] && matchStats[fid].placement;
     return p > 0 ? p : Number.MAX_SAFE_INTEGER;
   };
+  // Players who quit rank below everyone who stayed, whatever their bot did.
+  const quit = (fid) => (room.humanPlayers[fid].status === 'abandoned' ? 1 : 0);
   Object.keys(room.humanPlayers || {})
-    .sort((a, b) => simPlacement(a) - simPlacement(b))
+    .sort((a, b) => quit(a) - quit(b)
+      || (sameTeam(parseInt(b)) ? 1 : 0) - (sameTeam(parseInt(a)) ? 1 : 0)
+      || simPlacement(a) - simPlacement(b))
     .forEach((fid, index) => { room.humanPlayers[fid].placement = index + 1; });
+
+  // Ranked rating: pairwise Elo between the humans of this match (ranked.js).
+  // Only ranked matches change a player's rating.
+  let eloDeltas = {};
+  if (room.isRankedMatch) {
+    eloDeltas = rankedEloDeltas(Object.entries(room.humanPlayers)
+      .filter(([, p]) => p.userId && !p.isGuest)
+      .map(([fid, p]) => ({ fid, elo: p.elo || 1000, place: p.placement })));
+  }
 
   for (let fid in room.humanPlayers) {
     let player = room.humanPlayers[fid];
     if (player.isGuest || !player.userId) { continue; }
 
     let result = 'loss';
-    if (winnerFaction && (
-      parseInt(fid) === winnerFaction ||
-      (isAllianceWin && room.sim.alliances[parseInt(fid)] === room.sim.alliances[winnerFaction])
-    )) {
-      result = 'win';
-      player.placement = 1;
-    } else if (player.status === 'abandoned') {
+    if (player.status === 'abandoned') {
       result = 'abandoned';
-      player.placement = player.placement || totalHumans;
-    } else {
-      player.placement = player.placement || totalHumans;
+    } else if (sameTeam(parseInt(fid))) {
+      result = 'win';
     }
 
     const playerStats = matchStats[fid] || { cells: 0, gold: 0, kills: 0 };
@@ -776,23 +804,22 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
       let losses = (result === 'loss' || result === 'abandoned') ? 1 : 0;
       updateUserStats(player.userId, { wins, losses, games: 1, cells: stats.cells, kills: stats.kills });
 
-      if (room.isRankedMatch) {
-        let expectedScore = 1 / (1 + Math.pow(10, (averageRoomElo - (player.elo || 1000)) / 400));
-        let actualScore = (totalHumans - player.placement) / Math.max(1, totalHumans - 1);
-
-        let K = 60;
-        let eloDelta = Math.round(K * (actualScore - expectedScore));
-
-        if (player.placement === 1 && eloDelta < 5) { eloDelta = 5; }
-        if (player.placement === totalHumans && eloDelta > -5) { eloDelta = -5; }
-
-        updateUserElo(player.userId, eloDelta);
-      } else if (!room.isQuickPlay && totalHumans >= 2) {
-        let eloDelta = result === 'win' ? 15 : -5;
-        updateUserElo(player.userId, eloDelta);
+      if (room.isRankedMatch && eloDeltas[fid]) {
+        updateUserElo(player.userId, eloDeltas[fid]);
+        player.eloDelta = eloDeltas[fid];
       }
     } catch (e) {
       log('error', `[ERROR] Saving match stats for user ${player.userId}`, e.message);
+    }
+  }
+
+  // Tell each ranked player their rating change (shown on the recap).
+  if (room.isRankedMatch) {
+    for (const fid in room.humanPlayers) {
+      const p = room.humanPlayers[fid];
+      const slot = room.activePlayerSlots[fid];
+      const sock = slot && slot.socketId ? io.sockets.sockets.get(slot.socketId) : null;
+      if (sock && p.userId) sock.emit('ranked-result', { eloBefore: p.elo || 1000, eloDelta: p.eloDelta || 0, place: p.placement, humans: totalHumans });
     }
   }
 
@@ -825,6 +852,12 @@ export function sendInitConfig(socket, room) {
     currentPreset: room.preset,
     maxPlayers: room.maxPlayers,
     isQuickPlay: room.isQuickPlay,
+    // The client labels ranked / guild-war lobbies and recaps from these.
+    isRankedMatch: !!room.isRankedMatch,
+    isGuildWar: !!room.isGuildWar,
+    guildA: room.guildA ? { id: room.guildA.id, tag: room.guildA.tag, name: room.guildA.name } : null,
+    guildB: room.guildB ? { id: room.guildB.id, tag: room.guildB.tag, name: room.guildB.name } : null,
+    teamSize: room.teamSize || 0,
     isHost: room.hostSocketId === socket.id,
     reconnectGraceSec: RECONNECT_GRACE_SECONDS,
   });

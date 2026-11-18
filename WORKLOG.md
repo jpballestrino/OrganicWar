@@ -310,3 +310,29 @@ player stuck. Fixed:
 - [x] Quit waits for the server's acknowledgement before reloading.
 - [x] "Logged in elsewhere" no longer leaves an endless "Reconnecting…".
 Settings: `RECONNECT_GRACE_SECONDS` (30), `AWAY_KEEP_SECONDS` (120).
+
+## Session 7 — ranked matches
+
+Bugs found and fixed:
+- [x] No skill matching: the first two players in the queue were paired, any
+      ratings. → rating-based groups of 2–8 with a widening range (ranked.js).
+- [x] A ranked match was a bare 1v1 with no bots on the full map (the game's
+      pacing, bounty and domination rules are tuned for 20 factions). → normal
+      20-faction battle, bots fill; random map like Quick Battle.
+- [x] Rating used "expected vs room average", which halves the effect of
+      rating gaps. → pairwise Elo, zero-sum.
+- [x] A quitter whose bot outlasted the others could gain rating.
+- [x] Leaving to the menu after being eliminated was recorded as quitting
+      ("abandoned", ranked last) — the normal way to leave a lost match.
+- [x] Custom games also changed rating (+15 / −5): free rating farming.
+- [x] The ranked waiting room was listed in the public lobby and joinable.
+- [x] A player could be in the ranked queue / a ranked match and start a
+      Quick Battle too; their "quit" then hit the wrong room.
+- [x] Client: queue screen showed "Players: 1/20"; refused joins left a timer
+      running forever; the timer kept running after a match was found; a
+      reconnect silently dropped you from the queue; an invisible 20 px button
+      ("dev force start", not wired) sat over the page; init-config never told
+      the client it was a ranked (or guild-war) match.
+- [x] New: the recap shows "Rating 1000 → 1020 (+20) · #1 of 2 players".
+Tests: ranked.test.js (9), e2e-ranked.mjs (18), smoke-ranked.mjs (10);
+smoke-network 23/23 and vitest 36/36 still pass.
