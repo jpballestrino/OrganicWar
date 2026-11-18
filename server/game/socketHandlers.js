@@ -2,7 +2,7 @@ import { activeRooms, guildWarQueue, rankedQueue, userSocketMap } from './state.
 import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
-import { handlePlayerDisconnect, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
+import { handlePlayerDisconnect, reclaimSlot, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
 import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
@@ -740,63 +740,75 @@ export function setupSocketHandlers(io) {
       }
     });
 
-    socket.on('quit-game', () => {
+    socket.on('quit-game', (ack) => {
+      const done = () => { if (typeof ack === 'function') ack(); };
       try {
         let room = activeRooms[socket.roomId];
-        if (!room) { return; }
+        if (!room) { done(); return; }
         handlePlayerDisconnect(room, socket.id, true);
         io.to(room.id).emit('slots-update', room.activePlayerSlots);
         socket.assignedFaction = null;
         socket.roomId = null;
+        socket.leave(room.id);
       } catch (err) {
         log('error', '[quit-game] handler failed:', err.message);
       }
+      done();
     });
 
-    socket.on('reconnect-to-game', ({ token }) => {
+    socket.on('reconnect-to-game', (payload) => {
       try {
+        const token = payload && payload.token;
         if (typeof token !== 'string' || token.length > 100) {return;}
-        log('info', `[RECONNECT] Token received: ${token}`);
         let found = false;
         for (let roomId in activeRooms) {
           let room = activeRooms[roomId];
-          if (room.reconnectTokens.has(token)) {
-            let data = room.reconnectTokens.get(token);
-            let fid = data.factionId;
-            log('info', `[RECONNECT] Found token in room ${roomId} for faction ${fid}`);
-                    
-            if (room.activePlayerSlots[fid]) {
-              log('info', `[RECONNECT] Slot ${fid} exists. Reclaiming.`);
-              if (room.disconnectTimers[fid]) {
-                clearTimeout(room.disconnectTimers[fid]);
-                delete room.disconnectTimers[fid];
-              }
-                        
-              room.activePlayerSlots[fid].socketId = socket.id;
-              room.activePlayerSlots[fid].disconnected = false;
-              socket.assignedFaction = fid;
+          if (!room.reconnectTokens.has(token)) continue;
+          let data = room.reconnectTokens.get(token);
+          let fid = data.factionId;
+          const slot = room.activePlayerSlots[fid];
+          if (!slot || slot.left) continue;
 
-              socket.roomId = room.id;
-              socket.join(room.id);
-                        
-              sendInitConfig(socket, room);
-              socket.emit('reconnect-success', {
-                factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay,
-                inMatch: !!(room.matchStarted && room.simReal),
-              });
-              // Deltas only carry changes: bring this client fully up to date.
-              if (room.matchStarted && room.simReal) room.simReal.sendFullState(socket.id);
-              io.to(room.id).emit('slots-update', room.activePlayerSlots);
-              found = true;
-              log('info', `[RECONNECT] Success for ${fid}`);
-              break;
-            }
+          // A previous socket of this player may still look connected (the
+          // server notices a dead connection only at the next ping).
+          if (slot.socketId && slot.socketId !== socket.id) {
+            const old = io.sockets.sockets.get(slot.socketId);
+            if (old) { old.roomId = null; old.leave(room.id); }
           }
+          slot.socketId = socket.id;
+          socket.assignedFaction = fid;
+          socket.roomId = room.id;
+          socket.join(room.id);
+          reclaimSlot(room, fid);
+
+          sendInitConfig(socket, room);
+          const inMatch = !!(room.matchStarted && room.simReal);
+          socket.emit('reconnect-success', {
+            factionId: fid, nickname: data.nickname, isQuickPlay: room.isQuickPlay,
+            inMatch, phase: room.phase,
+          });
+          if (inMatch) {
+            // Deltas only carry changes: bring this client fully up to date.
+            room.simReal.sendFullState(socket.id);
+          } else if (room.phase === 'SPAWN_SELECTION') {
+            // Back into the spawn picker with the time that is left.
+            socket.emit('spawn-selection-start', {
+              duration: Math.max(1, room.spawnTicksLeft || 1), mapId: room.preset, safeZoneRadius: room.safeZoneRadius,
+            });
+            const selections = {};
+            for (let [f, p] of room.spawnSelections.entries()) selections[f] = p;
+            socket.emit('spawn-selections-update', selections);
+          }
+          io.to(room.id).emit('slots-update', room.activePlayerSlots);
+          found = true;
+          log('info', `[RECONNECT] Faction ${fid} back in room ${roomId}`);
+          break;
         }
         if (!found) {
-          log('warn', '[RECONNECT] Token not found! Failing.');
-          socket.emit('reconnect-failed');
-          socket.emit('notification', { message: 'Session expired. Please start a new game.', type: 'error' });
+          const ended = endedMatchFor(token);
+          socket.emit('reconnect-failed', ended
+            ? { reason: 'ended', winnerName: ended.winnerName }
+            : { reason: 'expired' });
         }
       } catch (err) {
         log('error', '[reconnect-to-game] handler failed:', err.message);

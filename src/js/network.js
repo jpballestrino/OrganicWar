@@ -15,12 +15,24 @@ export const socketAuth = () => ({ token: getToken(), tzOffset: new Date().getTi
 
 export const socket = io({
   auth: socketAuth(),
+  // Retry quickly: a player whose connection blipped should be back in a
+  // second or two, not after the default 5 s back-off.
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 2000,
 });
 
+// Leave the match for good (a bot takes over the faction at once). Waits for
+// the server to confirm — at most 1 s — so the quit isn't lost in the reload.
 export function quitAndReload() {
   sessionStorage.removeItem('reconnectToken');
-  socket.emit('quit-game');
-  location.reload();
+  let left = false;
+  const go = () => { if (!left) { left = true; location.reload(); } };
+  if (socket.connected) {
+    socket.timeout(1000).emit('quit-game', go);
+    setTimeout(go, 1200);
+  } else {
+    go();
+  }
 }
 
 export function updateSlotsUI(slots) {
@@ -173,13 +185,40 @@ function addFeedLine(icon, fidA, text, fidB = 0) {
   }, 6000);
 }
 
-// ── Reconnection overlay helpers ─────────────────────────────────────────────
-function showReconnecting(attempt = 0) {
+// ── Bad connections ──────────────────────────────────────────────────────────
+// Three ways the connection goes bad mid-match, all shown with the
+// "Reconnecting…" overlay:
+//   * it closes — Socket.IO retries on its own;
+//   * it stalls without closing (Wi-Fi hiccup, overloaded router): nothing
+//     arrives, so a watchdog notices that the 5-per-second stats stopped,
+//     shows the overlay after STALL_SHOW_MS and forces a fresh connection
+//     after STALL_RECONNECT_MS (the old one may never recover by itself);
+//   * the server can't place us back (match over / we were gone too long).
+// While we're away the faction holds still for the server's grace period
+// (init-config `reconnectGraceSec`), then a bot plays it until we're back.
+const STALL_SHOW_MS = 2500;
+const STALL_RECONNECT_MS = 7000;
+let lastServerMsgAt = performance.now();
+// Armed by the first stats of a match (they start a moment after the match
+// does), so a slow start isn't mistaken for a stalled connection.
+let statsFlowing = false;
+socket.onAny((ev) => {
+  lastServerMsgAt = performance.now();
+  if (ev === 'sim-stats') statsFlowing = true;
+});
+const inMatch = () => state.gameState === 'PLAYING' && statsFlowing;
+
+function showReconnecting(detail) {
   const el = document.getElementById('reconnectingOverlay');
   if (!el) return;
   el.style.display = 'flex';
   const txt = document.getElementById('reconnectAttemptText');
-  if (txt) txt.innerText = attempt > 0 ? `Attempt ${attempt}…` : 'Attempting to restore your session';
+  if (txt && detail) txt.innerText = detail;
+  const hold = document.getElementById('reconnectHoldText');
+  if (hold) {
+    const g = state.reconnectGraceSec || 30;
+    hold.innerText = `Your territory holds for ${g} s — after that a bot plays for you until you're back.`;
+  }
 }
 
 function hideReconnecting() {
@@ -200,25 +239,48 @@ function showServerError(title = 'Connection Lost', msg = 'Unable to reach the g
   if (btn) btn.onclick = () => quitAndReload();
 }
 
+setInterval(() => {
+  if (!inMatch() || !socket.connected) return;
+  const quiet = performance.now() - lastServerMsgAt;
+  if (quiet > STALL_RECONNECT_MS) {
+    // The connection is stuck: drop it and let Socket.IO open a new one.
+    lastServerMsgAt = performance.now();
+    showReconnecting('Connection lost — reconnecting…');
+    socket.io.engine.close();
+  } else if (quiet > STALL_SHOW_MS) {
+    showReconnecting('Connection unstable — waiting for the server…');
+  } else {
+    hideReconnecting();
+  }
+}, 500);
+
 // Transport-level reconnection events (Socket.IO engine layer)
 socket.on('disconnect', (reason) => {
-  // Only show overlay if the player is mid-game, not if they intentionally quit
-  if (state.gameState === 'PLAYING' && reason !== 'io client disconnect') {
-    showReconnecting();
+  if (reason === 'io server disconnect') {
+    // The server closed us on purpose (e.g. this account logged in elsewhere):
+    // Socket.IO won't retry, so don't show "Reconnecting…" forever.
+    if (state.gameState !== 'SETUP') showServerError('Disconnected', 'This account was opened somewhere else, or the server closed the connection.');
+    return;
+  }
+  if (state.gameState !== 'SETUP' && reason !== 'io client disconnect') {
+    showReconnecting('Connection lost — reconnecting…');
   }
 });
 
 socket.io.on('reconnect', () => {
-  hideReconnecting();
-  // Re-send the game reconnect token so the server reclaims the faction slot
+  // Re-send the game reconnect token so the server gives us our faction back
+  // (in the lobby, during spawn selection or mid-match).
   const savedToken = sessionStorage.getItem('reconnectToken');
-  if (savedToken && state.gameState === 'PLAYING') {
+  if (savedToken && state.gameState !== 'SETUP') {
+    showReconnecting('Rejoining your match…');
     socket.emit('reconnect-to-game', { token: savedToken });
+  } else {
+    hideReconnecting();
   }
 });
 
 socket.io.on('reconnect_attempt', (attempt) => {
-  showReconnecting(attempt);
+  if (state.gameState !== 'SETUP') showReconnecting(`Connection lost — reconnecting (attempt ${attempt})…`);
 });
 
 socket.io.on('reconnect_failed', () => {
@@ -247,11 +309,22 @@ export function initNetwork() {
     socket.emit('reconnect-to-game', { token: savedToken });
   }
 
-  socket.on('reconnect-success', ({ factionId, nickname, inMatch }) => {
+  document.getElementById('btnReconnectLeave')?.addEventListener('click', () => quitAndReload());
+
+  socket.on('reconnect-success', ({ factionId, nickname, inMatch, phase }) => {
+    statsFlowing = false;
     state.playerFaction = factionId;
     state.playerNickname = nickname;
-    state.gameState = 'PLAYING';
     hideReconnecting();
+    lastServerMsgAt = performance.now();
+    if (inMatch === false) {
+      // Still before the match: the lobby (init-config just showed the
+      // waiting screen) or spawn selection (spawn-selection-start follows).
+      state.gameState = phase === 'SPAWN_SELECTION' ? 'SPAWN_SELECTION' : 'LOBBY_WAIT';
+      document.getElementById('homeScreen').style.display = 'none';
+      return;
+    }
+    state.gameState = 'PLAYING';
 
     document.getElementById('homeScreen').style.display = 'none';
     const bgCanvas2 = document.getElementById('homeBgCanvas');
@@ -266,8 +339,7 @@ export function initNetwork() {
     if (state.currentPreset) repaintTerrain(state.currentPreset);
 
     // The full map, buildings and stats follow in `sim-full`.
-    if (inMatch !== false) showMatchHud();
-    else document.getElementById('gameArea').style.display = 'flex';
+    showMatchHud();
 
     updateDevDashboard();
   });
@@ -284,11 +356,38 @@ export function initNetwork() {
     showToast(message || 'Could not start a match. Please try again.', 'error');
   });
 
-  socket.on('reconnect-failed', () => {
+  socket.on('reconnect-failed', ({ reason, winnerName } = {}) => {
     sessionStorage.removeItem('reconnectToken');
+    const wasInGame = state.gameState !== 'SETUP';
     state.gameState = 'SETUP';
     hideReconnecting();
-    document.getElementById('homeScreen').style.display = 'flex';
+    if (wasInGame) {
+      // We were in a match on this page: say what happened, then a clean menu.
+      showServerError(
+        reason === 'ended' ? 'Match Over' : 'Match Unavailable',
+        reason === 'ended'
+          ? `The match ended while you were disconnected${winnerName ? ` — ${winnerName} won` : ''}.`
+          : 'You were away too long, so your place in the match is gone.',
+      );
+      const btn = document.getElementById('btnServerErrorReturn');
+      if (btn) btn.innerText = 'Main Menu';
+    } else {
+      document.getElementById('homeScreen').style.display = 'flex';
+      if (reason === 'ended') showToast(`Your last match ended while you were away${winnerName ? ` — ${winnerName} won` : ''}.`, 'info');
+    }
+  });
+
+  // Another player's connection: reconnecting / back / bot playing / left.
+  socket.on('player-connection', ({ factionId, state: st } = {}) => {
+    if (factionId === parseInt(state.playerFaction) || state.gameState !== 'PLAYING') return;
+    const text = {
+      reconnecting: 'is reconnecting…',
+      back: 'is back',
+      away: 'lost connection — a bot plays for now',
+      left: 'left the match — a bot takes over',
+    }[st];
+    // (The leaderboard shows 📡 / 🤖 next to the name from the slot flags.)
+    if (text) addFeedLine(st === 'back' ? '📶' : st === 'reconnecting' ? '📡' : '🤖', factionId, ` ${text}`);
   });
 
   // Simulation crash — room was terminated server-side (Tier 1 onError callback)
@@ -303,6 +402,7 @@ export function initNetwork() {
   socket.on('init-config', (config) => {
     state.activePlayerSlots = config.activePlayerSlots;
     state.currentPreset = config.currentPreset;
+    if (config.reconnectGraceSec) state.reconnectGraceSec = config.reconnectGraceSec;
     // Repaint terrain to the room's map (covers the reconnect path, where the
     // client may have painted the default map at startup). Safe pre-match: only
     // terrain bits change and owner bits are still all-neutral.
@@ -375,6 +475,7 @@ export function initNetwork() {
   });
 
   socket.on('start-match-now', () => {
+    statsFlowing = false;
     state.gameState = 'PLAYING';
     
     if (window.renderer && state.spawnSelections && state.spawnSelections[state.playerFaction]) {
@@ -811,13 +912,17 @@ function updateLeaderboard(players) {
     const score = window.formatAbbreviation ? window.formatAbbreviation(lb.score) : fmtInt(lb.score);
     const nameStyle = lb.isEliminated ? 'text-decoration: line-through; opacity: 0.5;' : '';
     const bounty = lb.fid === state.bountyFid ? '<span class="leaderboard-bounty" title="Bounty: their land is 25% cheaper to take and pays gold">🎯</span>' : '';
+    const conn = !slot || isMe ? ''
+      : slot.disconnected ? '<span class="leaderboard-conn" title="Reconnecting…">📡</span>'
+        : slot.away ? '<span class="leaderboard-conn" title="Disconnected — a bot plays until they return">🤖</span>'
+          : slot.left ? '<span class="leaderboard-conn" title="Left the match — a bot plays">🤖</span>' : '';
     const gap = index >= LEADERBOARD_ROWS ? '<div class="leaderboard-gap">⋯</div>' : '';
     return `${gap}
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: ${isMe ? 'rgba(255,255,255,0.1)' : 'transparent'}; border-radius: 4px;">
         <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
           <span style="font-size: 10px; color: #888; min-width: 14px; text-align: right;">${index + 1}.</span>
           <div style="width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; border: 1px solid #000;"></div>
-          <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>${bounty}
+          <span style="font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; ${nameStyle}">${name}</span>${conn}${bounty}
         </div>
         <span style="font-size: 13px; font-weight: bold; color: ${lb.isEliminated ? '#888' : '#ffc107'};">${score}</span>
       </div>`;

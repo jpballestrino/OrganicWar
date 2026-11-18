@@ -133,6 +133,10 @@ the server settings it expects; Google's script is replaced by a stand-in).
 
 ## Running it
 
+- **Players with bad connections:** a player who drops keeps their land for
+  30 s (`RECONNECT_GRACE_SECONDS`), then a bot plays for them until they come
+  back (they can return any time during the match). Others see 📡 / 🤖 next to
+  their name. Players who quit from the menu are replaced by a bot at once.
 - **Login protection:** login, registration and the password-reset /
   verification emails are rate-limited per IP (and per email address), so
   password guessing and email spamming are cut off with a "try again in N

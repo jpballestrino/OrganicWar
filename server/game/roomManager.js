@@ -93,13 +93,53 @@ class MockSimulation {
   }
 }
 
+// ── Bad connections and quitting ─────────────────────────────────────────────
+// A player whose connection drops mid-match keeps their faction, idle, for
+// RECONNECT_GRACE_SECONDS ("reconnecting"); after that a bot plays it ("away")
+// until they come back — they can reclaim it from the bot for the rest of the
+// match. Quitting from the menu hands the faction to a bot at once ("left")
+// and is final. Everyone in the room is told through `player-connection`
+// {factionId, nickname, state: 'reconnecting' | 'back' | 'away' | 'left'}.
+export const RECONNECT_GRACE_SECONDS = Math.max(3, parseInt(process.env.RECONNECT_GRACE_SECONDS, 10) || 30);
+// How long a room whose only humans are away (bots playing for them) keeps
+// running so they can come back. After that it is closed.
+export const AWAY_KEEP_SECONDS = Math.max(10, parseInt(process.env.AWAY_KEEP_SECONDS, 10) || 120);
+// Reconnect tokens of finished matches, so a player returning after the end is
+// told the match ended rather than "session expired". token → {winnerName, at}
+const endedMatches = new Map();
+const ENDED_KEEP_MS = 10 * 60 * 1000;
+
+function emitConnection(room, fid, state) {
+  const slot = room.activePlayerSlots[fid];
+  io.to(room.id).emit('player-connection', { factionId: parseInt(fid), nickname: slot ? slot.nickname : '', state });
+}
+
+function syncBots(room) {
+  if (!room.simReal) return;
+  const botFactions = [];
+  for (let fid = 1; fid <= room.maxPlayers; fid++) {
+    if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) botFactions.push(fid);
+  }
+  room.simReal.setBotFactions(botFactions);
+}
+
 export function checkRoomGC(room) {
-  const hasHumans = Object.values(room.activePlayerSlots).some(s => s !== null && !s.isBot);
+  const slots = Object.values(room.activePlayerSlots).filter(Boolean);
+  const hasHumans = slots.some(s => !s.isBot);
+  const now = Date.now();
+  // Humans who are away (a bot plays for them) may still come back.
+  const awayUntil = Math.max(0, ...slots.filter(s => s.away).map(s => s.awaySince + AWAY_KEEP_SECONDS * 1000));
+  if (!hasHumans && awayUntil > now && activeRooms[room.id]) {
+    if (room.gcTimeout) { clearTimeout(room.gcTimeout); }
+    room.gcTimeout = setTimeout(() => { room.gcTimeout = null; checkRoomGC(room); }, awayUntil - now + 50);
+    return;
+  }
   if (!hasHumans) {
     if (room.gcTimeout) { clearTimeout(room.gcTimeout); }
     if (room.countdownInterval) { clearInterval(room.countdownInterval); }
     if (room.sim && room.sim.destroy) { room.sim.destroy(); }
     if (room.simReal) { room.simReal.destroy(); room.simReal = null; }
+    rememberEnded(room, null);
     delete activeRooms[room.id];
     updateLobbyList();
     log('info', `[GC] Room ${room.id} deleted instantly — no players`);
@@ -111,66 +151,99 @@ export function checkRoomGC(room) {
   }
 }
 
+function rememberEnded(room, winnerName) {
+  const now = Date.now();
+  for (const [t, v] of endedMatches) if (now - v.at > ENDED_KEEP_MS) endedMatches.delete(t);
+  if (!room.matchStarted) return;
+  for (const t of room.reconnectTokens.keys()) {
+    if (!endedMatches.has(t)) endedMatches.set(t, { winnerName, at: now });
+  }
+}
+
+// Why a reconnect token no longer leads to a match: 'ended' (the match is
+// over) or 'expired' (unknown / the player quit).
+export function endedMatchFor(token) {
+  const v = endedMatches.get(token);
+  return v && Date.now() - v.at < ENDED_KEEP_MS ? v : null;
+}
+
+// The faction a reconnecting socket takes back: idle during the grace period,
+// or from the bot that played it while the player was away.
+export function reclaimSlot(room, fid) {
+  const slot = room.activePlayerSlots[fid];
+  if (room.disconnectTimers[fid]) {
+    clearTimeout(room.disconnectTimers[fid]);
+    delete room.disconnectTimers[fid];
+  }
+  const wasAway = !!slot.away;
+  const wasDisconnected = !!slot.disconnected;
+  slot.disconnected = false;
+  if (wasAway) {
+    slot.isBot = false;
+    delete slot.away;
+    delete slot.awaySince;
+    syncBots(room);
+  }
+  if (room.matchStarted && (wasAway || wasDisconnected)) emitConnection(room, fid, 'back');
+  checkRoomGC(room); // cancels a pending "nobody left" GC
+}
+
 export function handlePlayerDisconnect(room, socketId, immediate = false) {
   for (let f in room.activePlayerSlots) {
-    if (room.activePlayerSlots[f] && room.activePlayerSlots[f].socketId === socketId) {
-      if (immediate) {
-        if (room.disconnectTimers[f]) { clearTimeout(room.disconnectTimers[f]); }
-        
-        if (room.matchStarted && room.simReal) {
-          room.activePlayerSlots[f].socketId = null;
-          room.activePlayerSlots[f].isBot = true;
-          const botFactions = [];
-          for (let fid = 1; fid <= room.maxPlayers; fid++) {
-            if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
-              botFactions.push(fid);
-            }
-          }
-          room.simReal.setBotFactions(botFactions);
-          io.to(room.id).emit('slots-update', room.activePlayerSlots);
-        } else {
-          room.activePlayerSlots[f] = null;
-        }
+    const slot = room.activePlayerSlots[f];
+    if (!slot || slot.socketId !== socketId) continue;
+    if (room.disconnectTimers[f]) { clearTimeout(room.disconnectTimers[f]); delete room.disconnectTimers[f]; }
 
-        if (room.humanPlayers && room.humanPlayers[f]) {
-          room.humanPlayers[f].status = 'abandoned';
-        }
+    if (immediate) {
+      // Quit from the menu: final.
+      if (room.matchStarted && room.simReal) {
+        slot.socketId = null;
+        slot.isBot = true;
+        delete slot.disconnected;
+        delete slot.away;
+        slot.left = true;
+        syncBots(room);
+        emitConnection(room, f, 'left');
+        io.to(room.id).emit('slots-update', room.activePlayerSlots);
+      } else {
+        room.activePlayerSlots[f] = null;
+      }
+      if (room.humanPlayers && room.humanPlayers[f]) {
+        room.humanPlayers[f].status = 'abandoned';
+      }
+      for (let [t, data] of room.reconnectTokens.entries()) {
+        if (data.factionId === parseInt(f)) { room.reconnectTokens.delete(t); }
+      }
+      checkRoomGC(room);
+      continue;
+    }
+
+    // Connection lost: hold the faction for the grace period.
+    slot.disconnected = true;
+    if (room.matchStarted && room.simReal) emitConnection(room, f, 'reconnecting');
+    room.disconnectTimers[f] = setTimeout(() => {
+      delete room.disconnectTimers[f];
+      const s = room.activePlayerSlots[f];
+      if (!s || !s.disconnected || !activeRooms[room.id]) return;
+      if (room.matchStarted && room.simReal) {
+        // A bot plays until the player comes back (their token stays valid).
+        s.socketId = null;
+        s.isBot = true;
+        s.away = true;
+        s.awaySince = Date.now();
+        delete s.disconnected;
+        syncBots(room);
+        emitConnection(room, f, 'away');
+      } else {
+        room.activePlayerSlots[f] = null;
         for (let [t, data] of room.reconnectTokens.entries()) {
           if (data.factionId === parseInt(f)) { room.reconnectTokens.delete(t); }
         }
-        checkRoomGC(room);
-      } else {
-        room.activePlayerSlots[f].disconnected = true;
-        room.disconnectTimers[f] = setTimeout(() => {
-          if (room.activePlayerSlots[f] && room.activePlayerSlots[f].disconnected) {
-            
-            if (room.matchStarted && room.simReal) {
-              room.activePlayerSlots[f].socketId = null;
-              room.activePlayerSlots[f].isBot = true;
-              delete room.activePlayerSlots[f].disconnected;
-              const botFactions = [];
-              for (let fid = 1; fid <= room.maxPlayers; fid++) {
-                if (room.activePlayerSlots[fid] && room.activePlayerSlots[fid].isBot) {
-                  botFactions.push(fid);
-                }
-              }
-              room.simReal.setBotFactions(botFactions);
-            } else {
-              room.activePlayerSlots[f] = null;
-            }
-
-            io.to(room.id).emit('slots-update', room.activePlayerSlots);
-            for (let [t, data] of room.reconnectTokens.entries()) {
-              if (data.factionId === parseInt(f)) {
-                room.reconnectTokens.delete(t);
-              }
-            }
-            updateLobbyList();
-            checkRoomGC(room);
-          }
-        }, 30000);
       }
-    }
+      io.to(room.id).emit('slots-update', room.activePlayerSlots);
+      updateLobbyList();
+      checkRoomGC(room);
+    }, RECONNECT_GRACE_SECONDS * 1000);
   }
 }
 
@@ -441,10 +514,12 @@ export function startSpawnSelection(room) {
   updateLobbyList();
 
   let ticks = SPAWN_SELECTION_SECONDS;
+  room.spawnTicksLeft = ticks; // for players who reconnect mid-selection
   io.to(room.id).emit('spawn-timer', ticks);
 
   room.countdownInterval = setInterval(() => {
     ticks--;
+    room.spawnTicksLeft = ticks;
     io.to(room.id).emit('spawn-timer', ticks);
 
     // finalizeSpawns may already have run early (all humans picked).
@@ -585,6 +660,12 @@ export function handleGameOver(room, winnerFaction, matchStats = {}, byDominatio
   if (room.gameOverHandled) { return; }
   room.gameOverHandled = true;
 
+  // Players who are reconnecting / away when the match ends are told so when
+  // they come back.
+  const winnerSlot = room.activePlayerSlots[winnerFaction];
+  rememberEnded(room, winnerSlot ? winnerSlot.nickname : null);
+  for (const f in room.disconnectTimers) { clearTimeout(room.disconnectTimers[f]); }
+  room.disconnectTimers = {};
   room.reconnectTokens.clear();
 
   room.matchStarted = false;
@@ -745,5 +826,6 @@ export function sendInitConfig(socket, room) {
     maxPlayers: room.maxPlayers,
     isQuickPlay: room.isQuickPlay,
     isHost: room.hostSocketId === socket.id,
+    reconnectGraceSec: RECONNECT_GRACE_SECONDS,
   });
 }

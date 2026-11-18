@@ -287,3 +287,26 @@ Tests: `server/accounts.test.js` (6), `scripts/e2e-accounts.mjs` (67 checks),
       open elsewhere (JWTs stay valid up to 7 days).
 - [ ] **Owner:** configure email (DEPLOY.md) before launch, or "Forgot password"
       stays unavailable.
+
+## Session 6 — bad connections, reconnecting and quitting
+
+Tested with `scripts/smoke-network.mjs`: two players in one match, one behind a
+TCP proxy that freezes (lag) or cuts (drop) its connection. Before the fix:
+lag showed nothing (map just froze, up to ~45 s before anything noticed);
+other players were never told; after the 30 s grace a bot took over and the
+player could **never** get back (dumped to the menu); a solo player's room was
+deleted the moment the bot took over; a drop during spawn selection left the
+player stuck. Fixed:
+- [x] Watchdog: stats stop for 2.5 s → "Connection unstable" overlay; 7 s →
+      forced new connection. Retries every 0.5–2 s; server pings 10 s/10 s.
+- [x] Overlay explains the faction holds for the grace period, then a bot
+      plays until you're back; "Leave match" button.
+- [x] Returning after the grace period takes the faction back from the bot
+      (token valid all match); rooms with only away humans live 2 more minutes.
+- [x] `player-connection` notices to everyone (feed + leaderboard 📡/🤖).
+- [x] Match ended while away → "The match ended while you were disconnected —
+      X won" instead of a silent menu.
+- [x] Reconnect during spawn selection → back in the picker with the time left.
+- [x] Quit waits for the server's acknowledgement before reloading.
+- [x] "Logged in elsewhere" no longer leaves an endless "Reconnecting…".
+Settings: `RECONNECT_GRACE_SECONDS` (30), `AWAY_KEEP_SECONDS` (120).

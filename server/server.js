@@ -78,6 +78,11 @@ export const io = new Server(httpServer, {
   // Compress only frames worth it: the 20×/s owner deltas are mostly small,
   // and deflating every tiny frame for every client costs more CPU than it saves.
   perMessageDeflate: { threshold: 2048 },
+  // Notice dead connections within ~20 s instead of the default ~45 s, so a
+  // player whose network died is shown as reconnecting (and their faction
+  // handed to a bot after the grace period) promptly.
+  pingInterval: 10000,
+  pingTimeout: 10000,
 });
 
 // Connection-rate limiter (counts connections in a ~60s rolling window, halved each minute).
