@@ -4,10 +4,14 @@ import { log } from '../utils/logger.js';
 import { activeRooms, guildWarQueue, rankedQueue } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
-import { terrainAt, TERRAIN, randomMapId } from '../../src/js/mapGen.js';
+import { randomMapId } from '../../src/js/mapGen.js';
 import { MAX_FACTIONS, safeZoneRadiusFor } from '../../src/js/constants.js';
 import { roomRefusal } from './capacity.js';
 import { awardMatchXp } from './progression.js';
+import { placeSpawns } from './spawns.js';
+
+// How unpicked spawns are placed ('spread' or 'random'; see spawns.js).
+const SPAWN_MODE = process.env.SPAWN_MODE || 'random';
 import { planRankedMatches, rankedEloDeltas, ratingWindow, RANKED_FIELD, RANKED_MIN_HUMANS } from './ranked.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
@@ -657,47 +661,21 @@ export function finalizeSpawns(room) {
     }
   }
   
-  // Validate and pick random land cells outside all existing safe zones
+  // Factions that didn't pick a spot (bots, idle humans) are placed by
+  // server/game/spawns.js, away from the spots already taken.
+  const missing = [];
   for (let fid = 1; fid <= room.maxPlayers; fid++) {
     if (!room.activePlayerSlots[fid]) continue; // empty guild-war slot
-    if (!room.spawnSelections.has(fid)) {
-      let valid = false;
-      let attempts = 0;
-      let row, col;
-      while (!valid && attempts < 1000) {
-        attempts++;
-        row = Math.floor(Math.random() * 1080);
-        col = Math.floor(Math.random() * 1920);
-        
-        let terrain = terrainAt(col / 1920, row / 1080, room.preset);
-        if (terrain === TERRAIN.WATER) continue;
-        
-        // Check safe zones
-        let tooClose = false;
-        for (let [, pos] of room.spawnSelections.entries()) {
-          let distSq = (pos.row - row) ** 2 + (pos.col - col) ** 2;
-          if (distSq < room.safeZoneRadius * room.safeZoneRadius) {
-            tooClose = true;
-            break;
-          }
-        }
-        
-        if (!tooClose) {
-          valid = true;
-        }
-      }
-      
-      // Fallback if every land cell is inside a safe zone (crowded rooms): any
-      // land cell will do — a spawn on water would be dead on arrival.
-      for (let guard = 0; !valid && guard < 20000; guard++) {
-        row = Math.floor(Math.random() * 1080);
-        col = Math.floor(Math.random() * 1920);
-        valid = terrainAt(col / 1920, row / 1080, room.preset) !== TERRAIN.WATER;
-      }
-      
-      room.spawnSelections.set(fid, { row, col });
-    }
+    if (!room.spawnSelections.has(fid)) missing.push(fid);
   }
+  const placed = placeSpawns({
+    taken: [...room.spawnSelections.values()],
+    count: missing.length,
+    mapId: room.preset,
+    safeRadius: room.safeZoneRadius,
+    mode: SPAWN_MODE,
+  });
+  missing.forEach((fid, i) => room.spawnSelections.set(fid, placed[i]));
 
   // Convert spawn selections to centroids map
   let centroids = {};

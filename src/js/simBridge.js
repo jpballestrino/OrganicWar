@@ -28,6 +28,11 @@ function markRows(r0, r1) {
 }
 export function markAllDirty() { dirtyRows.fill(1); anyDirty = true; }
 
+// Bumped whenever the terrain bits are (re)written, so the renderer re-paints
+// its baked terrain texture (once per map, not per frame).
+let terrainVer = 0;
+export const terrainVersion = () => terrainVer;
+
 // Spans [firstRow, lastRow] to upload, merging spans less than `maxGap` rows
 // apart (fewer, larger uploads). Clears the marks. [] when nothing changed.
 export function takeDirtyRowSpans(maxGap = 16) {
@@ -51,6 +56,7 @@ export function registerSim({ memory, cellDataPtr: ptr }) {
   wasmMemory = memory;
   cellDataPtr = ptr;
   markAllDirty();
+  terrainVer++;
 }
 
 // Repaint the static terrain for the server-chosen map. The client paints a
@@ -65,6 +71,7 @@ export function repaintTerrain(mapId) {
   generateTerrain(wasmMemory, cellDataPtr, mapId);
   paintedMapId = mapId;
   markAllDirty();
+  terrainVer++;
 }
 
 // Owner faction id (0 = nature) of a cell in the local render cache. Used for the

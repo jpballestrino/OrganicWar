@@ -14,8 +14,9 @@ import zlib from 'zlib';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { terrainAt, TERRAIN } from '../src/js/mapGen.js';
 import { decodeDelta } from '../src/js/deltaCodec.js';
+import { placeSpawns, nearestNeighbourDistances } from '../server/game/spawns.js';
+import { safeZoneRadiusFor } from '../src/js/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER = path.join(__dirname, '..', 'server', 'game', 'simulationWorker.js');
@@ -29,17 +30,13 @@ const TOTAL_CELLS = 1920 * 1080;
 const fail = (msg) => { console.error(`FAIL  ${msg}`); process.exitCode = 1; };
 
 // Spread spawns over land, at least 80 cells apart (as finalizeSpawns does).
-function pickSpawns(n) {
-  const spawns = [];
-  let guard = 0;
-  while (spawns.length < n && guard++ < 200000) {
-    const row = Math.floor(Math.random() * 1080);
-    const col = Math.floor(Math.random() * 1920);
-    if (terrainAt(col / 1920, row / 1080, MAP) === TERRAIN.WATER) continue;
-    if (spawns.some(s => (s.row - row) ** 2 + (s.col - col) ** 2 < 80 * 80)) continue;
-    spawns.push({ row, col });
-  }
-  return spawns;
+// Spawns placed exactly as the server places unpicked ones (spawns.js),
+// with the server's safe-zone radius for this room size.
+const SPAWN_MODE = process.env.SPAWN_MODE || 'spread';
+const spawnSpots = placeSpawns({ count: PLAYERS, mapId: MAP, safeRadius: safeZoneRadiusFor(PLAYERS), mode: SPAWN_MODE });
+{
+  const nn = nearestNeighbourDistances(spawnSpots).sort((a, b) => a - b);
+  console.log(`spawns (${SPAWN_MODE}): nearest neighbour min ${nn[0].toFixed(0)}, median ${nn[nn.length >> 1].toFixed(0)} cells`);
 }
 
 const worker = new Worker(WORKER, {
@@ -70,6 +67,8 @@ function applyDelta(buf, map) {
   decodeDelta(buf, (id, owner) => { map[id] = owner; });
 }
 let eliminated = 0;
+let landFullAt = 0;
+let earlyOuts = 0; // eliminated in the first 90 s
 let lastStats = null;
 let fullCheckDone = false;
 let bountyNow = 0;
@@ -80,7 +79,7 @@ const elapsed = () => ((Date.now() - started) / 1000).toFixed(0).padStart(4) + '
 
 worker.on('message', (msg) => {
   if (msg.type === 'ready') {
-    for (const [i, s] of pickSpawns(PLAYERS).entries()) {
+    for (const [i, s] of spawnSpots.entries()) {
       worker.postMessage({ type: 'spawnFaction', factionId: i + 1, row: s.row, col: s.col });
     }
     worker.postMessage({ type: 'setBotFactions', factionIds: Array.from({ length: PLAYERS }, (_, i) => i + 1) });
@@ -99,6 +98,19 @@ worker.on('message', (msg) => {
     } else if (msg.event === 'sim-stats') {
       bytes['sim-stats'] += msg.payload.byteLength;
       lastStats = msg.payload;
+      // Crowding: when the free land runs out (95% of it owned).
+      if (!landFullAt) {
+        const dv = new DataView(msg.payload);
+        const land = dv.getUint32(4, true);
+        const n = dv.getUint16(12, true);
+        const rec = dv.getUint16(14, true);
+        let owned = 0;
+        for (let f = 1; f <= n; f++) owned += dv.getUint32(20 + (f - 1) * rec + 12, true);
+        if (owned >= land * 0.95) {
+          landFullAt = (Date.now() - started) / 1000;
+          console.log(`${elapsed()}  free land gone (95% of it owned)`);
+        }
+      }
       // Bounty placements: how often, on whom, for how long (flicker check).
       const b = new DataView(msg.payload).getUint32(16, true);
       if (b !== bountyNow) {
@@ -111,6 +123,7 @@ worker.on('message', (msg) => {
     }
     if (msg.event === 'player-eliminated') {
       eliminated++;
+      if ((Date.now() - started) / 1000 < 90) earlyOuts++;
       const p = msg.payload;
       console.log(`${elapsed()}  faction ${p.factionId} out (#${p.placement}, by ${p.killerId || '—'}), ${p.aliveCount} left`);
     }
@@ -227,5 +240,6 @@ async function report(secs) {
     `${cells.filter(c => c > 0).length} alive; domination target ${(dv.getFloat32(8, true) * 100).toFixed(0)}%`);
   if (bountyNow) bountySpans.push(`${bountyNow} for ${((Date.now() - bountySince) / 1000).toFixed(0)}s (until the end)`);
   console.log(`bounties      ${bountySpans.length ? bountySpans.join(', ') : 'none'}`);
+  console.log(`crowding      free land gone at ${landFullAt ? landFullAt.toFixed(0) + ' s' : '—'}; ${earlyOuts} of ${PLAYERS} eliminated in the first 90 s`);
   if (!fullCheckDone) console.log('(full-state check did not run: too few eliminations)');
 }

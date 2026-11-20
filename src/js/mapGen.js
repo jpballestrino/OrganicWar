@@ -58,6 +58,12 @@ function isLandNA(nx, ny) {
   return MASK_BITS[py * 192 + px] === 1;
 }
 
+// How far `v` lies outside [lo, hi], in units of `soft` (0 inside). Used to
+// fade a latitude band out gradually instead of cutting it at a straight line.
+function outside(v, lo, hi, soft = 0.06) {
+  return Math.max(0, lo - v, v - hi) / soft;
+}
+
 // North America terrain classifier.
 function terrainNA(nx, ny) {
   if (!isLandNA(nx, ny)) { return TERRAIN.WATER; }
@@ -79,15 +85,16 @@ function terrainNA(nx, ny) {
   // Appalachians (eastern spine)
   const appSpine = 0.81 - ny * 0.21;
   const distToApp = Math.abs(nx - appSpine);
-  if (ny > 0.3 && ny < 0.8 && distToApp < 0.03 + n * 0.02) {
+  // The range tapers off at both ends instead of stopping at a straight line.
+  if (distToApp < (0.03 + n * 0.02) * Math.max(0, 1 - outside(ny, 0.3, 0.8, 0.08))) {
     return TERRAIN.MOUNTAINS;
   }
-  if (ny > 0.25 && ny < 0.85 && distToApp < 0.08 + n * 0.03) {
+  if (distToApp < (0.08 + n * 0.03) * Math.max(0, 1 - outside(ny, 0.25, 0.85, 0.10))) {
     return TERRAIN.HIGHLANDS;
   }
 
   // Canada/North
-  if (ny < 0.15 && n > 0.5) {
+  if (n > 0.5 + 0.5 * outside(ny, 0, 0.15)) {
     return TERRAIN.HIGHLANDS;
   }
 
@@ -159,7 +166,7 @@ function terrainEU(nx, ny) {
   if (best < 1.0 + n * 0.4) return TERRAIN.MOUNTAINS;
   if (best < 2.6 + n * 0.8) return TERRAIN.HIGHLANDS;
   // Northern fringe (Scandinavia / northern Russia) trends to highlands.
-  if (ny < 0.20 && n > 0.5) return TERRAIN.HIGHLANDS;
+  if (n > 0.5 + 0.5 * outside(ny, 0, 0.20)) return TERRAIN.HIGHLANDS;
   return TERRAIN.PLAINS;
 }
 
@@ -257,7 +264,7 @@ function terrainAF(nx, ny) {
   if (best < 1.0 + n * 0.4) return TERRAIN.MOUNTAINS;
   if (best < 2.6 + n * 0.8) return TERRAIN.HIGHLANDS;
   // Sahel fringe: scattered highlands just south of the Sahara
-  if (ny > 0.10 && ny < 0.32 && n > 0.65) return TERRAIN.HIGHLANDS;
+  if (n > 0.65 + 0.35 * outside(ny, 0.10, 0.32)) return TERRAIN.HIGHLANDS;
   return TERRAIN.PLAINS;
 }
 

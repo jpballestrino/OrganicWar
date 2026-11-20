@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { takeDirtyRowSpans } from './simBridge.js';
+import { takeDirtyRowSpans, terrainVersion } from './simBridge.js';
 import { isTyping } from './typing.js';
 import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
 
@@ -43,6 +43,136 @@ function territoryLabelSize(cells) {
     return LABEL_MIN_PX + (LABEL_MAX_PX - LABEL_MIN_PX) * Math.min(1, Math.max(0, t));
 }
 
+
+
+// ── Terrain bake ────────────────────────────────────────────────────────────
+// The terrain never changes during a match, so its look — colour, relief
+// shading, coast — is painted ONCE per map into an RGBA texture (one texel per
+// cell, sampled with linear filtering) instead of being recomputed for every
+// pixel every frame. The main shader then reads one texel per pixel.
+const TERRAIN_BAKE_FS = `#version 300 es
+            precision highp float;
+            precision highp usampler2D;
+            uniform usampler2D u_cell_tex;
+            uniform vec2 u_map_size;
+            out vec4 outColor;
+            // ── Terrain look ─────────────────────────────────────────────
+            // Terrain codes (bits 7-10, see TERRAIN in mapGen.js): 0 plains,
+            // 1 highlands, 2 mountains, 3 water, 4 forest, 5 river (ford),
+            // 6 gold deposit, 7 ruins.
+            float hash12(vec2 p) {
+                vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+                p3 += dot(p3, p3.yzx + 33.33);
+                return fract((p3.x + p3.y) * p3.z);
+            }
+            float vnoise(vec2 p) {
+                vec2 i = floor(p);
+                vec2 f = fract(p);
+                vec2 u = f * f * (3.0 - 2.0 * f);
+                return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
+                           mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+            }
+            uint terrainAt(ivec2 tc) {
+                return (texelFetch(u_cell_tex, clamp(tc, ivec2(0), ivec2(u_map_size) - 1), 0).r >> 7u) & 15u;
+            }
+            // Height of a terrain type, for the relief shading.
+            float typeHeight(uint t) {
+                if (t == 3u) return 0.0;   // water
+                if (t == 5u) return 0.12;  // river
+                if (t == 2u) return 1.0;   // mountains
+                if (t == 1u) return 0.55;  // highlands
+                if (t == 4u) return 0.34;  // forest canopy
+                if (t == 7u) return 0.32;  // ruins
+                return 0.25;               // plains, gold
+            }
+            // Ruggedness of a terrain type (noise amplitude).
+            float typeRough(uint t) {
+                if (t == 2u) return 0.55;
+                if (t == 1u) return 0.25;
+                if (t == 4u) return 0.18;
+                return 0.04;
+            }
+            float heightAt(ivec2 tc, vec2 w) {
+                uint t = terrainAt(tc);
+                return typeHeight(t) + typeRough(t) * vnoise(w * 0.15);
+            }
+            // Base colour of a terrain type at world position w (cell units).
+            vec3 terrainColor(uint t, vec2 w) {
+                float n = vnoise(w * 0.09);
+                float fine = hash12(floor(w));
+                if (t == 3u) {
+                    // Sea: deeper away from the coast (set by the caller), subtle swell.
+                    return mix(vec3(0.20, 0.42, 0.62), vec3(0.24, 0.48, 0.68), n);
+                }
+                if (t == 0u) return mix(vec3(0.78, 0.85, 0.62), vec3(0.72, 0.81, 0.55), n) * (0.97 + 0.04 * fine);
+                if (t == 1u) return mix(vec3(0.83, 0.76, 0.56), vec3(0.76, 0.68, 0.48), n) * (0.97 + 0.04 * fine);
+                if (t == 2u) {
+                    vec3 rock = mix(vec3(0.60, 0.57, 0.53), vec3(0.50, 0.48, 0.46), n);
+                    // Snow on the higher crests.
+                    float snow = smoothstep(0.80, 0.90, vnoise(w * 0.035) * 0.7 + n * 0.35);
+                    return mix(rock, vec3(0.90, 0.91, 0.93), snow * 0.85) * (0.96 + 0.06 * fine);
+                }
+                if (t == 4u) {
+                    // Forest: dark green with tree-crown speckle.
+                    float crown = step(0.55, hash12(floor(w * 0.5)));
+                    return mix(vec3(0.36, 0.55, 0.30), vec3(0.28, 0.45, 0.24), crown) * (0.95 + 0.08 * n);
+                }
+                if (t == 5u) return mix(vec3(0.42, 0.66, 0.82), vec3(0.50, 0.73, 0.86), n);
+                if (t == 6u) {
+                    // Gold deposit: warm ochre with glints.
+                    float glint = step(0.93, fine);
+                    return mix(mix(vec3(0.86, 0.72, 0.36), vec3(0.93, 0.80, 0.42), n), vec3(1.0, 0.95, 0.70), glint);
+                }
+                if (t == 7u) {
+                    // Ruins: stone blocks on dry ground.
+                    vec2 b = fract(w * 0.25);
+                    float block = step(0.18, b.x) * step(0.18, b.y) * step(0.45, hash12(floor(w * 0.25)));
+                    return mix(vec3(0.69, 0.62, 0.52), vec3(0.52, 0.47, 0.42), block);
+                }
+                return vec3(1.0, 1.0, 0.0); // debug: unknown terrain
+            }
+            // Hill shading and coast: light from the north-west on a height
+            // field made of the terrain types plus noise.
+            float reliefShade(ivec2 tc, vec2 w) {
+                float h0 = heightAt(tc, w);
+                float hr = heightAt(tc + ivec2(2, 0), w + vec2(2.0, 0.0));
+                float hd = heightAt(tc + ivec2(0, 2), w + vec2(0.0, 2.0));
+                vec3 n = normalize(vec3(h0 - hr, h0 - hd, 0.28));
+                float lit = dot(n, normalize(vec3(-0.6, -0.7, 0.6)));
+                return clamp(0.62 + 0.48 * lit, 0.70, 1.12);
+            }
+            // 0 = open sea, 1 = right at the coast (shallow, lighter water).
+            float shallowness(ivec2 tc) {
+                float s = 0.0;
+                for (int k = 1; k <= 2; k++) {
+                    int r = k * 4;
+                    if (terrainAt(tc + ivec2( r, 0)) != 3u || terrainAt(tc + ivec2(-r, 0)) != 3u ||
+                        terrainAt(tc + ivec2(0,  r)) != 3u || terrainAt(tc + ivec2(0, -r)) != 3u) {
+                        s = max(s, 1.0 - float(k - 1) * 0.5);
+                    }
+                }
+                return s;
+            }
+
+
+            void main() {
+                ivec2 tc = ivec2(gl_FragCoord.xy);
+                vec2 w = vec2(tc) + 0.5;
+                uint t = terrainAt(tc);
+                vec3 c = terrainColor(t, w);
+                if (t == 3u) {
+                    float sh = shallowness(tc);
+                    c = mix(c, vec3(0.47, 0.74, 0.86), 0.65 * sh);
+                    if (terrainAt(tc + ivec2(1, 0)) != 3u || terrainAt(tc + ivec2(-1, 0)) != 3u ||
+                        terrainAt(tc + ivec2(0, 1)) != 3u || terrainAt(tc + ivec2(0, -1)) != 3u) {
+                        c = mix(c, vec3(0.92, 0.96, 0.98), 0.45); // surf line
+                    }
+                } else {
+                    c *= reliefShade(tc, w);
+                }
+                outColor = vec4(c, 1.0);
+            }
+`;
 
 export class WebGLRenderer {
     constructor(canvas, wasmMemory) {
@@ -95,7 +225,7 @@ export class WebGLRenderer {
 
     initShaders() {
         const vsSource = `#version 300 es
-            in vec2 a_position;
+            layout(location = 0) in vec2 a_position;
             out vec2 v_uv;
             void main() {
                 // Map from [-1, 1] to [0, 1]
@@ -116,6 +246,8 @@ export class WebGLRenderer {
             // One u16 per cell: owner (bits 0-6), terrain (bits 7-10),
             // defense (bits 11-14), has-building (bit 15).
             uniform usampler2D u_cell_tex;
+            // The terrain's look, painted once per map (TERRAIN_BAKE_FS).
+            uniform sampler2D u_terrain_tex;
 
             uniform vec2 u_resolution;
             uniform vec2 u_camera_pos;
@@ -136,36 +268,37 @@ export class WebGLRenderer {
             // and HUD use — so a faction's territory matches its icon/label color.
             uniform vec3 u_palette[${FACTION_SLOTS}];
 
-            // Terrain base color for a packed terrain value (bits 7-10).
-            vec3 terrainColor(uint terrainVal) {
-                if (terrainVal == 0u) return vec3(241.0/255.0, 245.0/255.0, 237.0/255.0); // Plains (#f1f5ed)
-                if (terrainVal == 1u) return vec3(230.0/255.0, 223.0/255.0, 210.0/255.0); // Highlands (#e6dfd2)
-                if (terrainVal == 2u) return vec3(215.0/255.0, 215.0/255.0, 215.0/255.0); // Mountains (#d7d7d7)
-                if (terrainVal == 3u) return vec3(120.0/255.0, 190.0/255.0, 220.0/255.0); // Water (#78bedc)
-                return vec3(1.0, 1.0, 0.0); // debug: out-of-range terrain
+            // Troop cost of a terrain type for the territory opacity (lib.rs terrain_cost).
+            float terrainCost(uint t) {
+                if (t == 1u) return 3.0;
+                if (t == 2u) return 6.0;
+                if (t == 4u) return 4.0;
+                if (t == 5u) return 5.0;
+                if (t == 7u) return 6.0;
+                if (t == 3u) return 0.0;
+                return 1.0;
             }
 
             uint ownerAt(ivec2 tc) {
                 return texelFetch(u_cell_tex, tc, 0).r & 127u;
             }
 
-            // The terrain + owner-heatmap fill color for a single cell (no borders).
-            // Mirrors the per-cell opacity model: difficulty = (density + terrain) * defTier.
-            vec3 fillColorAt(ivec2 tc) {
+            // The territory tint of a single cell: faction colour × opacity in
+            // rgb, opacity in a (0 for neutral). Mirrors the per-cell opacity
+            // model: difficulty = (density + terrain) * defTier. The terrain
+            // colour under it is computed once per pixel in main().
+            vec4 tintAt(ivec2 tc) {
                 uint packed = texelFetch(u_cell_tex, tc, 0).r;
                 uint ownerVal = packed & 127u;
+                if (ownerVal == 0u || ownerVal > ${MAX_FACTIONS}u) return vec4(0.0);
                 uint terrainVal = (packed >> 7u) & 15u;
-                vec3 baseColor = terrainColor(terrainVal);
-                if (ownerVal > 0u && ownerVal <= ${MAX_FACTIONS}u) {
-                    vec3 pColor = u_palette[ownerVal];
-                    float terrainCost = (terrainVal == 0u) ? 1.0 : (terrainVal == 1u) ? 3.0 : (terrainVal == 2u) ? 6.0 : 0.0;
-                    uint defTierRaw = (packed >> 11u) & 15u;
-                    float defTier = float(defTierRaw == 0u ? 1u : defTierRaw);
-                    float diffNorm = clamp((u_player_opacity[ownerVal] + terrainCost / 25.0) * defTier, 0.0, 1.0);
-                    float opacity = 0.12 + 0.88 * diffNorm;
-                    baseColor = mix(baseColor, pColor, opacity);
-                }
-                return baseColor;
+                uint defTierRaw = (packed >> 11u) & 15u;
+                float defTier = float(defTierRaw == 0u ? 1u : defTierRaw);
+                float diffNorm = clamp((u_player_opacity[ownerVal] + terrainCost(terrainVal) / 25.0) * defTier, 0.0, 1.0);
+                // Territory is tinted, never painted over: the terrain stays
+                // readable underneath (at most 82% faction colour).
+                float opacity = 0.18 + 0.64 * diffNorm;
+                return vec4(u_palette[ownerVal] * opacity, opacity);
             }
 
             void main() {
@@ -197,12 +330,17 @@ export class WebGLRenderer {
                 ivec2 c10 = clamp(c0 + ivec2(1, 0), ivec2(0), sz - 1);
                 ivec2 c01 = clamp(c0 + ivec2(0, 1), ivec2(0), sz - 1);
                 ivec2 c11 = clamp(c0 + ivec2(1, 1), ivec2(0), sz - 1);
-                vec3 nearestFill = fillColorAt(nearest);
-                vec3 f00 = (ownerAt(c00) == ownerVal) ? fillColorAt(c00) : nearestFill;
-                vec3 f10 = (ownerAt(c10) == ownerVal) ? fillColorAt(c10) : nearestFill;
-                vec3 f01 = (ownerAt(c01) == ownerVal) ? fillColorAt(c01) : nearestFill;
-                vec3 f11 = (ownerAt(c11) == ownerVal) ? fillColorAt(c11) : nearestFill;
-                vec3 baseColor = mix(mix(f00, f10, frac.x), mix(f01, f11, frac.x), frac.y);
+                vec4 nearestTint = tintAt(nearest);
+                vec4 t00 = (ownerAt(c00) == ownerVal) ? tintAt(c00) : nearestTint;
+                vec4 t10 = (ownerAt(c10) == ownerVal) ? tintAt(c10) : nearestTint;
+                vec4 t01 = (ownerAt(c01) == ownerVal) ? tintAt(c01) : nearestTint;
+                vec4 t11 = (ownerAt(c11) == ownerVal) ? tintAt(c11) : nearestTint;
+                vec4 tint = mix(mix(t00, t10, frac.x), mix(t01, t11, frac.x), frac.y);
+
+                // The baked terrain (colour, relief, coast), then the territory tint
+                // over it — the terrain stays readable under every empire.
+                vec3 terrainCol = texture(u_terrain_tex, worldCoord / u_map_size).rgb;
+                vec3 baseColor = terrainCol * (1.0 - tint.a) + tint.rgb;
 
                 // --- Crisp faction borders (decided on the nearest cell's owner) ---
                 if (ownerVal > 0u && ownerVal <= ${MAX_FACTIONS}u) {
@@ -246,6 +384,19 @@ export class WebGLRenderer {
             throw new Error('Program link failed: ' + this.gl.getProgramInfoLog(this.program));
         }
 
+        // Terrain bake program (same full-screen quad, attribute location 0).
+        this.bakeProgram = this.gl.createProgram();
+        this.gl.attachShader(this.bakeProgram, this.compileShader(this.gl.VERTEX_SHADER, vsSource));
+        this.gl.attachShader(this.bakeProgram, this.compileShader(this.gl.FRAGMENT_SHADER, TERRAIN_BAKE_FS));
+        this.gl.linkProgram(this.bakeProgram);
+        if (!this.gl.getProgramParameter(this.bakeProgram, this.gl.LINK_STATUS)) {
+            throw new Error('Terrain program link failed: ' + this.gl.getProgramInfoLog(this.bakeProgram));
+        }
+        this.bakeUniforms = {
+            mapSize: this.gl.getUniformLocation(this.bakeProgram, 'u_map_size'),
+            cellTex: this.gl.getUniformLocation(this.bakeProgram, 'u_cell_tex'),
+        };
+
         this.gl.useProgram(this.program);
 
         this.uniforms = {
@@ -256,8 +407,10 @@ export class WebGLRenderer {
             cellTex: this.gl.getUniformLocation(this.program, 'u_cell_tex'),
             playerOpacity: this.gl.getUniformLocation(this.program, 'u_player_opacity'),
             myFaction: this.gl.getUniformLocation(this.program, 'u_my_faction'),
-            palette: this.gl.getUniformLocation(this.program, 'u_palette')
+            palette: this.gl.getUniformLocation(this.program, 'u_palette'),
+            terrainTex: this.gl.getUniformLocation(this.program, 'u_terrain_tex'),
         };
+        this.gl.uniform1i(this.uniforms.terrainTex, 1); // Texture unit 1
 
         this.gl.uniform2f(this.uniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
         this.gl.uniform1i(this.uniforms.cellTex, 0); // Texture unit 0
@@ -319,6 +472,40 @@ export class WebGLRenderer {
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
         this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.R16UI, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, null);
+
+        // Baked terrain look (RGBA8, one texel per cell, linear filtering so
+        // it stays smooth when zoomed in) and the framebuffer to paint it.
+        this.terrainTexture = this.gl.createTexture();
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
+        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
+        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR);
+        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+        this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA8, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, null);
+        this.terrainFbo = this.gl.createFramebuffer();
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.terrainFbo);
+        this.gl.framebufferTexture2D(this.gl.FRAMEBUFFER, this.gl.COLOR_ATTACHMENT0, this.gl.TEXTURE_2D, this.terrainTexture, 0);
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+        this.bakedTerrainVersion = -1;
+    }
+
+    // Paint the terrain's look into terrainTexture (once per map: see
+    // simBridge.terrainVersion). Reads the cell texture, so it runs after the
+    // cell upload.
+    bakeTerrain() {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.terrainFbo);
+        gl.viewport(0, 0, MAP_WIDTH, MAP_HEIGHT);
+        gl.useProgram(this.bakeProgram);
+        gl.uniform2f(this.bakeUniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
+        gl.uniform1i(this.bakeUniforms.cellTex, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.cellTexture);
+        gl.bindVertexArray(this.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        this.stats.terrainBakes = (this.stats.terrainBakes || 0) + 1;
     }
 
     setMemoryPointers(cellDataPtr) {
@@ -462,6 +649,10 @@ export class WebGLRenderer {
         }
         this.stats.uploadMs += performance.now() - tUp;
         this.stats.frames++;
+        if (this.cellDataPtr !== null && terrainVersion() !== this.bakedTerrainVersion) {
+            this.bakedTerrainVersion = terrainVersion();
+            this.bakeTerrain();
+        }
 
         // Draw
         this.gl.bindVertexArray(this.vao);
@@ -479,6 +670,10 @@ export class WebGLRenderer {
             this.playerOpacity.set(state.factionOpacity.subarray(0, FACTION_SLOTS));
         }
         this.gl.uniform1fv(this.uniforms.playerOpacity, this.playerOpacity);
+        this.gl.activeTexture(this.gl.TEXTURE1);
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
+        this.gl.activeTexture(this.gl.TEXTURE0);
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
 
         this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
     }
