@@ -16,7 +16,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { decodeDelta } from '../src/js/deltaCodec.js';
 import { placeSpawns, nearestNeighbourDistances } from '../server/game/spawns.js';
-import { safeZoneRadiusFor } from '../src/js/constants.js';
+import { safeZoneRadiusFor, MAP_SIZES, mapSizeFor } from '../src/js/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER = path.join(__dirname, '..', 'server', 'game', 'simulationWorker.js');
@@ -25,7 +25,10 @@ const PLAYERS = parseInt(process.env.PLAYERS) || 20;
 const MAP = process.env.MAP || 'north_america';
 const SECONDS = parseInt(process.env.SECONDS) || 600;
 const TEAMS = process.env.TEAMS === '2';
-const TOTAL_CELLS = 1920 * 1080;
+// The room's map size, as the server picks it (MAP_SIZE=standard|mega overrides).
+const MAP_SIZE = process.env.MAP_SIZE || mapSizeFor(PLAYERS);
+const { width: MAP_W, height: MAP_H } = MAP_SIZES[MAP_SIZE];
+const TOTAL_CELLS = MAP_W * MAP_H;
 
 const fail = (msg) => { console.error(`FAIL  ${msg}`); process.exitCode = 1; };
 
@@ -33,7 +36,11 @@ const fail = (msg) => { console.error(`FAIL  ${msg}`); process.exitCode = 1; };
 // Spawns placed exactly as the server places unpicked ones (spawns.js),
 // with the server's safe-zone radius for this room size.
 const SPAWN_MODE = process.env.SPAWN_MODE || 'spread';
-const spawnSpots = placeSpawns({ count: PLAYERS, mapId: MAP, safeRadius: safeZoneRadiusFor(PLAYERS), mode: SPAWN_MODE });
+const spawnSpots = placeSpawns({
+  count: PLAYERS, mapId: MAP, width: MAP_W, height: MAP_H, mode: SPAWN_MODE,
+  safeRadius: Math.round(safeZoneRadiusFor(PLAYERS) * MAP_W / MAP_SIZES.standard.width),
+});
+console.log(`map ${MAP} ${MAP_W}×${MAP_H} (${MAP_SIZE})`);
 {
   const nn = nearestNeighbourDistances(spawnSpots).sort((a, b) => a - b);
   console.log(`spawns (${SPAWN_MODE}): nearest neighbour min ${nn[0].toFixed(0)}, median ${nn[nn.length >> 1].toFixed(0)} cells`);
@@ -44,6 +51,7 @@ const worker = new Worker(WORKER, {
     roomId: 'BENCH',
     numPlayers: PLAYERS,
     mapId: MAP,
+    mapSize: MAP_SIZE,
     opts: {
       domination: TEAMS ? { share: 0.75, decayStartSec: 240, decayEverySec: 30, decayStep: 0.05, floor: 0.5 }
         : { share: 0.65, decayStartSec: 180, decayEverySec: 30, decayStep: 0.05, floor: 0.40 },

@@ -10,10 +10,7 @@
 
 import { terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 
-const W = 1920;
-const H = 1080;
-
-function randomLand(mapId, rand) {
+function randomLand(mapId, rand, W, H) {
   for (let guard = 0; guard < 20000; guard++) {
     const row = Math.floor(rand() * H);
     const col = Math.floor(rand() * W);
@@ -25,22 +22,23 @@ function randomLand(mapId, rand) {
 const dist2 = (a, b) => (a.row - b.row) ** 2 + (a.col - b.col) ** 2;
 
 // taken: spots already chosen (players' picks). Returns `count` new spots.
-export function placeSpawns({ taken = [], count, mapId, safeRadius = 80, mode = 'spread', candidates = 40, rand = Math.random }) {
+export function placeSpawns({ taken = [], count, mapId, width = 1920, height = 1080, safeRadius = 80, mode = 'spread', candidates = 40, rand = Math.random }) {
+  const land = () => randomLand(mapId, rand, width, height);
   const all = [...taken];
   const out = [];
   for (let n = 0; n < count; n++) {
     let pick = null;
     if (mode === 'random') {
       for (let attempt = 0; attempt < 1000 && !pick; attempt++) {
-        const c = randomLand(mapId, rand);
+        const c = land();
         if (!all.some((s) => dist2(s, c) < safeRadius * safeRadius)) pick = c;
       }
       // Every land cell is inside a safe zone (crowded rooms): any land will do.
-      if (!pick) pick = randomLand(mapId, rand);
+      if (!pick) pick = land();
     } else {
       let best = -1;
       for (let k = 0; k < candidates; k++) {
-        const c = randomLand(mapId, rand);
+        const c = land();
         let nearest = Infinity;
         for (const s of all) { const d = dist2(s, c); if (d < nearest) nearest = d; }
         if (nearest > best) { best = nearest; pick = c; }

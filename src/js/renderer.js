@@ -1,14 +1,11 @@
 import { state } from './state.js';
-import { takeDirtyRowSpans, terrainVersion } from './simBridge.js';
+import { takeDirtyRowSpans, terrainVersion, cellView, mapWidth, mapHeight, mapSizeVersion } from './simBridge.js';
 import { isTyping } from './typing.js';
 import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
 
 // Per-faction shader arrays: index 0 = neutral, 1..MAX_FACTIONS = players.
 const FACTION_SLOTS = MAX_FACTIONS + 1;
 
-const MAP_WIDTH = 1920;
-const MAP_HEIGHT = 1080;
-const TOTAL_CELLS = 2073600;
 
 // Compact troop count formatting where "k" = thousand and "kk" = million.
 //   <1000        -> as-is            (100, 200, 999)
@@ -175,9 +172,13 @@ const TERRAIN_BAKE_FS = `#version 300 es
 `;
 
 export class WebGLRenderer {
-    constructor(canvas, wasmMemory) {
+    constructor(canvas) {
         this.canvas = canvas;
-        this.wasmMemory = wasmMemory;
+        // The map's size in cells (the room's — see simBridge.setMapSize);
+        // the textures are (re)allocated when it changes.
+        this.mapW = mapWidth();
+        this.mapH = mapHeight();
+        this.mapSizeVer = mapSizeVersion();
         // Per-frame upload accounting (read by scripts/bench-render.mjs via ?debug).
         this.stats = { frames: 0, uploads: 0, uploadedBytes: 0, uploadMs: 0 };
         this.gl = this.canvas.getContext('webgl2', { antialias: false, alpha: false });
@@ -188,8 +189,8 @@ export class WebGLRenderer {
         // W/A/S/D positions work on any layout (AZERTY types Z/Q there).
         this.keys = { up: false, down: false, left: false, right: false };
 
-        // Single packed-cell buffer (u16/cell): owner + terrain + defense + building.
-        this.cellDataPtr = null;
+        // The packed cells (u16/cell: owner + terrain + defense + building)
+        // live in simBridge; this is their GPU copy.
         this.cellTexture = null;
 
         // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1),
@@ -218,9 +219,9 @@ export class WebGLRenderer {
 
     // Fit the whole map on screen and centre it (contain), with a small margin.
     fitCameraToMap() {
-        this.camera.zoom = Math.min(this.canvas.width / MAP_WIDTH, this.canvas.height / MAP_HEIGHT) * 0.98;
-        this.camera.x = (MAP_WIDTH / 2) - (this.canvas.width / 2) / this.camera.zoom;
-        this.camera.y = (MAP_HEIGHT / 2) - (this.canvas.height / 2) / this.camera.zoom;
+        this.camera.zoom = Math.min(this.canvas.width / this.mapW, this.canvas.height / this.mapH) * 0.98;
+        this.camera.x = (this.mapW / 2) - (this.canvas.width / 2) / this.camera.zoom;
+        this.camera.y = (this.mapH / 2) - (this.canvas.height / 2) / this.camera.zoom;
     }
 
     initShaders() {
@@ -412,7 +413,7 @@ export class WebGLRenderer {
         };
         this.gl.uniform1i(this.uniforms.terrainTex, 1); // Texture unit 1
 
-        this.gl.uniform2f(this.uniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
+        this.gl.uniform2f(this.uniforms.mapSize, this.mapW, this.mapH);
         this.gl.uniform1i(this.uniforms.cellTex, 0); // Texture unit 0
 
         // Upload the faction palette once (it's static). Built from factionRGB so
@@ -471,7 +472,7 @@ export class WebGLRenderer {
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.NEAREST);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
-        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.R16UI, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, null);
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.R16UI, this.mapW, this.mapH, 0, this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, null);
 
         // Baked terrain look (RGBA8, one texel per cell, linear filtering so
         // it stays smooth when zoomed in) and the framebuffer to paint it.
@@ -481,7 +482,7 @@ export class WebGLRenderer {
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
         this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
-        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA8, MAP_WIDTH, MAP_HEIGHT, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, null);
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA8, this.mapW, this.mapH, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, null);
         this.terrainFbo = this.gl.createFramebuffer();
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.terrainFbo);
         this.gl.framebufferTexture2D(this.gl.FRAMEBUFFER, this.gl.COLOR_ATTACHMENT0, this.gl.TEXTURE_2D, this.terrainTexture, 0);
@@ -495,9 +496,9 @@ export class WebGLRenderer {
     bakeTerrain() {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.terrainFbo);
-        gl.viewport(0, 0, MAP_WIDTH, MAP_HEIGHT);
+        gl.viewport(0, 0, this.mapW, this.mapH);
         gl.useProgram(this.bakeProgram);
-        gl.uniform2f(this.bakeUniforms.mapSize, MAP_WIDTH, MAP_HEIGHT);
+        gl.uniform2f(this.bakeUniforms.mapSize, this.mapW, this.mapH);
         gl.uniform1i(this.bakeUniforms.cellTex, 0);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.cellTexture);
@@ -508,8 +509,19 @@ export class WebGLRenderer {
         this.stats.terrainBakes = (this.stats.terrainBakes || 0) + 1;
     }
 
-    setMemoryPointers(cellDataPtr) {
-        this.cellDataPtr = cellDataPtr;
+    // The room's map changed size: new textures, camera fitted to the new map.
+    resizeMap() {
+        this.mapW = mapWidth();
+        this.mapH = mapHeight();
+        this.mapSizeVer = mapSizeVersion();
+        const gl = this.gl;
+        if (this.cellTexture) gl.deleteTexture(this.cellTexture);
+        if (this.terrainTexture) gl.deleteTexture(this.terrainTexture);
+        if (this.terrainFbo) gl.deleteFramebuffer(this.terrainFbo);
+        this.initTextures();
+        gl.useProgram(this.program);
+        gl.uniform2f(this.uniforms.mapSize, this.mapW, this.mapH);
+        this.fitCameraToMap();
     }
 
     setupControls() {
@@ -595,12 +607,12 @@ export class WebGLRenderer {
         const pad = 50;
         const viewW = this.canvas.width / this.camera.zoom;
         const viewH = this.canvas.height / this.camera.zoom;
-        this.camera.x = viewW >= MAP_WIDTH
-            ? (MAP_WIDTH - viewW) / 2
-            : Math.max(-pad, Math.min(this.camera.x, MAP_WIDTH - viewW + pad));
-        this.camera.y = viewH >= MAP_HEIGHT
-            ? (MAP_HEIGHT - viewH) / 2
-            : Math.max(-pad, Math.min(this.camera.y, MAP_HEIGHT - viewH + pad));
+        this.camera.x = viewW >= this.mapW
+            ? (this.mapW - viewW) / 2
+            : Math.max(-pad, Math.min(this.camera.x, this.mapW - viewW + pad));
+        this.camera.y = viewH >= this.mapH
+            ? (this.mapH - viewH) / 2
+            : Math.max(-pad, Math.min(this.camera.y, this.mapH - viewH + pad));
     }
 
     screenToWorld(clientX, clientY) {
@@ -632,24 +644,25 @@ export class WebGLRenderer {
         // (simBridge marks them), and nothing when nothing changed. The map
         // changes ~20 times a second at most, and only along the fronts.
         const tUp = performance.now();
-        if (this.cellDataPtr !== null && this.wasmMemory) {
+        if (mapSizeVersion() !== this.mapSizeVer) this.resizeMap();
+        const cellArray = cellView();
+        if (cellArray) {
             const spans = takeDirtyRowSpans();
             if (spans.length) {
-                const cellArray = new Uint16Array(this.wasmMemory.buffer, this.cellDataPtr, TOTAL_CELLS);
                 this.gl.activeTexture(this.gl.TEXTURE0);
                 this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
                 for (const [r0, r1] of spans) {
                     const rows = r1 - r0 + 1;
-                    this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, r0, MAP_WIDTH, rows,
-                        this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, cellArray, r0 * MAP_WIDTH);
-                    this.stats.uploadedBytes += rows * MAP_WIDTH * 2;
+                    this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, r0, this.mapW, rows,
+                        this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, cellArray, r0 * this.mapW);
+                    this.stats.uploadedBytes += rows * this.mapW * 2;
                 }
                 this.stats.uploads++;
             }
         }
         this.stats.uploadMs += performance.now() - tUp;
         this.stats.frames++;
-        if (this.cellDataPtr !== null && terrainVersion() !== this.bakedTerrainVersion) {
+        if (cellArray && terrainVersion() !== this.bakedTerrainVersion) {
             this.bakedTerrainVersion = terrainVersion();
             this.bakeTerrain();
         }

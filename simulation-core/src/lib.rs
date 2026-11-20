@@ -1,8 +1,18 @@
 use wasm_bindgen::prelude::*;
 
 // 1920x1080 matrix topology
+// Map size. The standard build is 1920×1080; the `mega` feature builds the
+// bigger map used by Mega Battles (64 players), so each faction gets ~75% more
+// land (`npm run build:wasm` builds both; the server loads the one that
+// matches the room — MAP_SIZES in src/js/constants.js, checked at startup).
+#[cfg(not(feature = "mega"))]
 pub const MAP_WIDTH: usize = 1920;
+#[cfg(not(feature = "mega"))]
 pub const MAP_HEIGHT: usize = 1080;
+#[cfg(feature = "mega")]
+pub const MAP_WIDTH: usize = 2560;
+#[cfg(feature = "mega")]
+pub const MAP_HEIGHT: usize = 1440;
 pub const TOTAL_CELLS: usize = MAP_WIDTH * MAP_HEIGHT;
 
 // Faction capacity of one room. The owner field is 7 bits (max 127). Mirrored
@@ -282,7 +292,7 @@ pub struct SimulationState {
     block_state: Vec<u8>,
 
     // Scratch buffer for delta export: one u32 per changed cell, already in the
-    // wire format `cell_id (21 bits) | owner << 21`. Grows on demand (it used to
+    // form `cell_id (25 bits) | owner << 25`. Grows on demand (it used to
     // be a fixed 16 MB), so JS must re-read the pointer after each collect.
     delta_scratch: Vec<u32>,
     // Per-front candidate lists for process_war_fronts, kept between ticks so
@@ -1507,7 +1517,8 @@ impl SimulationState {
 
     /// Pack every cell whose owner changed since the previous call into the
     /// delta scratch buffer and return how many there are. Each entry is one u32
-    /// already in the snapshot wire format: `cell_id (21 bits) | owner << 21`.
+    /// packed as `cell_id (25 bits) | owner << 25` (the worker re-encodes them
+    /// for the wire — src/js/deltaCodec.js). 25 bits fit the Mega map.
     /// The buffer may be reallocated here, so read get_delta_scratch_ptr AFTER
     /// this call.
     #[wasm_bindgen]
@@ -1519,7 +1530,7 @@ impl SimulationState {
         self.delta_scratch.reserve(self.dirty_cells.len());
         for &cell_idx in &self.dirty_cells {
             let owner = self.cell_owner(cell_idx as usize);
-            self.delta_scratch.push((cell_idx & 0x1F_FFFF) | ((owner & 0x7F) << 21));
+            self.delta_scratch.push((cell_idx & 0x1FF_FFFF) | ((owner & 0x7F) << 25));
         }
 
         self.dirty_cells.clear();
@@ -1635,6 +1646,12 @@ impl SimulationState {
     /// The simulation's player capacity (factions 1..=N), so JS never hard-codes it.
     #[wasm_bindgen]
     pub fn max_players() -> u32 { MAX_PLAYERS as u32 }
+
+    /// Map size this build was compiled for (see MAP_WIDTH).
+    #[wasm_bindgen]
+    pub fn map_width() -> u32 { MAP_WIDTH as u32 }
+    #[wasm_bindgen]
+    pub fn map_height() -> u32 { MAP_HEIGHT as u32 }
 
     /// Base price of a building type (the first one of that type).
     fn base_price(btype: u8) -> f32 {
@@ -2686,8 +2703,8 @@ mod tests {
         let n = s.collect_dirty_cells() as usize;
         assert!(n > 0, "expansion should have changed cells");
         for &v in &s.delta_scratch[..n] {
-            let cell = (v & 0x1F_FFFF) as usize;
-            assert_eq!(v >> 21, s.cell_owner(cell));
+            let cell = (v & 0x1FF_FFFF) as usize;
+            assert_eq!(v >> 25, s.cell_owner(cell));
         }
         assert_eq!(s.collect_dirty_cells(), 0, "the dirty list is drained");
 

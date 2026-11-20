@@ -5,13 +5,13 @@ import { activeRooms, guildWarQueue, rankedQueue } from './state.js';
 import { io } from '../server.js';
 import { RoomSim } from './simulationRunner.js';
 import { randomMapId } from '../../src/js/mapGen.js';
-import { MAX_FACTIONS, safeZoneRadiusFor } from '../../src/js/constants.js';
+import { MAX_FACTIONS, safeZoneRadiusFor, MAP_SIZES, mapSizeFor } from '../../src/js/constants.js';
 import { roomRefusal } from './capacity.js';
 import { awardMatchXp } from './progression.js';
 import { placeSpawns } from './spawns.js';
 
 // How unpicked spawns are placed ('spread' or 'random'; see spawns.js).
-const SPAWN_MODE = process.env.SPAWN_MODE || 'random';
+const SPAWN_MODE = process.env.SPAWN_MODE || 'spread';
 import { planRankedMatches, rankedEloDeltas, ratingWindow, RANKED_FIELD, RANKED_MIN_HUMANS } from './ranked.js';
 
 // Random "adjective + noun" call-sign generator for bot factions.
@@ -279,7 +279,12 @@ function buildRoomObject({ roomId, name, sim, maxPlayers, preset, isQuickPlay, i
     spawnSelections: new Map(),
     preset: preset || 'north_america',
     maxPlayers,
-    safeZoneRadius: safeZoneRadiusFor(maxPlayers),
+    // Map size: big rooms (Mega Battles) play on the bigger map, with safe
+    // zones scaled to it (constants.js MAP_SIZES / mapSizeFor).
+    mapSize: mapSizeFor(maxPlayers),
+    mapWidth: MAP_SIZES[mapSizeFor(maxPlayers)].width,
+    mapHeight: MAP_SIZES[mapSizeFor(maxPlayers)].height,
+    safeZoneRadius: Math.round(safeZoneRadiusFor(maxPlayers) * MAP_SIZES[mapSizeFor(maxPlayers)].width / MAP_SIZES.standard.width),
     isQuickPlay: isQuickPlay || false,
     isRankedMatch: isRankedMatch || false,
     isGuildWar: isGuildWar || false,
@@ -617,6 +622,7 @@ export function startSpawnSelection(room) {
   // players pick spawns — this is the first screen that renders the map canvas.
   io.to(room.id).emit('spawn-selection-start', {
     duration: SPAWN_SELECTION_SECONDS, mapId: room.preset, safeZoneRadius: room.safeZoneRadius,
+    mapWidth: room.mapWidth, mapHeight: room.mapHeight,
   });
   log('info', `[Room ${room.id}] Entering spawn selection phase (map: ${room.preset})`);
 
@@ -672,6 +678,8 @@ export function finalizeSpawns(room) {
     taken: [...room.spawnSelections.values()],
     count: missing.length,
     mapId: room.preset,
+    width: room.mapWidth,
+    height: room.mapHeight,
     safeRadius: room.safeZoneRadius,
     mode: SPAWN_MODE,
   });
@@ -706,6 +714,7 @@ export function startMatchNow(room) {
   try {
     room.simReal = new RoomSim(room.id, room.maxPlayers, io, {
       mapId: room.preset,
+      mapSize: room.mapSize,
       // Guild wars: teams (no friendly fire; a team wins together, by last
       // team standing or by holding the domination share together).
       domination: room.isGuildWar ? GUILD_WAR_DOMINATION : DOMINATION,
@@ -938,5 +947,7 @@ export function sendInitConfig(socket, room) {
     teamSize: room.teamSize || 0,
     isHost: room.hostSocketId === socket.id,
     reconnectGraceSec: RECONNECT_GRACE_SECONDS,
+    mapWidth: room.mapWidth,
+    mapHeight: room.mapHeight,
   });
 }

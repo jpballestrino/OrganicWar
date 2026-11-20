@@ -31,6 +31,7 @@ export class RoomSim {
         roomId,
         numPlayers,
         mapId: opts.mapId || 'north_america',
+        mapSize: opts.mapSize || 'standard',
         opts: {
           startCells: opts.startCells,
           startTroops: opts.startTroops,

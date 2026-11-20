@@ -447,10 +447,10 @@ export function setupSocketHandlers(io) {
         if (!Number.isFinite(row) || !Number.isFinite(col)) return;
         row = Math.floor(row);
         col = Math.floor(col);
-        if (row < 0 || row >= 1080 || col < 0 || col >= 1920) return;
+        if (row < 0 || row >= room.mapHeight || col < 0 || col >= room.mapWidth) return;
 
         // A spawn on water claims no cells, leaving the player dead on arrival.
-        if (terrainAt(col / 1920, row / 1080, room.preset) === TERRAIN.WATER) {
+        if (terrainAt(col / room.mapWidth, row / room.mapHeight, room.preset) === TERRAIN.WATER) {
           socket.emit('spawn-rejected', 'You cannot deploy on water. Pick a land cell.');
           return;
         }
@@ -799,6 +799,7 @@ export function setupSocketHandlers(io) {
             // Back into the spawn picker with the time that is left.
             socket.emit('spawn-selection-start', {
               duration: Math.max(1, room.spawnTicksLeft || 1), mapId: room.preset, safeZoneRadius: room.safeZoneRadius,
+              mapWidth: room.mapWidth, mapHeight: room.mapHeight,
             });
             const selections = {};
             for (let [f, p] of room.spawnSelections.entries()) selections[f] = p;

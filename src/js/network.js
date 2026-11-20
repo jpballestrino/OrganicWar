@@ -3,10 +3,10 @@ import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken, isLoggedIn } from './auth.js';
 import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
-import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain } from './simBridge.js';
+import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain, setMapSize } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { onSnapshotStats } from './matchFeel.js';
-import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt } from './constants.js';
+import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt, MAP_SIZES } from './constants.js';
 import { updateBuildBar, rejectMessage } from './buildBar.js';
 
 // The handshake carries the player's UTC offset so the server rolls daily
@@ -287,6 +287,14 @@ socket.io.on('reconnect_failed', () => {
   showServerError('Server Unreachable', 'Could not reconnect after multiple attempts. Please return to the menu and try again.');
 });
 
+// The room's map size (Mega Battles use a bigger map): reallocate the local
+// map and the renderer's textures before anything is painted into them.
+function useRoomMapSize(width, height) {
+  const w = width || MAP_SIZES.standard.width;
+  const h = height || MAP_SIZES.standard.height;
+  if (setMapSize(w, h) && window.renderer) window.renderer.resizeMap();
+}
+
 export function initNetwork() {
   // ── Progression for logged-in players (server/game/progression.js) ──
   // The server owns their XP: it pushes the profile on connect and the scored
@@ -406,6 +414,7 @@ export function initNetwork() {
     // Repaint terrain to the room's map (covers the reconnect path, where the
     // client may have painted the default map at startup). Safe pre-match: only
     // terrain bits change and owner bits are still all-neutral.
+    useRoomMapSize(config.mapWidth, config.mapHeight);
     if (config.currentPreset) repaintTerrain(config.currentPreset);
     state.isQuickPlay = config.isQuickPlay || false;
     state.isRankedMatch = config.isRankedMatch || false;
@@ -506,6 +515,7 @@ export function initNetwork() {
     // so players pick spawns on the correct landmass. Falls back to the preset
     // received in init-config.
     const mapId = (data && data.mapId) || state.currentPreset;
+    useRoomMapSize(data && data.mapWidth, data && data.mapHeight);
     if (mapId) repaintTerrain(mapId);
 
     const gameArea = document.getElementById('gameArea');

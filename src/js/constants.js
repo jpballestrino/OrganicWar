@@ -3,11 +3,25 @@
 // population cap, live prices) are NOT mirrored: the HUD reads them from the
 // sim-stats message (see simBridge.decodeStats).
 
+// The standard map size (most rooms). Code that handles a room's map reads
+// its real size (MAP_SIZES / init-config mapWidth, mapHeight) — big rooms use
+// the bigger Mega map.
 export const COLS = 1920;
 export const ROWS = 1080;
 export const MAP_WIDTH = COLS;
 export const MAP_HEIGHT = ROWS;
 export const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
+// Map sizes — each mirrors a build of simulation-core (MAP_WIDTH/HEIGHT in
+// lib.rs; `mega` = the "mega" cargo feature, server/wasm-mega). The worker
+// refuses to start if the loaded build disagrees.
+export const MAP_SIZES = {
+  standard: { width: 1920, height: 1080 },
+  mega: { width: 2560, height: 1440 },
+};
+// Rooms of more than this many factions play on the Mega map: 64 factions on
+// the standard map got ~20k cells each (a third of a 20-player match's share).
+export const MEGA_MAP_MIN_PLAYERS = 33;
+export const mapSizeFor = (maxPlayers) => (maxPlayers >= MEGA_MAP_MIN_PLAYERS ? 'mega' : 'standard');
 // Faction capacity of one room — mirrors MAX_PLAYERS in simulation-core/src/lib.rs
 // (the worker refuses to start a room if the two disagree). Index 0 is neutral
 // land, so per-faction arrays have MAX_FACTIONS + 1 entries.

@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Bigger map for Mega Battles (see MAP_WIDTH in src/lib.rs).
+mega = []
+
 [dependencies]
 wasm-bindgen = "0.2"
 

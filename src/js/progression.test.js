@@ -89,7 +89,9 @@ describe('daily missions in a Mega Battle', () => {
   it('mission cards state the Mega target', () => {
     expect(megaTarget({ stat: 'placement', goal: 5 })).toBe('top 16 in Mega Battle');
     expect(megaTarget({ stat: 'placement', goal: 3 })).toBe('top 9 in Mega Battle');
-    expect(megaTarget({ stat: 'peakCells', goal: 150000 })).toBe('47,000 in Mega Battle');
+    // The Mega map is 1.78× the standard one: 150k standard-equivalent land is
+    // 150k ÷ (64/20) × 1.78 ≈ 83k cells there.
+    expect(megaTarget({ stat: 'peakCells', goal: 150000 })).toBe('83,000 in Mega Battle');
     expect(megaTarget({ stat: 'wins', goal: 1 })).toBe('');
   });
 });

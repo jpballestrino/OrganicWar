@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { parentPort, workerData } from 'worker_threads';
 import { generateTerrain } from '../../src/js/mapGen.js';
-import { MAX_FACTIONS } from '../../src/js/constants.js';
+import { MAX_FACTIONS, MAP_SIZES } from '../../src/js/constants.js';
 import { encodeDelta } from '../../src/js/deltaCodec.js';
 // We cannot use the global logger cleanly since it writes to files and we are in a thread.
 // We can either post logs to the parent or just use console.log. Let's post them.
@@ -20,10 +20,13 @@ function logError(msg) {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const WASM_PATH = path.join(__dirname, '..', 'wasm', 'simulation_core_bg.wasm');
+// The room's map size picks the sim build: the standard map, or the bigger
+// Mega Battle map (server/wasm-mega, built with the "mega" cargo feature).
+const MAP_SIZE = (workerData && workerData.mapSize === 'mega') ? 'mega' : 'standard';
+const WASM_PATH = path.join(__dirname, '..', MAP_SIZE === 'mega' ? 'wasm-mega' : 'wasm', 'simulation_core_bg.wasm');
 
-const MAP_WIDTH = 1920;
-const MAP_HEIGHT = 1080;
+const MAP_WIDTH = MAP_SIZES[MAP_SIZE].width;
+const MAP_HEIGHT = MAP_SIZES[MAP_SIZE].height;
 const TOTAL_CELLS = MAP_WIDTH * MAP_HEIGHT;
 
 // Input validators: gate every WASM call so a bad value can't index out of
@@ -121,9 +124,14 @@ class RoomSimWorker {
       // a mismatch would mis-draw (or reject) factions above the smaller cap.
       throw new Error(`sim MAX_PLAYERS (${this.maxPlayers}) != MAX_FACTIONS (${MAX_FACTIONS}) in src/js/constants.js — rebuild the WASM`);
     }
+    const simW = this.exports.simulationstate_map_width();
+    const simH = this.exports.simulationstate_map_height();
+    if (simW !== MAP_WIDTH || simH !== MAP_HEIGHT) {
+      throw new Error(`sim map ${simW}x${simH} != MAP_SIZES.${MAP_SIZE} ${MAP_WIDTH}x${MAP_HEIGHT} — rebuild the WASM (npm run build:wasm)`);
+    }
 
     const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
-    generateTerrain(this.exports.memory, cellPtr, this.mapId);
+    generateTerrain(this.exports.memory, cellPtr, this.mapId, MAP_WIDTH, MAP_HEIGHT);
 
     // Total conquerable land (terrain bits 7-10; 3 = water), counted once: the
     // denominator for the domination victory and the clients' "% of map" HUD.

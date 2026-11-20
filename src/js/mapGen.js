@@ -9,7 +9,17 @@
 // north .. 1 = south) so it is resolution independent and can be previewed as
 // ASCII without running the renderer.
 
-import { MAP_WIDTH, MAP_HEIGHT, TOTAL_CELLS, CELL_TERRAIN_SHIFT, CELL_TERRAIN_MASK } from './constants.js';
+import { MAP_WIDTH, MAP_HEIGHT, CELL_TERRAIN_SHIFT, CELL_TERRAIN_MASK } from './constants.js';
+
+// Size of the map being generated (the standard 1920×1080, or the Mega
+// Battle map — MAP_SIZES in constants.js). Set by each public entry point
+// before it runs; everything here is synchronous, so module state is safe.
+let W = MAP_WIDTH;
+let H = MAP_HEIGHT;
+let N = W * H;
+function useSize(width = MAP_WIDTH, height = MAP_HEIGHT) {
+  W = width; H = height; N = W * H;
+}
 
 export const TERRAIN = { PLAINS: 0, HIGHLANDS: 1, MOUNTAINS: 2, WATER: 3 };
 
@@ -306,11 +316,11 @@ const bridgeCache = new Map();
 
 // 8-connected flood-fill labeling of the land grid. Returns { comp, sizes, nc }.
 function labelComponents(land) {
-  const comp = new Int32Array(TOTAL_CELLS).fill(-1);
-  const stack = new Int32Array(TOTAL_CELLS);
+  const comp = new Int32Array(N).fill(-1);
+  const stack = new Int32Array(N);
   const sizes = [];
   let nc = 0;
-  for (let s = 0; s < TOTAL_CELLS; s++) {
+  for (let s = 0; s < N; s++) {
     if (!land[s] || comp[s] !== -1) continue;
     const id = nc++;
     let top = 0;
@@ -320,14 +330,14 @@ function labelComponents(land) {
     while (top) {
       const c = stack[--top];
       sz++;
-      const cx = c % MAP_WIDTH;
-      const cy = (c / MAP_WIDTH) | 0;
+      const cx = c % W;
+      const cy = (c / W) | 0;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           if (!dx && !dy) continue;
           const X = cx + dx, Y = cy + dy;
-          if (X < 0 || Y < 0 || X >= MAP_WIDTH || Y >= MAP_HEIGHT) continue;
-          const ni = Y * MAP_WIDTH + X;
+          if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+          const ni = Y * W + X;
           if (land[ni] && comp[ni] === -1) { comp[ni] = id; stack[top++] = ni; }
         }
       }
@@ -347,12 +357,12 @@ function labelComponents(land) {
 function computeBridgeCarveIndices(mapId) {
   // Build the land/water grid straight from the terrain classifier (the same
   // function the base generation loop uses), so no packed-bit read-back is needed.
-  const land = new Uint8Array(TOTAL_CELLS);
+  const land = new Uint8Array(N);
   let i = 0;
-  for (let y = 0; y < MAP_HEIGHT; y++) {
-    const ny = y / MAP_HEIGHT;
-    for (let x = 0; x < MAP_WIDTH; x++) {
-      land[i++] = terrainAt(x / MAP_WIDTH, ny, mapId) === TERRAIN.WATER ? 0 : 1;
+  for (let y = 0; y < H; y++) {
+    const ny = y / H;
+    for (let x = 0; x < W; x++) {
+      land[i++] = terrainAt(x / W, ny, mapId) === TERRAIN.WATER ? 0 : 1;
     }
   }
 
@@ -368,7 +378,7 @@ function computeBridgeCarveIndices(mapId) {
     let any = false;
     for (let c = 0; c < nc; c++) if (c !== mainId && sizes[c] < MIN_ISLAND_SIZE) { eraseComp[c] = 1; any = true; }
     if (any) {
-      for (let s = 0; s < TOTAL_CELLS; s++) {
+      for (let s = 0; s < N; s++) {
         const c = comp[s];
         if (c >= 0 && eraseComp[c]) { erase.push(s); land[s] = 0; }
       }
@@ -381,8 +391,8 @@ function computeBridgeCarveIndices(mapId) {
   // cells are written back into `land`, so the next round's relabel sees merged
   // components. Chains collapse in a few rounds; iterate until one component.
   const bridges = [];
-  const parent = new Int32Array(TOTAL_CELLS);
-  const queue = new Int32Array(TOTAL_CELLS);
+  const parent = new Int32Array(N);
+  const queue = new Int32Array(N);
   for (let pass = 0; pass < 16; pass++) {
     const { comp, sizes, nc } = labelComponents(land);
     if (nc <= 1) break;
@@ -400,21 +410,21 @@ function computeBridgeCarveIndices(mapId) {
       if (find(cid) === find(mainId)) continue;
       parent.fill(-1);
       let head = 0, tail = 0;
-      for (let s = 0; s < TOTAL_CELLS; s++) {
+      for (let s = 0; s < N; s++) {
         if (comp[s] === cid) { parent[s] = s; queue[tail++] = s; }
       }
       // BFS through water until we touch land of a component in a different set.
       let contact = -1, target = -1;
       bfs: while (head < tail) {
         const c = queue[head++];
-        const cx = c % MAP_WIDTH;
-        const cy = (c / MAP_WIDTH) | 0;
+        const cx = c % W;
+        const cy = (c / W) | 0;
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             if (!dx && !dy) continue;
             const X = cx + dx, Y = cy + dy;
-            if (X < 0 || Y < 0 || X >= MAP_WIDTH || Y >= MAP_HEIGHT) continue;
-            const ni = Y * MAP_WIDTH + X;
+            if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+            const ni = Y * W + X;
             if (land[ni]) {
               const oc = comp[ni];
               if (oc !== cid && find(oc) !== find(cid)) { contact = c; target = oc; break bfs; }
@@ -430,13 +440,13 @@ function computeBridgeCarveIndices(mapId) {
       // Trace the gap back to the island and carve a widened bridge into `land`.
       let p = contact;
       while (p !== parent[p]) {
-        const cx = p % MAP_WIDTH;
-        const cy = (p / MAP_WIDTH) | 0;
+        const cx = p % W;
+        const cy = (p / W) | 0;
         for (let dy = -BRIDGE_HALF_WIDTH; dy <= BRIDGE_HALF_WIDTH; dy++) {
           for (let dx = -BRIDGE_HALF_WIDTH; dx <= BRIDGE_HALF_WIDTH; dx++) {
             const X = cx + dx, Y = cy + dy;
-            if (X < 0 || Y < 0 || X >= MAP_WIDTH || Y >= MAP_HEIGHT) continue;
-            const ni = Y * MAP_WIDTH + X;
+            if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+            const ni = Y * W + X;
             if (!land[ni]) { bridges.push(ni); land[ni] = 1; }
           }
         }
@@ -449,17 +459,18 @@ function computeBridgeCarveIndices(mapId) {
 }
 
 // Write the static terrain into the packed cell buffer in place. `memory` is the
-// WASM Memory, `ptr` the cell_data pointer (TOTAL_CELLS u16s). Only the terrain
+// WASM Memory, `ptr` the cell_data pointer (N u16s). Only the terrain
 // bits are touched; owner/defense/building bits are preserved. Called once at
 // startup (cell_data starts all-zero, so this effectively seeds the map).
-export function generateTerrain(memory, ptr, mapId = 'north_america') {
+export function generateTerrain(memory, ptr, mapId = 'north_america', width = MAP_WIDTH, height = MAP_HEIGHT) {
+  useSize(width, height);
   const map = isValidMapId(mapId) ? mapId : 'north_america';
-  const cells = new Uint16Array(memory.buffer, ptr, TOTAL_CELLS);
+  const cells = new Uint16Array(memory.buffer, ptr, N);
   let i = 0;
-  for (let y = 0; y < MAP_HEIGHT; y++) {
-    const ny = y / MAP_HEIGHT;
-    for (let x = 0; x < MAP_WIDTH; x++) {
-      const t = (terrainAt(x / MAP_WIDTH, ny, map) << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
+  for (let y = 0; y < H; y++) {
+    const ny = y / H;
+    for (let x = 0; x < W; x++) {
+      const t = (terrainAt(x / W, ny, map) << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
       cells[i] = (cells[i] & ~CELL_TERRAIN_MASK) | t;
       i++;
     }
@@ -467,8 +478,9 @@ export function generateTerrain(memory, ptr, mapId = 'north_america') {
 
   // Erase noise speckles (→ water) then carve island bridges (→ plains) so no
   // land mass is sealed off by water. Cached per map after the first call.
-  let carve = bridgeCache.get(map);
-  if (!carve) { carve = computeBridgeCarveIndices(map); bridgeCache.set(map, carve); }
+  const key = `${map}@${W}x${H}`;
+  let carve = bridgeCache.get(key);
+  if (!carve) { carve = computeBridgeCarveIndices(map); bridgeCache.set(key, carve); }
   const plains = (TERRAIN.PLAINS << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
   const water = (TERRAIN.WATER << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
   for (let k = 0; k < carve.erase.length; k++) {
@@ -483,10 +495,10 @@ export function generateTerrain(memory, ptr, mapId = 'north_america') {
 
 // Pre-compute the island bridging for all maps so it doesn't freeze the UI
 // when a match starts. Should be called at idle time (e.g. app startup).
-export function warmMapCache() {
+export function warmMapCache(width = MAP_WIDTH, height = MAP_HEIGHT) {
+  useSize(width, height);
   for (const mapId of MAP_POOL) {
-    if (!bridgeCache.has(mapId)) {
-      bridgeCache.set(mapId, computeBridgeCarveIndices(mapId));
-    }
+    const key = `${mapId}@${W}x${H}`;
+    if (!bridgeCache.has(key)) bridgeCache.set(key, computeBridgeCarveIndices(mapId));
   }
 }

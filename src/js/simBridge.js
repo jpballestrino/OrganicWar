@@ -14,16 +14,46 @@ let wasmMemory = null;
 let cellDataPtr = null;
 let paintedMapId = null;
 
+// The room's map size (standard, or the bigger Mega Battle map — init-config
+// mapWidth / mapHeight). The map lives in a plain ArrayBuffer of W×H u16s:
+// the client only stores and draws it (the server runs the simulation).
+let W = COLS;
+let H = ROWS;
+let N = TOTAL_CELLS;
+let sizeVer = 0;
+export const mapWidth = () => W;
+export const mapHeight = () => H;
+export const mapSizeVersion = () => sizeVer;
+// A view of the whole map (one u16 per cell), for the renderer.
+export function cellView() {
+  return wasmMemory ? new Uint16Array(wasmMemory.buffer, cellDataPtr, N) : null;
+}
+
+// Allocate an empty map of this size (no-op when it already is). The terrain
+// is painted by repaintTerrain() and the owners arrive from the server.
+export function setMapSize(width, height) {
+  if (wasmMemory && width === W && height === H) return false;
+  W = width; H = height; N = W * H;
+  wasmMemory = { buffer: new ArrayBuffer(N * 2) };
+  cellDataPtr = 0;
+  dirtyRows = new Uint8Array(H);
+  paintedMapId = null;
+  sizeVer++;
+  markAllDirty();
+  terrainVer++;
+  return true;
+}
+
 // ── Which map rows changed since the renderer last uploaded them ────────────
 // The renderer used to upload the whole 4 MB cell texture every frame; now it
 // asks for the changed rows (takeDirtyRowSpans) and uploads only those, and
 // nothing at all when nothing changed. Every write into cell_data below marks
 // its rows.
-const dirtyRows = new Uint8Array(ROWS);
+let dirtyRows = new Uint8Array(H);
 let anyDirty = false;
 const markRow = (r) => { dirtyRows[r] = 1; anyDirty = true; };
 function markRows(r0, r1) {
-  for (let r = Math.max(0, r0); r <= Math.min(ROWS - 1, r1); r++) dirtyRows[r] = 1;
+  for (let r = Math.max(0, r0); r <= Math.min(H - 1, r1); r++) dirtyRows[r] = 1;
   anyDirty = true;
 }
 export function markAllDirty() { dirtyRows.fill(1); anyDirty = true; }
@@ -40,7 +70,7 @@ export function takeDirtyRowSpans(maxGap = 16) {
   const spans = [];
   let start = -1;
   let last = -1;
-  for (let r = 0; r < ROWS; r++) {
+  for (let r = 0; r < H; r++) {
     if (!dirtyRows[r]) continue;
     if (start >= 0 && r - last <= maxGap) { last = r; continue; }
     if (start >= 0) spans.push([start, last]);
@@ -68,7 +98,7 @@ export function registerSim({ memory, cellDataPtr: ptr }) {
 export function repaintTerrain(mapId) {
   if (!wasmMemory || cellDataPtr === null || !mapId) return;
   if (mapId === paintedMapId) return;
-  generateTerrain(wasmMemory, cellDataPtr, mapId);
+  generateTerrain(wasmMemory, cellDataPtr, mapId, W, H);
   paintedMapId = mapId;
   markAllDirty();
   terrainVer++;
@@ -77,8 +107,8 @@ export function repaintTerrain(mapId) {
 // Owner faction id (0 = nature) of a cell in the local render cache. Used for the
 // client-side missile target pre-check (can't aim at own/nature land).
 export function getCellOwner(cellId) {
-  if (!wasmMemory || cellDataPtr === null || cellId < 0 || cellId >= TOTAL_CELLS) return -1;
-  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  if (!wasmMemory || cellDataPtr === null || cellId < 0 || cellId >= N) return -1;
+  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   return cellView[cellId] & CELL_OWNER_MASK;
 }
 
@@ -101,15 +131,15 @@ const toU32 = (buf) => (buf instanceof ArrayBuffer
 let changedBuf = new Uint32Array(4096);
 export function applyOwnerDelta(buf) {
   if (!wasmMemory || cellDataPtr === null || !buf) return changedBuf.subarray(0, 0);
-  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   let n = 0;
   decodeDelta(buf, (id, owner) => {
-    if (id >= TOTAL_CELLS) return;
+    if (id >= N) return;
     const v = cells[id];
     const next = (v & ~CELL_OWNER_MASK) | (owner & CELL_OWNER_MASK);
     if (next === v) return;
     cells[id] = next;
-    markRow((id / COLS) | 0);
+    markRow((id / W) | 0);
     if (n === changedBuf.length) {
       const bigger = new Uint32Array(changedBuf.length * 2);
       bigger.set(changedBuf);
@@ -129,11 +159,11 @@ export function resyncZonesForCells(changed, buildings) {
   if (!changed.length || !buildings || !buildings.length) return;
   const zones = buildings.filter((b) => b.type === 'defense' && !b.constructing);
   if (!zones.length) return;
-  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   for (let i = 0; i < changed.length; i++) {
     const id = changed[i];
-    const r = (id / COLS) | 0;
-    const c = id - r * COLS;
+    const r = (id / W) | 0;
+    const c = id - r * W;
     const owner = cells[id] & CELL_OWNER_MASK;
     let inZone = false;
     let tierBits = -1;
@@ -153,12 +183,12 @@ export function resyncZonesForCells(changed, buildings) {
 // Rebuild every cell's owner from run-length runs (full-state sync).
 export function applyOwnerRuns(buf) {
   if (!wasmMemory || cellDataPtr === null || !buf) return;
-  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   const runs = toU32(buf);
   let i = 0;
-  for (let r = 0; r < runs.length && i < TOTAL_CELLS; r++) {
+  for (let r = 0; r < runs.length && i < N; r++) {
     const owner = (runs[r] >>> 24) & CELL_OWNER_MASK;
-    const end = Math.min(TOTAL_CELLS, i + (runs[r] & 0xFFFFFF));
+    const end = Math.min(N, i + (runs[r] & 0xFFFFFF));
     for (; i < end; i++) cells[i] = (cells[i] & ~CELL_OWNER_MASK) | owner;
   }
   markAllDirty();
@@ -167,18 +197,18 @@ export function applyOwnerRuns(buf) {
 // How many cells of the local render cache faction `fid` owns (debug / tests).
 export function countOwnedCells(fid) {
   if (!wasmMemory || cellDataPtr === null) return 0;
-  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   let n = 0;
-  for (let i = 0; i < TOTAL_CELLS; i++) if ((cells[i] & CELL_OWNER_MASK) === fid) n++;
+  for (let i = 0; i < N; i++) if ((cells[i] & CELL_OWNER_MASK) === fid) n++;
   return n;
 }
 
 // Clear every defense-tier and has-building bit (before a full-state rebuild).
 export function clearAllBuildingBits() {
   if (!wasmMemory || cellDataPtr === null) return;
-  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   const keep = ~(DEFENSE_MASK | BUILDING_MASK_JS) & 0xFFFF;
-  for (let i = 0; i < TOTAL_CELLS; i++) cells[i] &= keep;
+  for (let i = 0; i < N; i++) cells[i] &= keep;
   markAllDirty();
 }
 
@@ -240,20 +270,20 @@ export function decodeStats(buf) {
 export function removeDefenseBuilding(buildingRow, buildingCol, radius) {
   if (!wasmMemory || cellDataPtr === null) return;
 
-  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
 
   // Clear defense tier bits in the radius circle.
   const rMin = Math.max(0, buildingRow - radius);
-  const rMax = Math.min(ROWS - 1, buildingRow + radius);
+  const rMax = Math.min(H - 1, buildingRow + radius);
   const cMin = Math.max(0, buildingCol - radius);
-  const cMax = Math.min(COLS - 1, buildingCol + radius);
+  const cMax = Math.min(W - 1, buildingCol + radius);
 
   for (let r = rMin; r <= rMax; r++) {
     for (let c = cMin; c <= cMax; c++) {
       const dr = r - buildingRow;
       const dc = c - buildingCol;
       if (dr * dr + dc * dc <= radius * radius) {
-        cellView[r * COLS + c] &= ~DEFENSE_MASK;
+        cellView[r * W + c] &= ~DEFENSE_MASK;
       }
     }
   }
@@ -261,8 +291,8 @@ export function removeDefenseBuilding(buildingRow, buildingCol, radius) {
   // Clear has_building flag on the 8×8 footprint.
   for (let r = buildingRow - 4; r < buildingRow + 4; r++) {
     for (let c = buildingCol - 4; c < buildingCol + 4; c++) {
-      if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
-        cellView[r * COLS + c] &= ~BUILDING_MASK_JS;
+      if (r >= 0 && r < H && c >= 0 && c < W) {
+        cellView[r * W + c] &= ~BUILDING_MASK_JS;
       }
     }
   }
@@ -298,21 +328,21 @@ export function resyncBuildingZones(buildings) {
 export function applyDefenseBuilding(buildingRow, buildingCol, radius, defTier, factionId) {
   if (!wasmMemory || cellDataPtr === null) return;
 
-  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
 
   // Stamp defense tier bits in the radius circle — own cells only.
   const tierBits = (defTier & 0xF) << DEFENSE_SHIFT;
   const rMin = Math.max(0, buildingRow - radius);
-  const rMax = Math.min(ROWS - 1, buildingRow + radius);
+  const rMax = Math.min(H - 1, buildingRow + radius);
   const cMin = Math.max(0, buildingCol - radius);
-  const cMax = Math.min(COLS - 1, buildingCol + radius);
+  const cMax = Math.min(W - 1, buildingCol + radius);
 
   for (let r = rMin; r <= rMax; r++) {
     for (let c = cMin; c <= cMax; c++) {
       const dr = r - buildingRow;
       const dc = c - buildingCol;
       if (dr * dr + dc * dc <= radius * radius) {
-        const cell = r * COLS + c;
+        const cell = r * W + c;
         if ((cellView[cell] & CELL_OWNER_MASK) === factionId) {
           cellView[cell] = (cellView[cell] & ~DEFENSE_MASK) | tierBits;
         }
@@ -323,8 +353,8 @@ export function applyDefenseBuilding(buildingRow, buildingCol, radius, defTier, 
   // Stamp has_building flag on the 8×8 footprint.
   for (let r = buildingRow - 4; r < buildingRow + 4; r++) {
     for (let c = buildingCol - 4; c < buildingCol + 4; c++) {
-      if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
-        cellView[r * COLS + c] |= BUILDING_MASK_JS;
+      if (r >= 0 && r < H && c >= 0 && c < W) {
+        cellView[r * W + c] |= BUILDING_MASK_JS;
       }
     }
   }
