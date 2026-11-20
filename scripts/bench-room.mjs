@@ -132,7 +132,7 @@ worker.on('message', (msg) => {
       return;
     }
     if (msg.event === 'sim-delta') {
-      // The full stream (what everyone got before fog of war).
+      // The full stream (spectators; batched to ~5 Hz) may be absent this tick.
       msg = { type: 'emit', event: 'sim-delta', payload: msg.fallback, perFaction: msg.perFaction };
     }
   }
@@ -142,17 +142,23 @@ worker.on('message', (msg) => {
   if (msg.type === 'emit') {
     counts[msg.event] = (counts[msg.event] || 0) + 1;
     if (msg.event === 'sim-delta') {
-      bytes['sim-delta'] += msg.payload.byteLength;
-      deltaPayloads.push(msg.payload);
-      applyDelta(msg.payload, owners);
-      for (const v of viewers.values()) if (!v.until) v.fullPayloads.push(msg.payload);
+      if (msg.payload) {
+        bytes['sim-delta'] += msg.payload.byteLength;
+        deltaPayloads.push(msg.payload);
+        applyDelta(msg.payload, owners);
+        for (const v of viewers.values()) if (!v.until) v.fullPayloads.push(msg.payload);
+      }
       for (const [fid, buf] of msg.perFaction || []) {
         const v = viewers.get(fid);
         if (!v || v.until) continue;
         v.payloads.push(buf);
         applyDelta(buf, v.map);
-        // Every ~10 s: the viewer's map must equal the real one in every block it sees.
-        if (counts['sim-delta'] % 250 === fid) {
+        // Every ~10 s, on a tick where the (batched) full stream was flushed so
+        // the bench's whole map is current: the viewer's map must equal it in
+        // every block it sees.
+        v.n = (v.n || 0) + 1;
+        if (msg.payload && v.n - (v.lastCheck || 0) >= 250) {
+          v.lastCheck = v.n;
           v.checks++;
           for (let b = 0; b < v.known.length; b++) {
             if (!v.known[b]) continue;
@@ -268,14 +274,16 @@ const limit = setTimeout(() => {
 }, SECONDS * 1000);
 
 // What the deltas cost on the wire. Socket.IO compresses each message of
-// 2 KB or more with permessage-deflate (server.js: threshold 2048), keeping the
+// 256 bytes or more with permessage-deflate (server.js: threshold 256), keeping the
 // compression context between messages; smaller ones go as they are.
+// WIRE_THRESHOLD: the server's permessage-deflate threshold (server.js).
+const WIRE_THRESHOLD = Number(process.env.WIRE_THRESHOLD || 256);
 async function wireBytes(payloads) {
   const deflate = zlib.createDeflateRaw();
   let out = 0;
   deflate.on('data', (c) => { out += c.length; });
   for (const p of payloads) {
-    if (p.byteLength < 2048) { out += p.byteLength; continue; }
+    if (p.byteLength < WIRE_THRESHOLD) { out += p.byteLength; continue; }
     await new Promise((r) => { deflate.write(Buffer.from(p)); deflate.flush(zlib.constants.Z_SYNC_FLUSH, r); });
     out -= 4; // permessage-deflate drops the 00 00 FF FF tail of each flush
   }
@@ -299,12 +307,12 @@ async function report(secs) {
     const parts = deltaPayloads.flatMap((p) => [Buffer.from(Uint32Array.of(p.byteLength).buffer), Buffer.from(p)]);
     fs.writeFileSync(process.env.DUMP_DELTAS, Buffer.concat(parts));
   }
-  console.log(`sim-delta on the wire (permessage-deflate) ${kb(wire)} KB/s`);
+  console.log(`sim-delta, whole map (spectators, batched ~5/s), on the wire (permessage-deflate) ${kb(wire)} KB/s`);
   console.log(`sim-delta ${kb(bytes['sim-delta'])} KB/s (${counts['sim-delta'] || 0} msgs), ` +
     `sim-stats ${kb(bytes['sim-stats'])} KB/s (${counts['sim-stats'] || 0} msgs), other events ${kb(bytes.other)} KB/s`);
   console.log(`sim-coarse (minimap, to everyone) ${kb(coarseBytes)} KB/s`);
   if (viewers.size) {
-    console.log('── fog of war: per viewer, on the wire, over its time alive (full stream → fogged stream) ──');
+    console.log('── fog of war: per viewer, on the wire, over its time alive (whole-map spectator stream → its fogged stream) ──');
     let sumFull = 0;
     let sumFog = 0;
     for (const [fid, v] of viewers) {

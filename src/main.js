@@ -716,6 +716,7 @@ let lastFrameTime = 0;
 let frameCount = 0;
 let fps = 0;
 
+let lastCoveredDraw = 0;
 function gameLoop(time) {
   if (state.debug) {
     frameCount++;
@@ -732,9 +733,15 @@ function gameLoop(time) {
 
   // Only render if game area is active
   const gameArea = document.getElementById('gameArea');
-  if (gameArea && gameArea.style.display !== 'none' && renderer) {
-      renderer.render(time);
-      drawMinimap();
+  // The end-of-match recap covers the map: behind it, redraw 4× a second.
+  const covered = !!document.getElementById('matchEndOverlay');
+  const skipFrame = covered && time - lastCoveredDraw < 250;
+  if (covered && !skipFrame) lastCoveredDraw = time;
+  if (gameArea && gameArea.style.display !== 'none' && renderer && !skipFrame) {
+      const tFrame = performance.now();
+      const SKIP = window.__owSkip || {};
+      if (!SKIP.map) renderer.render(time);
+      if (!SKIP.minimap) drawMinimap();
       
       const overlayCanvas = document.getElementById('overlayCanvas');
       const gameCanvas = document.getElementById('gameCanvas');
@@ -762,11 +769,11 @@ function gameLoop(time) {
           renderer.drawSpawnOverlay(ctx, state.spawnSelections, parseInt(state.playerFaction), state.safeZoneRadius);
         } else if (state.gameState === 'PLAYING') {
           // Name + total troops drawn at each faction's territory centroid.
-          renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
+          if (!SKIP.labels) renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
           // Building icons, then synergy links on top (tower auras are opaque
           // enough to hide anything drawn underneath them).
-          renderer.drawBuildings(ctx, state.buildings);
-          renderer.drawBuildingLinks(ctx, state.buildings);
+          if (!SKIP.buildings) renderer.drawBuildings(ctx, state.buildings);
+          if (!SKIP.buildings) renderer.drawBuildingLinks(ctx, state.buildings);
           // Active missiles flying through the air
           state.activeMissiles = renderer.drawMissiles(ctx, state.activeMissiles, state.activeExplosions);
           // Active missile blasts (expanding flash), pruned when finished.
@@ -776,6 +783,7 @@ function gameLoop(time) {
           drawBuildPreview(renderer, ctx);
         }
       }
+      renderer.stats.frameMs = (renderer.stats.frameMs || 0) + performance.now() - tFrame;
   }
   requestAnimationFrame(gameLoop);
 }

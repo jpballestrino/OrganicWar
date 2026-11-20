@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { takeDirtyRowSpans, terrainVersion, cellView, mapWidth, mapHeight, mapSizeVersion, fogEnabled, fogVersion, fogLayers, isCellVisible } from './simBridge.js';
+import { takeDirtyRects, terrainVersion, cellView, mapWidth, mapHeight, mapSizeVersion, fogEnabled, fogVersion, fogLayers, isCellVisible } from './simBridge.js';
 import { isTyping } from './typing.js';
 import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
 
@@ -691,16 +691,19 @@ export class WebGLRenderer {
         if (mapSizeVersion() !== this.mapSizeVer) this.resizeMap();
         const cellArray = cellView();
         if (cellArray) {
-            const spans = takeDirtyRowSpans();
-            if (spans.length) {
-                this.gl.activeTexture(this.gl.TEXTURE0);
-                this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
-                for (const [r0, r1] of spans) {
-                    const rows = r1 - r0 + 1;
-                    this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, r0, this.mapW, rows,
-                        this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, cellArray, r0 * this.mapW);
-                    this.stats.uploadedBytes += rows * this.mapW * 2;
+            const rects = takeDirtyRects();
+            if (rects.length) {
+                const gl = this.gl;
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, this.cellTexture);
+                // Sub-rectangles of the map: rows of the source are mapW apart.
+                gl.pixelStorei(gl.UNPACK_ROW_LENGTH, this.mapW);
+                for (const [x, y, w, h] of rects) {
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h,
+                        gl.RED_INTEGER, gl.UNSIGNED_SHORT, cellArray, y * this.mapW + x);
+                    this.stats.uploadedBytes += w * h * 2;
                 }
+                gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
                 this.stats.uploads++;
             }
         }
@@ -876,7 +879,15 @@ export class WebGLRenderer {
     drawBuildingLinks(ctx, buildings) {
         if (!buildings || buildings.length < 2) return;
         const me = parseInt(state.playerFaction);
+        // Only buildings in view (plus link range, for a partner just off
+        // screen): pairing is O(n²), and a spectator sees every building.
+        const z = this.camera.zoom;
+        const x0 = this.camera.x - LINK_RADIUS;
+        const y0 = this.camera.y - LINK_RADIUS;
+        const x1 = this.camera.x + this.canvas.width / z + LINK_RADIUS;
+        const y1 = this.camera.y + this.canvas.height / z + LINK_RADIUS;
         const linked = buildings.filter(b => b.links && !b.constructing
+            && b.col >= x0 && b.col <= x1 && b.row >= y0 && b.row <= y1
             && (b.factionId === me || isCellVisible(b.row * this.mapW + b.col)));
         if (linked.length < 2) return;
         const r2 = LINK_RADIUS * LINK_RADIUS;
