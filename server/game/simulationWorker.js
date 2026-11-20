@@ -192,6 +192,10 @@ class RoomSimWorker {
     this.fogViewers = new Set(opts.fogViewers || []);
     this.fogDisabled = opts.fog === false;
     this.fogged = new Set(); // factions that have had a fogged view (→ full view when out)
+    // Batched full-map stream for spectators (_sendDelta / _flushSpectatorDelta).
+    this.specEveryTicks = Math.max(1, Math.round(this.tickHz / 5));
+    this.specMark = new Uint8Array(TOTAL_CELLS);
+    this.specIds = [];
     this.fog.setTeams(this.teams);
     this.botThinkEveryTicks = Math.max(1, Math.floor(this.tickHz * 1.5));
     this.botBuildEveryTicks = Math.max(1, Math.floor(this.tickHz * 3));
@@ -531,28 +535,56 @@ class RoomSimWorker {
 
     const count = this.exports.simulationstate_collect_dirty_cells(this.statePtr);
     this.load.fogMs += performance.now() - tFog;
-    if (!count) return;
     // The scratch buffer can move when it grows: read the pointer after collect.
     const ptr = this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr);
     const entries = new Uint32Array(this.exports.memory.buffer, ptr, count);
-    const encoded = encodeDelta(entries);
-    const payload = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
-
-    this.profileMetrics.snapshotCount++;
-    this.profileMetrics.totalPayloadBytes += payload.byteLength;
     this.profileMetrics.totalDirtyCells += count;
-    this.load.bytes += payload.byteLength;
+
+    // The full stream — spectators and the eliminated, who see the whole map —
+    // is batched to ~5 updates a second: each changed cell once, with its owner
+    // at send time. A spectator needs no 25 Hz, and the whole map's changes 25
+    // times a second made spectating lag (messages, decoding, GPU uploads).
+    for (let i = 0; i < count; i++) {
+      const id = entries[i] & 0x1FFFFFF;
+      if (!this.specMark[id]) { this.specMark[id] = 1; this.specIds.push(id); }
+    }
+    let fallback = null;
+    if (tick % this.specEveryTicks === 0 && this.specIds.length) fallback = this._flushSpectatorDelta();
 
     if (!viewers.length) {
-      parentPort.postMessage({ type: 'emit', event: 'sim-delta', payload, stream: true }, [payload]);
+      if (fallback) {
+        this.load.bytes += fallback.byteLength;
+        parentPort.postMessage({ type: 'emit', event: 'sim-delta', payload: fallback, stream: true }, [fallback]);
+      }
       return;
     }
+    if (!count && !fallback) return;
     const tFilter = performance.now();
-    const perFaction = [...this.fog.filterDelta(entries, viewers)];
+    const perFaction = count ? [...this.fog.filterDelta(entries, viewers)] : [];
     this.load.fogMs += performance.now() - tFilter;
-    for (const [, buf] of perFaction) this.load.fogBytes = (this.load.fogBytes || 0) + buf.byteLength;
-    parentPort.postMessage({ type: 'emitFogged', event: 'sim-delta', perFaction, fallback: payload },
-      [payload, ...perFaction.map(([, b]) => b)]);
+    for (const [, buf] of perFaction) { this.load.fogBytes = (this.load.fogBytes || 0) + buf.byteLength; this.load.bytes += buf.byteLength / viewers.length; }
+    parentPort.postMessage({ type: 'emitFogged', event: 'sim-delta', perFaction, fallback },
+      [...(fallback ? [fallback] : []), ...perFaction.map(([, b]) => b)]);
+  }
+
+  // The batched full-map delta (see _sendDelta): every cell changed since the
+  // last flush, with its current owner.
+  _flushSpectatorDelta() {
+    const ids = Uint32Array.from(this.specIds).sort();
+    this.specIds = [];
+    const cells = new Uint16Array(this.exports.memory.buffer,
+      this.exports.simulationstate_get_cell_data_ptr(this.statePtr), TOTAL_CELLS);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      this.specMark[id] = 0;
+      ids[i] = (id | ((cells[id] & 0x7F) << 25)) >>> 0;
+    }
+    const enc = encodeDelta(ids);
+    const payload = enc.buffer.slice(enc.byteOffset, enc.byteOffset + enc.byteLength);
+    this.profileMetrics.snapshotCount++;
+    this.profileMetrics.totalPayloadBytes += payload.byteLength;
+    this.load.specBytes = (this.load.specBytes || 0) + payload.byteLength;
+    return payload;
   }
 
   // Per-player stats record, packed by the sim (layout: STATS_* in lib.rs).
@@ -630,6 +662,12 @@ class RoomSimWorker {
     if (fogged) {
       vision = this.fog.fullVision(factionId);
     } else {
+      // Send the batched spectator changes first, so the whole-map stream and
+      // this snapshot describe the same moment.
+      if (this.specIds.length) {
+        const flush = this._flushSpectatorDelta();
+        parentPort.postMessage({ type: 'emitFogged', event: 'sim-delta', perFaction: [], fallback: flush }, [flush]);
+      }
       // Owners, run-length encoded (see lib.rs write_full_owners).
       const runs = this.exports.simulationstate_write_full_owners(this.statePtr);
       owners = this._copyOut(this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr), runs * 4);

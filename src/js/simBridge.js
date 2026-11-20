@@ -37,7 +37,7 @@ export function setMapSize(width, height) {
   W = width; H = height; N = W * H;
   wasmMemory = { buffer: new ArrayBuffer(N * 2) };
   cellDataPtr = 0;
-  dirtyRows = new Uint8Array(H);
+  sizeTiles();
   paintedMapId = null;
   resetFog();
   // Open sea until the terrain is painted (it can take a moment to compute).
@@ -48,43 +48,65 @@ export function setMapSize(width, height) {
   return true;
 }
 
-// ── Which map rows changed since the renderer last uploaded them ────────────
-// The renderer used to upload the whole 4 MB cell texture every frame; now it
-// asks for the changed rows (takeDirtyRowSpans) and uploads only those, and
-// nothing at all when nothing changed. Every write into cell_data below marks
-// its rows.
-let dirtyRows = new Uint8Array(H);
+// ── Which parts of the map changed since the renderer last uploaded them ────
+// The renderer used to upload the whole cell texture every frame, then whole
+// changed rows; now it uploads only the changed 32×32-cell tiles (runs of
+// them along a tile row as one rectangle), and nothing when nothing changed.
+// Rows were fine for a player (changes near their land), but a spectator gets
+// every front on the map, which touched nearly every row: 4–7 MB per upload.
+// Every write into cell_data below marks its tiles.
+const TILE_SHIFT = 5;
+const TILE = 1 << TILE_SHIFT;
+let TW = 0;
+let TH = 0;
+let dirtyTiles = new Uint8Array(0);
 let anyDirty = false;
-const markRow = (r) => { dirtyRows[r] = 1; anyDirty = true; };
-function markRows(r0, r1) {
-  for (let r = Math.max(0, r0); r <= Math.min(H - 1, r1); r++) dirtyRows[r] = 1;
+function sizeTiles() {
+  TW = (W + TILE - 1) >> TILE_SHIFT;
+  TH = (H + TILE - 1) >> TILE_SHIFT;
+  dirtyTiles = new Uint8Array(TW * TH);
+}
+sizeTiles();
+const markCell = (r, c) => { dirtyTiles[(r >> TILE_SHIFT) * TW + (c >> TILE_SHIFT)] = 1; anyDirty = true; };
+function markRect(r0, r1, c0, c1) {
+  const tr0 = Math.max(0, r0) >> TILE_SHIFT;
+  const tr1 = Math.min(H - 1, r1) >> TILE_SHIFT;
+  const tc0 = Math.max(0, c0) >> TILE_SHIFT;
+  const tc1 = Math.min(W - 1, c1) >> TILE_SHIFT;
+  for (let tr = tr0; tr <= tr1; tr++) dirtyTiles.fill(1, tr * TW + tc0, tr * TW + tc1 + 1);
   anyDirty = true;
 }
-export function markAllDirty() { dirtyRows.fill(1); anyDirty = true; }
+export function markAllDirty() { dirtyTiles.fill(1); anyDirty = true; }
+
+// Rectangles [x, y, w, h] (in cells) to upload: each run of changed tiles along
+// a tile row, or the whole map when most of it changed. Clears the marks.
+// [] when nothing changed.
+export function takeDirtyRects() {
+  if (!anyDirty) return [];
+  anyDirty = false;
+  let dirty = 0;
+  for (let i = 0; i < dirtyTiles.length; i++) dirty += dirtyTiles[i];
+  if (dirty * 2 > dirtyTiles.length) { dirtyTiles.fill(0); return [[0, 0, W, H]]; }
+  const rects = [];
+  for (let tr = 0; tr < TH; tr++) {
+    const y = tr << TILE_SHIFT;
+    const h = Math.min(TILE, H - y);
+    for (let tc = 0; tc < TW; tc++) {
+      if (!dirtyTiles[tr * TW + tc]) continue;
+      const start = tc;
+      while (tc + 1 < TW && dirtyTiles[tr * TW + tc + 1]) tc++;
+      const x = start << TILE_SHIFT;
+      rects.push([x, y, Math.min(W, (tc + 1) << TILE_SHIFT) - x, h]);
+    }
+  }
+  dirtyTiles.fill(0);
+  return rects;
+}
 
 // Bumped whenever the terrain bits are (re)written, so the renderer re-paints
 // its baked terrain texture (once per map, not per frame).
 let terrainVer = 0;
 export const terrainVersion = () => terrainVer;
-
-// Spans [firstRow, lastRow] to upload, merging spans less than `maxGap` rows
-// apart (fewer, larger uploads). Clears the marks. [] when nothing changed.
-export function takeDirtyRowSpans(maxGap = 16) {
-  if (!anyDirty) return [];
-  const spans = [];
-  let start = -1;
-  let last = -1;
-  for (let r = 0; r < H; r++) {
-    if (!dirtyRows[r]) continue;
-    if (start >= 0 && r - last <= maxGap) { last = r; continue; }
-    if (start >= 0) spans.push([start, last]);
-    start = last = r;
-  }
-  if (start >= 0) spans.push([start, last]);
-  dirtyRows.fill(0);
-  anyDirty = false;
-  return spans;
-}
 
 export function registerSim({ memory, cellDataPtr: ptr }) {
   wasmMemory = memory;
@@ -226,7 +248,8 @@ export function applyOwnerDelta(buf) {
     const next = (v & ~CELL_OWNER_MASK) | (owner & CELL_OWNER_MASK);
     if (next === v) return;
     cells[id] = next;
-    markRow((id / W) | 0);
+    const r = (id / W) | 0;
+    markCell(r, id - r * W);
     if (n === changedBuf.length) {
       const bigger = new Uint32Array(changedBuf.length * 2);
       bigger.set(changedBuf);
@@ -246,15 +269,31 @@ export function resyncZonesForCells(changed, buildings) {
   if (!changed.length || !buildings || !buildings.length) return;
   const zones = buildings.filter((b) => b.type === 'defense' && !b.constructing);
   if (!zones.length) return;
+  // Which towers can cover each 64×64 area, so a cell only checks the few
+  // nearby (a spectator's deltas cover the whole map, with 100+ towers on it).
+  const GS = 6;
+  const gw = (W >> GS) + 1;
+  const grid = new Map();
+  for (const b of zones) {
+    for (let gr = Math.max(0, b.row - b.radius) >> GS; gr <= (b.row + b.radius) >> GS; gr++) {
+      for (let gc = Math.max(0, b.col - b.radius) >> GS; gc <= (b.col + b.radius) >> GS; gc++) {
+        const k = gr * gw + gc;
+        if (!grid.has(k)) grid.set(k, []);
+        grid.get(k).push(b);
+      }
+    }
+  }
   const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
   for (let i = 0; i < changed.length; i++) {
     const id = changed[i];
     const r = (id / W) | 0;
     const c = id - r * W;
+    const near = grid.get((r >> GS) * gw + (c >> GS));
+    if (!near) continue;
     const owner = cells[id] & CELL_OWNER_MASK;
     let inZone = false;
     let tierBits = -1;
-    for (const b of zones) {
+    for (const b of near) {
       const dr = r - b.row;
       const dc = c - b.col;
       if (dr * dr + dc * dc > b.radius * b.radius) continue;
@@ -263,7 +302,7 @@ export function resyncZonesForCells(changed, buildings) {
     }
     if (!inZone) continue;
     const next = (cells[id] & ~DEFENSE_MASK) | (tierBits >= 0 ? tierBits : 0);
-    if (next !== cells[id]) { cells[id] = next; markRow(r); }
+    if (next !== cells[id]) { cells[id] = next; markCell(r, c); }
   }
 }
 
@@ -341,8 +380,8 @@ export function applyVision(buf) {
         const next = (cells[id] & ~CELL_OWNER_MASK) | (owners[k++] & CELL_OWNER_MASK);
         if (next !== cells[id]) { cells[id] = next; changedBuf[n++] = id; }
       }
-      markRow(r);
     }
+    markRect(r0, r0 + BLOCK - 1, c0, c0 + BLOCK - 1);
   }
   for (const b of hidden) vis[b] = 0;
   fogOn = true;
@@ -478,7 +517,7 @@ export function removeDefenseBuilding(buildingRow, buildingCol, radius) {
       }
     }
   }
-  markRows(Math.min(rMin, buildingRow - 4), Math.max(rMax, buildingRow + 3));
+  markRect(Math.min(rMin, buildingRow - 4), Math.max(rMax, buildingRow + 3), Math.min(cMin, buildingCol - 4), Math.max(cMax, buildingCol + 3));
 }
 
 // Re-derive every building's fortification zone after an owner snapshot.
@@ -540,5 +579,5 @@ export function applyDefenseBuilding(buildingRow, buildingCol, radius, defTier, 
       }
     }
   }
-  markRows(Math.min(rMin, buildingRow - 4), Math.max(rMax, buildingRow + 3));
+  markRect(Math.min(rMin, buildingRow - 4), Math.max(rMax, buildingRow + 3), Math.min(cMin, buildingCol - 4), Math.max(cMax, buildingCol + 3));
 }

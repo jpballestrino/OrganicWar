@@ -446,3 +446,19 @@ Measured (bench-room, per player on the wire, full → fogged): 20 players
 viewer's map equals the real one in every block it sees (0 cells wrong).
 Fog work ~3 ms/s per viewer. Tests: cargo 8/8 (both builds), vitest 49/49,
 smoke-browser standard + mega, smoke-network, smoke-camera.
+
+## Session 13 — spectating was laggy
+
+Measured with `SPECTATE=1 node scripts/bench-render.mjs` (Mega Battle, headless):
+spectating 27.2 ms/frame CPU, 11.6 MB/s to the GPU; recap open 123.5 ms/frame.
+- [x] GPU upload by 32×32 tiles instead of whole rows (spectators change cells all
+      over the map): 24 → 0.14 ms/frame, 11.6 → 0.4 MB/s.
+- [x] Recap: no backdrop blur over the live map; map redrawn 4×/s behind it.
+- [x] Link pairing only among buildings in view; tower-zone lookup by grid.
+- [x] Spectator stream batched to 5/s (each cell once, current owner): 28.8 →
+      8.8 KB/s on the wire (20 players).
+- [x] permessage-deflate threshold 2048 → 256: a player's fogged stream 9.1 →
+      2.8 KB/s.
+- [x] Blitz button refreshes the moment it's pressed (the browser test's
+      intermittent "Blitz button shows it is active" was a slow frame).
+Result: spectating 27.2 → 1.6 ms/frame CPU, recap 123.5 → 3.8 ms/frame.

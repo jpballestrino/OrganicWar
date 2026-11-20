@@ -68,6 +68,8 @@ function toggleMode(action) {
     state.blitzReadyAt = performance.now() + 51000;
     state.blitzActiveUntil = performance.now() + 6000;
     emitInput({ type: action.input });
+    // Show it at once: the per-frame refresh can lag on a slow frame.
+    syncBuildBarActive();
     return;
   }
   if (state.activePurchaseMode === action.mode) {

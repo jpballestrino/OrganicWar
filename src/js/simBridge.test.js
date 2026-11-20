@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { encodeDelta, decodeDelta } from './deltaCodec.js';
 import {
   registerSim, applyOwnerDelta, resyncZonesForCells, resyncBuildingZones,
-  takeDirtyRowSpans, markAllDirty,
+  takeDirtyRects, markAllDirty,
 } from './simBridge.js';
 import { TOTAL_CELLS, COLS, ROWS } from './constants.js';
 
@@ -41,25 +41,42 @@ function freshMap() {
   return new Uint16Array(memory.buffer);
 }
 
-describe('rows handed to the GPU', () => {
-  it('nothing to upload when nothing changed; only the changed rows otherwise', () => {
+describe('rectangles handed to the GPU', () => {
+  it('nothing to upload when nothing changed; only the changed tiles otherwise', () => {
     freshMap();
-    takeDirtyRowSpans(); // registering marks everything
-    expect(takeDirtyRowSpans()).toEqual([]);
-    applyOwnerDelta(encodeDelta(Uint32Array.of(pack(10 * COLS + 5, 3), pack(500 * COLS, 4))));
-    expect(takeDirtyRowSpans()).toEqual([[10, 10], [500, 500]]);
+    takeDirtyRects(); // registering marks everything
+    expect(takeDirtyRects()).toEqual([]);
+    applyOwnerDelta(encodeDelta(Uint32Array.of(pack(10 * COLS + 5, 3), pack(500 * COLS + 1000, 4))));
+    // The 32×32 tiles holding (10, 5) and (500, 1000).
+    expect(takeDirtyRects()).toEqual([[0, 0, 32, 32], [992, 480, 32, 32]]);
     // Writing the same owner again changes nothing.
     applyOwnerDelta(encodeDelta(Uint32Array.of(pack(10 * COLS + 5, 3))));
-    expect(takeDirtyRowSpans()).toEqual([]);
+    expect(takeDirtyRects()).toEqual([]);
   });
 
-  it('merges nearby rows into one upload', () => {
+  it('joins neighbouring tiles along a row; the whole map when most of it changed', () => {
     freshMap();
-    takeDirtyRowSpans();
-    applyOwnerDelta(encodeDelta(Uint32Array.of(pack(100 * COLS, 1), pack(105 * COLS, 1), pack(300 * COLS, 1))));
-    expect(takeDirtyRowSpans()).toEqual([[100, 105], [300, 300]]);
+    takeDirtyRects();
+    applyOwnerDelta(encodeDelta(Uint32Array.of(pack(100 * COLS + 40, 1), pack(100 * COLS + 70, 1), pack(100 * COLS + 300, 1))));
+    expect(takeDirtyRects()).toEqual([[32, 96, 64, 32], [288, 96, 32, 32]]);
     markAllDirty();
-    expect(takeDirtyRowSpans()).toEqual([[0, ROWS - 1]]);
+    expect(takeDirtyRects()).toEqual([[0, 0, COLS, ROWS]]);
+  });
+
+  it('a spectator-like delta (fronts all over the map) uploads far less than the rows it touches', () => {
+    freshMap();
+    takeDirtyRects();
+    const ids = [];
+    for (let k = 0; k < 60; k++) {
+      const r0 = (k * 97) % (ROWS - 20);
+      const c0 = (k * 389) % (COLS - 20);
+      for (let i = 0; i < 40; i++) ids.push((r0 + (i % 12)) * COLS + c0 + (i >> 2));
+    }
+    const sorted = [...new Set(ids)].sort((a, b) => a - b);
+    applyOwnerDelta(encodeDelta(Uint32Array.from(sorted.map((i) => pack(i, 2)))));
+    const bytes = takeDirtyRects().reduce((n, [, , w, h]) => n + w * h * 2, 0);
+    const rows = new Set(sorted.map((i) => Math.floor(i / COLS))).size;
+    expect(bytes).toBeLessThan(rows * COLS * 2 / 4);
   });
 });
 

@@ -8,7 +8,7 @@ import { escapeHtml } from './escape.js';
 import { MAP_LABELS } from './mapGen.js';
 import { onSnapshotStats } from './matchFeel.js';
 import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt, MAP_SIZES } from './constants.js';
-import { updateBuildBar, rejectMessage } from './buildBar.js';
+import { updateBuildBar, rejectMessage, syncBuildBarActive } from './buildBar.js';
 
 // The handshake carries the player's UTC offset so the server rolls daily
 // missions and streaks over at the player's own midnight.
@@ -926,6 +926,7 @@ function applyStats({ landCells, dominationShare, bountyFid, players }) {
   const now = performance.now();
   state.blitzActiveUntil = now + me.blitzActive * 1000;
   state.blitzReadyAt = now + me.blitzCooldown * 1000;
+  syncBuildBarActive();
   state.playerGold = Math.floor(me.gold);
   setText('lblMyGold', fmtInt(me.gold));
   setText('lblMyGoldRate', `+${fmtInt(Math.round(me.income))}/s`);

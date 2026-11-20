@@ -76,9 +76,12 @@ export const io = new Server(httpServer, {
     origin: CORS_ORIGIN,
     methods: ['GET', 'POST'],
   },
-  // Compress only frames worth it: the 20×/s owner deltas are mostly small,
-  // and deflating every tiny frame for every client costs more CPU than it saves.
-  perMessageDeflate: { threshold: 2048 },
+  // Compress every frame above 256 bytes. Under fog of war a player's 25/s
+  // map deltas are a few hundred bytes each; with the compression context
+  // kept between messages they shrink ~3× (bench-room.mjs, WIRE_THRESHOLD:
+  // 9.1 → 2.8 KB/s per player at 2048 → 256). Cost ~0.1 ms per message on
+  // zlib's thread pool — tens of ms per second for a busy room.
+  perMessageDeflate: { threshold: 256 },
   // Notice dead connections within ~20 s instead of the default ~45 s, so a
   // player whose network died is shown as reconnecting (and their faction
   // handed to a bot after the grace period) promptly.
