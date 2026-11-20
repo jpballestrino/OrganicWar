@@ -3,7 +3,7 @@ import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken, isLoggedIn } from './auth.js';
 import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
-import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain, setMapSize } from './simBridge.js';
+import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain, setMapSize, resetFog, setFogOff, applyVision, applyCoarse, setCoarse, clearOwnersForFog } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { MAP_LABELS } from './mapGen.js';
 import { onSnapshotStats } from './matchFeel.js';
@@ -447,6 +447,7 @@ export function initNetwork() {
     // client may have painted the default map at startup). Safe pre-match: only
     // terrain bits change and owner bits are still all-neutral.
     useRoomMapSize(config.mapWidth, config.mapHeight);
+    resetFog();
     if (config.currentPreset) repaintTerrain(config.currentPreset);
     state.isQuickPlay = config.isQuickPlay || false;
     state.isRankedMatch = config.isRankedMatch || false;
@@ -548,6 +549,7 @@ export function initNetwork() {
     // received in init-config.
     const mapId = (data && data.mapId) || state.currentPreset;
     useRoomMapSize(data && data.mapWidth, data && data.mapHeight);
+    resetFog();
     if (mapId) repaintTerrain(mapId);
 
     const gameArea = document.getElementById('gameArea');
@@ -679,12 +681,29 @@ export function initNetwork() {
     }
   });
 
+  // Fog of war: blocks that came into view (with their owners) or left it.
+  socket.on('sim-vision', (buf) => {
+    const changed = applyVision(buf);
+    resyncZonesForCells(changed, state.buildings);
+  });
+  // The minimap / fog layer: one owner per 8×8 block, changes once a second.
+  socket.on('sim-coarse', (buf) => applyCoarse(buf));
+
   // Per-player numbers, ~5×/s.
   socket.on('sim-stats', (buf) => applyStats(decodeStats(buf)));
 
   // Everything at once, for a client that (re)joined a running match.
-  socket.on('sim-full', ({ owners, buildings, stats }) => {
-    applyOwnerRuns(owners);
+  // A playing faction gets a fogged one (`vision`: what it sees, owners:
+  // null); a spectator — or a player just eliminated — the whole map.
+  socket.on('sim-full', ({ owners, vision, coarse, buildings, stats }) => {
+    setCoarse(coarse);
+    if (owners) {
+      applyOwnerRuns(owners);
+      setFogOff();
+    } else {
+      clearOwnersForFog();
+      applyVision(vision);
+    }
     clearAllBuildingBits();
     const now = performance.now();
     state.buildings = (buildings || []).map((b) => ({

@@ -278,6 +278,15 @@ const BLOCK_UNKNOWN: u8 = 0;
 const BLOCK_QUIET: u8 = 1;
 const BLOCK_ACTIVE: u8 = 2;
 
+// ── Fog of war ──
+// A player sees the 8×8 blocks within VISION_RADIUS_BLOCKS of any block holding
+// its land, plus everything within range of its completed silos (so it can aim
+// them). compute_vision() rebuilds `vision` — one u64 per block, bit (f − 1) set
+// when faction f sees it (MAX_PLAYERS = 64 fits exactly) — and `coarse_owner`,
+// the owner of each block's centre cell (the minimap, and what the fogged parts
+// of the map show). The worker sends each player only the changes it can see.
+const VISION_RADIUS_BLOCKS: usize = 6; // 48 cells past the player's own land
+
 // The 8 neighbour offsets (row, col), in the same order as get_neighbor's
 // direction index: 0-3 cardinal (up, right, down, left), 4-7 diagonal.
 const NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
@@ -309,6 +318,11 @@ pub struct SimulationState {
     // Per-block scan state (BLOCK_UNKNOWN / QUIET / ACTIVE) — see the block index
     // consts above.
     block_state: Vec<u8>,
+    // Fog of war (compute_vision): who sees each block, scratch for the
+    // dilation, and each block's centre-cell owner.
+    vision: Vec<u64>,
+    vision_scratch: Vec<u64>,
+    coarse_owner: Vec<u8>,
 
     // Scratch buffer for delta export: one u32 per changed cell, already in the
     // form `cell_id (25 bits) | owner << 25`. Grows on demand (it used to
@@ -469,6 +483,9 @@ impl SimulationState {
             tier_changed: vec![0; (TOTAL_CELLS + 63) / 64],
             tier_at_sample: std::collections::HashMap::new(),
             block_state: vec![BLOCK_UNKNOWN; BLOCKS_W * BLOCKS_H],
+            vision: vec![0; BLOCKS_W * BLOCKS_H],
+            vision_scratch: vec![0; BLOCKS_W * BLOCKS_H * (VISION_RADIUS_BLOCKS + 1)],
+            coarse_owner: vec![0; BLOCKS_W * BLOCKS_H],
             delta_scratch: Vec::new(),
             front_candidates: vec![Vec::new(); PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
             dirty_cells: Vec::new(),
@@ -1582,6 +1599,102 @@ impl SimulationState {
 
     #[wasm_bindgen]
     pub fn get_delta_scratch_ptr(&self) -> *const u32 { self.delta_scratch.as_ptr() }
+
+    /// Rebuild the fog of war: `vision` (per block, a bit per faction that sees
+    /// it) and `coarse_owner` (per block, its centre cell's owner). Cost is a
+    /// pass over the blocks (quiet blocks are one read, border blocks 64) plus
+    /// a separable disk dilation — about 3R+1 ORs per block.
+    #[wasm_bindgen]
+    pub fn compute_vision(&mut self) {
+        let nb = BLOCKS_W * BLOCKS_H;
+        let bit = |o: u16| -> u64 {
+            if o >= 1 && (o as usize) <= 64 { 1u64 << (o - 1) } else { 0 }
+        };
+        // 1. Which factions hold land in each block (scratch row 0 = H_0).
+        for br in 0..BLOCKS_H {
+            for bc in 0..BLOCKS_W {
+                let b = br * BLOCKS_W + bc;
+                let r0 = br << BLOCK_SHIFT;
+                let c0 = bc << BLOCK_SHIFT;
+                let mut mask = 0u64;
+                if self.block_is_active(br, bc) {
+                    let r1 = (r0 + BLOCK_SIZE).min(MAP_HEIGHT);
+                    let c1 = (c0 + BLOCK_SIZE).min(MAP_WIDTH);
+                    for r in r0..r1 {
+                        for &cell in &self.cell_data[r * MAP_WIDTH + c0..r * MAP_WIDTH + c1] {
+                            mask |= bit(cell & OWNER_MASK);
+                        }
+                    }
+                } else {
+                    mask = bit(self.cell_data[r0 * MAP_WIDTH + c0] & OWNER_MASK);
+                }
+                self.vision_scratch[b] = mask;
+                let cr = (r0 + BLOCK_SIZE / 2).min(MAP_HEIGHT - 1);
+                let cc = (c0 + BLOCK_SIZE / 2).min(MAP_WIDTH - 1);
+                self.coarse_owner[b] = (self.cell_data[cr * MAP_WIDTH + cc] & OWNER_MASK) as u8;
+            }
+        }
+        // 2. Horizontal dilations: H_w(x) = OR of presence over [x − w, x + w].
+        let rad = VISION_RADIUS_BLOCKS;
+        for w in 1..=rad {
+            for br in 0..BLOCKS_H {
+                for bc in 0..BLOCKS_W {
+                    let b = br * BLOCKS_W + bc;
+                    let mut m = self.vision_scratch[(w - 1) * nb + b];
+                    if bc >= w { m |= self.vision_scratch[b - w]; }
+                    if bc + w < BLOCKS_W { m |= self.vision_scratch[b + w]; }
+                    self.vision_scratch[w * nb + b] = m;
+                }
+            }
+        }
+        // 3. Disk: row dy away uses the half-width that fits the circle.
+        let half: Vec<usize> = (0..=rad)
+            .map(|dy| (((rad * rad - dy * dy) as f32).sqrt() + 0.35) as usize)
+            .collect();
+        for br in 0..BLOCKS_H {
+            for bc in 0..BLOCKS_W {
+                let mut m = 0u64;
+                let lo = br.saturating_sub(rad);
+                let hi = (br + rad).min(BLOCKS_H - 1);
+                for r in lo..=hi {
+                    let dy = if r > br { r - br } else { br - r };
+                    m |= self.vision_scratch[half[dy] * nb + r * BLOCKS_W + bc];
+                }
+                self.vision[br * BLOCKS_W + bc] = m;
+            }
+        }
+        // 4. Completed silos see everything they can hit.
+        for i in 0..self.defense_buildings.len() {
+            if self.building_type[i] != BTYPE_SILO || self.defense_build_complete[i] != 0 { continue; }
+            let owner_bit = bit(self.building_owner[i] as u16);
+            if owner_bit == 0 { continue; }
+            let center = self.defense_buildings[i] as usize;
+            let cbr = (center / MAP_WIDTH) >> BLOCK_SHIFT;
+            let cbc = (center % MAP_WIDTH) >> BLOCK_SHIFT;
+            let rb = (self.silo_range(i) / BLOCK_SIZE as f32).ceil() as i32;
+            for dy in -rb..=rb {
+                let r = cbr as i32 + dy;
+                if r < 0 || r >= BLOCKS_H as i32 { continue; }
+                let w = (((rb * rb - dy * dy) as f32).sqrt()) as i32;
+                let c_lo = (cbc as i32 - w).max(0) as usize;
+                let c_hi = (cbc as i32 + w).min(BLOCKS_W as i32 - 1) as usize;
+                for c in c_lo..=c_hi {
+                    self.vision[r as usize * BLOCKS_W + c] |= owner_bit;
+                }
+            }
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn get_vision_ptr(&self) -> *const u64 { self.vision.as_ptr() }
+    #[wasm_bindgen]
+    pub fn get_coarse_owner_ptr(&self) -> *const u8 { self.coarse_owner.as_ptr() }
+    #[wasm_bindgen]
+    pub fn blocks_w() -> u32 { BLOCKS_W as u32 }
+    #[wasm_bindgen]
+    pub fn blocks_h() -> u32 { BLOCKS_H as u32 }
+    #[wasm_bindgen]
+    pub fn vision_radius_blocks() -> u32 { VISION_RADIUS_BLOCKS as u32 }
 
     /// Run-length encode the owner of EVERY cell into the delta scratch buffer
     /// and return the number of runs. Each run is one u32:
@@ -2973,6 +3086,40 @@ mod tests {
         assert_eq!(s.building_links[city] & LINK_WALLED_CITY, 0);
         assert_eq!(s.building_links[city] & LINK_WORKFORCE, LINK_WORKFORCE, "the mine link stays");
         assert_eq!(s.building_links.len(), s.defense_buildings.len(), "parallel vecs stay aligned");
+    }
+
+    // Fog of war: a faction sees its land and VISION_RADIUS_BLOCKS around it,
+    // not a far rival; a completed silo also reveals everything in its range.
+    #[test]
+    fn vision_covers_own_land_its_surroundings_and_silo_range() {
+        let mut s = SimulationState::new();
+        s.init_players(2, 0, 50, 5000);
+        s.set_tick_hz(25);
+        s.spawn_faction(1, 400, 400);
+        s.spawn_faction(2, 400, 600); // 200 cells east: out of sight, inside silo range
+        s.tick();
+        s.compute_vision();
+        let sees = |s: &SimulationState, f: u32, row: usize, col: usize| {
+            s.vision[(row >> BLOCK_SHIFT) * BLOCKS_W + (col >> BLOCK_SHIFT)] & (1u64 << (f - 1)) != 0
+        };
+        assert!(sees(&s, 1, 400, 400), "own land");
+        assert!(sees(&s, 1, 400, 400 + 12 + 40), "40 cells past the border");
+        assert!(!sees(&s, 1, 400, 400 + 12 + 70), "70 cells past the border is fogged");
+        assert!(!sees(&s, 1, 400, 600), "the far rival is fogged");
+        assert!(sees(&s, 2, 400, 600) && !sees(&s, 2, 400, 400));
+        assert_eq!(s.coarse_owner[(400 >> BLOCK_SHIFT) * BLOCKS_W + (600 >> BLOCK_SHIFT)], 2, "minimap block");
+
+        // A silo of faction 1: under construction it reveals nothing...
+        s.player_gold[1] = 50_000.0;
+        assert!(s.place_silo(1, 400, 404));
+        s.compute_vision();
+        assert!(!sees(&s, 1, 400, 600));
+        // ...completed, it sees the rival it can hit.
+        for _ in 0..(SILO_BUILD_SECONDS as u32 * 25 + 2) { s.tick(); }
+        s.compute_vision();
+        assert!(sees(&s, 1, 400, 600), "a silo sees its range");
+        assert!(!sees(&s, 1, 400, 404 + SILO_RANGE as usize + 20), "but not past it");
+        assert!(!sees(&s, 2, 400, 400), "the rival gains nothing");
     }
 
     // Bounty: a runaway leader is marked, is cheaper to attack and pays gold.

@@ -431,3 +431,18 @@ Five proposals, all applied:
 Measured (64 players, before → after): spawn nearest neighbour median
 ~75 → ~185 cells (min ≥ 140); free land gone 18–21 s → ~25 s; tick 2.6 →
 3.7–4.4 ms (bigger map); wire 38–40 KB/s per client.
+
+## Session 12 — fog of war and minimap ("only surrounding changes transmitted")
+
+- [x] Sim: compute_vision — per 8×8 block a u64 of factions that see it (own
+      land + 48 cells, completed silos see their whole range) + coarse owner.
+- [x] Worker: per-player sim-delta, sim-vision reveals (with owners), sim-coarse
+      minimap layer to all, fogged sim-full, unfogged spectator view on
+      elimination, shared vision for guild-war teammates.
+- [x] Client: fog in the shader (coarse empires, dimmed), rival buildings hidden
+      in fog, missiles can't be aimed into fog, minimap with camera rectangle.
+Measured (bench-room, per player on the wire, full → fogged): 20 players
+31.9 → 9.1 KB/s; Mega 56.4 → 7.2 KB/s; minimap layer +0.7 / 1.2 KB/s. Every
+viewer's map equals the real one in every block it sees (0 cells wrong).
+Fog work ~3 ms/s per viewer. Tests: cargo 8/8 (both builds), vitest 49/49,
+smoke-browser standard + mega, smoke-network, smoke-camera.

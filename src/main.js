@@ -6,13 +6,14 @@ import { initRankingsUI } from './js/rankingsUI.js';
 import { initFeedbackUI } from './js/feedbackUI.js';
 import { state } from './js/state.js';
 import { WebGLRenderer } from './js/renderer.js';
-import { setMapSize, repaintTerrain, prefetchTerrain, getCellOwner, getCellTerrain, countOwnedCells, mapWidth, mapHeight } from './js/simBridge.js';
+import { setMapSize, repaintTerrain, prefetchTerrain, getCellOwner, getCellTerrain, countOwnedCells, mapWidth, mapHeight, fogLayers, fogEnabled } from './js/simBridge.js';
 import { MAP_SIZES } from './js/constants.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
 import { renderProgressCards } from './js/progression.js';
 import { initAds } from './js/ads.js';
 import { isTyping } from './js/typing.js';
+import { initMinimap, drawMinimap } from './js/minimap.js';
 import { initBuildBar, handleBuildClick, cancelBuildMode, drawBuildPreview, syncBuildBarActive } from './js/buildBar.js';
 
 let renderer = null;
@@ -527,6 +528,12 @@ if (urlParams.has('debug')) {
   // Lets scripts/smoke-browser.mjs inspect the client.
   window.__owState = state;
   window.__owCountOwned = countOwnedCells;
+  // Fog of war state (browser tests): on/off, blocks seen, minimap blocks owned.
+  window.__owFog = () => {
+    const { vis, coarse } = fogLayers();
+    return { on: fogEnabled(), seen: vis.reduce((n, v) => n + (v ? 1 : 0), 0), blocks: vis.length,
+      coarseOwners: new Set(coarse.filter((o) => o)).size };
+  };
   window.__owSocket = socket;
   const debugDiv = document.createElement('div');
   debugDiv.id = 'debugUI';
@@ -580,6 +587,7 @@ async function startSimulationEngine() {
     const canvas = document.getElementById('gameCanvas');
     renderer = new WebGLRenderer(canvas);
     window.renderer = renderer; // Expose globally for network events
+    initMinimap(renderer);
 
     console.log('Map cache & WebGL renderer started');
 
@@ -726,6 +734,7 @@ function gameLoop(time) {
   const gameArea = document.getElementById('gameArea');
   if (gameArea && gameArea.style.display !== 'none' && renderer) {
       renderer.render(time);
+      drawMinimap();
       
       const overlayCanvas = document.getElementById('overlayCanvas');
       const gameCanvas = document.getElementById('gameCanvas');

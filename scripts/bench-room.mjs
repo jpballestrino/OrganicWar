@@ -5,6 +5,9 @@
 //   npm run build:wasm:node            # once, and after any Rust change
 //   node scripts/bench-room.mjs        # options: PLAYERS=20 MAP=north_america
 //                                      #          SECONDS=600 SIM_TICK_HZ=25
+//                                      #          FOG_VIEWERS=4 (fog of war: the
+//                                      #          first N factions are measured as
+//                                      #          human viewers; 0 = no fog)
 //
 // Exits non-zero if the worker crashes, a message is malformed, or the
 // full-state sync does not reproduce the delta-built map.
@@ -15,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { decodeDelta } from '../src/js/deltaCodec.js';
+import { decodeVision, BLOCK } from '../src/js/fogCodec.js';
 import { placeSpawns, nearestNeighbourDistances } from '../server/game/spawns.js';
 import { safeZoneRadiusFor, MAP_SIZES, mapSizeFor } from '../src/js/constants.js';
 
@@ -29,6 +33,16 @@ const TEAMS = process.env.TEAMS === '2';
 const MAP_SIZE = process.env.MAP_SIZE || mapSizeFor(PLAYERS);
 const { width: MAP_W, height: MAP_H } = MAP_SIZES[MAP_SIZE];
 const TOTAL_CELLS = MAP_W * MAP_H;
+
+// Fog of war: these factions get the per-player stream (as human players
+// would); the bench checks it and compares its size with the full stream.
+const FOG_VIEWERS = process.env.FOG_VIEWERS === undefined ? 4 : parseInt(process.env.FOG_VIEWERS) || 0;
+const BW = MAP_W / BLOCK;
+const viewers = new Map(); // fid → { map, known, payloads, fullPayloads, until, checks, bad }
+for (let f = 1; f <= Math.min(FOG_VIEWERS, PLAYERS); f++) {
+  viewers.set(f, { map: new Uint8Array(TOTAL_CELLS), known: new Uint8Array(BW * (MAP_H / BLOCK)), payloads: [], fullPayloads: [], since: Date.now(), until: 0, checks: 0, bad: 0 });
+}
+let coarseBytes = 0;
 
 const fail = (msg) => { console.error(`FAIL  ${msg}`); process.exitCode = 1; };
 
@@ -57,6 +71,7 @@ const worker = new Worker(WORKER, {
         : { share: 0.65, decayStartSec: 180, decayEverySec: 30, decayStep: 0.05, floor: 0.40 },
       // TEAMS=2 splits the factions into two teams (as in a guild war):
       // the first half is team "A", the rest team "B".
+      fogViewers: [...viewers.keys()],
       teams: TEAMS ? Object.fromEntries(Array.from({ length: PLAYERS }, (_, i) => [i + 1, i < PLAYERS / 2 ? 'A' : 'B'])) : null,
     },
     env: { SIM_TICK_HZ: process.env.SIM_TICK_HZ },
@@ -98,12 +113,55 @@ worker.on('message', (msg) => {
   if (msg.type === 'load-report') { loads.push(msg); return; }
   if (msg.type === 'log' && msg.level !== 'info') { console.log(`[worker ${msg.level}] ${msg.payload}`); return; }
 
+  if (msg.type === 'emitFogged') {
+    if (msg.event === 'sim-vision') {
+      for (const [fid, buf] of msg.perFaction) {
+        const v = viewers.get(fid);
+        if (!v || v.until) continue;
+        v.payloads.push(buf);
+        const { shown, hidden, owners: o } = decodeVision(buf);
+        let k = 0;
+        for (const b of shown) {
+          v.known[b] = 1;
+          const r0 = Math.floor(b / BW) * BLOCK;
+          const c0 = (b % BW) * BLOCK;
+          for (let r = r0; r < r0 + BLOCK; r++) for (let c = c0; c < c0 + BLOCK; c++) v.map[r * MAP_W + c] = o[k++];
+        }
+        for (const b of hidden) v.known[b] = 0;
+      }
+      return;
+    }
+    if (msg.event === 'sim-delta') {
+      // The full stream (what everyone got before fog of war).
+      msg = { type: 'emit', event: 'sim-delta', payload: msg.fallback, perFaction: msg.perFaction };
+    }
+  }
+
+  if (msg.type === 'emit' && msg.event === 'sim-coarse') { coarseBytes += msg.payload.byteLength; return; }
+
   if (msg.type === 'emit') {
     counts[msg.event] = (counts[msg.event] || 0) + 1;
     if (msg.event === 'sim-delta') {
       bytes['sim-delta'] += msg.payload.byteLength;
       deltaPayloads.push(msg.payload);
       applyDelta(msg.payload, owners);
+      for (const v of viewers.values()) if (!v.until) v.fullPayloads.push(msg.payload);
+      for (const [fid, buf] of msg.perFaction || []) {
+        const v = viewers.get(fid);
+        if (!v || v.until) continue;
+        v.payloads.push(buf);
+        applyDelta(buf, v.map);
+        // Every ~10 s: the viewer's map must equal the real one in every block it sees.
+        if (counts['sim-delta'] % 250 === fid) {
+          v.checks++;
+          for (let b = 0; b < v.known.length; b++) {
+            if (!v.known[b]) continue;
+            const r0 = Math.floor(b / BW) * BLOCK;
+            const c0 = (b % BW) * BLOCK;
+            for (let r = r0; r < r0 + BLOCK; r++) for (let c = c0; c < c0 + BLOCK; c++) if (v.map[r * MAP_W + c] !== owners[r * MAP_W + c]) v.bad++;
+          }
+        }
+      }
     } else if (msg.event === 'sim-stats') {
       bytes['sim-stats'] += msg.payload.byteLength;
       lastStats = msg.payload;
@@ -134,6 +192,7 @@ worker.on('message', (msg) => {
       eliminated++;
       if ((Date.now() - started) / 1000 < 90) earlyOuts++;
       const p = msg.payload;
+      if (viewers.has(p.factionId)) viewers.get(p.factionId).until = Date.now();
       console.log(`${elapsed()}  faction ${p.factionId} out (#${p.placement}, by ${p.killerId || '—'}), ${p.aliveCount} left`);
     }
     // Midway, ask for a full-state sync and check it matches the delta-built map.
@@ -141,6 +200,13 @@ worker.on('message', (msg) => {
       fullCheckDone = true;
       worker.postMessage({ type: 'fullState', socketId: 'probe' });
     }
+    return;
+  }
+
+  // An eliminated viewer's spectator view: the whole map, unfogged.
+  if (msg.type === 'emitToFaction' && msg.event === 'sim-full') {
+    const v = viewers.get(msg.factionId);
+    if (v && msg.payload.owners && !msg.payload.vision) v.spectatorView = true;
     return;
   }
 
@@ -224,6 +290,7 @@ async function report(secs) {
   console.log(`tick cost      avg ${avg('avgTickMs').toFixed(2)} ms, worst ${max('maxTickMs').toFixed(1)} ms`);
   console.log(`tick budget    avg ${(avg('tickBudgetUsed') * 100).toFixed(1)}%, peak ${(max('tickBudgetUsed') * 100).toFixed(1)}% of one core`);
   console.log(`room memory    ${max('wasmMB')} MB of WASM heap (plus one V8 isolate)`);
+  if (viewers.size) console.log(`fog of war     avg ${avg('fogMsPerSec').toFixed(1)} ms/s, peak ${max('fogMsPerSec').toFixed(1)} ms/s (view + filtering for ${viewers.size} viewers)`);
   console.log('── wire, per connected client ──');
   const kb = (b) => (b / 1024 / secs).toFixed(1);
   const wire = await wireBytes(deltaPayloads);
@@ -235,6 +302,25 @@ async function report(secs) {
   console.log(`sim-delta on the wire (permessage-deflate) ${kb(wire)} KB/s`);
   console.log(`sim-delta ${kb(bytes['sim-delta'])} KB/s (${counts['sim-delta'] || 0} msgs), ` +
     `sim-stats ${kb(bytes['sim-stats'])} KB/s (${counts['sim-stats'] || 0} msgs), other events ${kb(bytes.other)} KB/s`);
+  console.log(`sim-coarse (minimap, to everyone) ${kb(coarseBytes)} KB/s`);
+  if (viewers.size) {
+    console.log('── fog of war: per viewer, on the wire, over its time alive (full stream → fogged stream) ──');
+    let sumFull = 0;
+    let sumFog = 0;
+    for (const [fid, v] of viewers) {
+      const span = ((v.until || Date.now()) - v.since) / 1000;
+      const full = await wireBytes(v.fullPayloads);
+      const fog = await wireBytes(v.payloads);
+      sumFull += full / span;
+      sumFog += fog / span;
+      console.log(`faction ${String(fid).padStart(2)}  ${span.toFixed(0).padStart(4)} s alive: ${(full / 1024 / span).toFixed(1)} → ${(fog / 1024 / span).toFixed(1)} KB/s` +
+        ` (${(100 * (1 - fog / Math.max(1, full))).toFixed(0)}% less); map checks ${v.checks}, cells wrong in view ${v.bad}` +
+        (v.until ? `; out → spectator view ${v.spectatorView ? 'sent' : 'MISSING'}` : ''));
+      if (v.bad) fail(`faction ${fid}'s fogged map differs from the real one in blocks it sees (${v.bad} cells)`);
+      if (v.until && !v.spectatorView) fail(`faction ${fid} was eliminated but got no unfogged spectator view`);
+    }
+    console.log(`fog average  ${(sumFull / viewers.size / 1024).toFixed(1)} → ${(sumFog / viewers.size / 1024).toFixed(1)} KB/s per player`);
+  }
   if (!lastStats) { fail('no sim-stats received'); return; }
   // Land race at the end, from the last stats record (layout: STATS_* in lib.rs).
   const dv = new DataView(lastStats);

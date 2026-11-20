@@ -6,6 +6,7 @@ import { parentPort, workerData } from 'worker_threads';
 import { terrainCodes, writeTerrainBits, TERRAIN } from '../../src/js/mapGen.js';
 import { MAX_FACTIONS, MAP_SIZES } from '../../src/js/constants.js';
 import { encodeDelta } from '../../src/js/deltaCodec.js';
+import { FogOfWar } from './fog.js';
 // We cannot use the global logger cleanly since it writes to files and we are in a thread.
 // We can either post logs to the parent or just use console.log. Let's post them.
 function logInfo(msg) {
@@ -181,6 +182,17 @@ class RoomSimWorker {
     this.destroyed = false;
 
     this.botFactions = [];
+    this.botSet = new Set();
+    // Fog of war (fog.js): each human player gets only the map changes it can
+    // see. The view is recomputed ~5×/s, the minimap layer once a second.
+    // `fogViewers` (bench only) fogs bot factions too, to measure the stream.
+    this.fog = new FogOfWar(this.exports, this.statePtr, MAP_WIDTH, MAP_HEIGHT);
+    this.visionEveryTicks = Math.max(1, Math.round(this.tickHz / 5));
+    this.coarseEveryTicks = Math.max(1, this.tickHz);
+    this.fogViewers = new Set(opts.fogViewers || []);
+    this.fogDisabled = opts.fog === false;
+    this.fogged = new Set(); // factions that have had a fogged view (→ full view when out)
+    this.fog.setTeams(this.teams);
     this.botThinkEveryTicks = Math.max(1, Math.floor(this.tickHz * 1.5));
     this.botBuildEveryTicks = Math.max(1, Math.floor(this.tickHz * 3));
 
@@ -217,7 +229,7 @@ class RoomSimWorker {
 
     // Report load to the main thread for /healthz and capacity decisions: how
     // much of each tick's time budget the sim uses, and the wire rate.
-    this.load = { ticks: 0, tickMs: 0, maxTickMs: 0, bytes: 0, since: Date.now() };
+    this.load = { ticks: 0, tickMs: 0, maxTickMs: 0, bytes: 0, fogMs: 0, since: Date.now() };
     this.memReportInterval = setInterval(() => {
       if (this.destroyed) return;
       const l = this.load;
@@ -232,8 +244,10 @@ class RoomSimWorker {
         // Share of the tick interval spent simulating (1.0 = saturated).
         tickBudgetUsed: l.ticks ? (l.tickMs / l.ticks) / (1000 / this.tickHz) : 0,
         kbPerSec: l.bytes / 1024 / seconds,
+        // Fog of war work (view + per-player filtering), ms per second.
+        fogMsPerSec: l.fogMs / seconds,
       });
-      this.load = { ticks: 0, tickMs: 0, maxTickMs: 0, bytes: 0, since: now };
+      this.load = { ticks: 0, tickMs: 0, maxTickMs: 0, bytes: 0, fogMs: 0, since: now };
     }, 5000);
 
     logInfo(`[Sim ${roomId}] Worker started: ${numPlayers} players, ${this.tickHz} Hz`);
@@ -266,7 +280,7 @@ class RoomSimWorker {
         this.exports.simulationstate_bot_fire_missiles(this.statePtr);
       }
       if (tick % this.snapshotEveryTicks === 0) {
-        this._sendDelta();
+        this._sendDelta(tick);
         this._checkAlive();
       }
       if (tick % this.statsEveryTicks === 0) {
@@ -453,6 +467,7 @@ class RoomSimWorker {
 
   setBotFactions(factionIds) {
     this.botFactions = Array.isArray(factionIds) ? factionIds.slice() : [];
+    this.botSet = new Set(this.botFactions);
     for (const fid of this.botFactions) {
       this.exports.simulationstate_set_player_is_bot(this.statePtr, fid, true);
     }
@@ -469,15 +484,58 @@ class RoomSimWorker {
     return this.exports.memory.buffer.slice(ptr, ptr + byteLength);
   }
 
-  // Owner changes since the last call, as packed u32s (see lib.rs
-  // collect_dirty_cells). Nothing is sent when nothing changed.
-  _sendDelta() {
+  // Factions that get a fogged view: alive and played by a human (bots need
+  // no map stream).
+  _fogFactions() {
+    if (this.fogDisabled) return [];
+    const alive = new Uint8Array(this.exports.memory.buffer,
+      this.exports.simulationstate_get_player_is_alive_ptr(this.statePtr), this.arraySize);
+    const out = [];
+    for (let fid = 1; fid <= this.maxPlayers; fid++) {
+      if (alive[fid] && (!this.botSet.has(fid) || this.fogViewers.has(fid))) out.push(fid);
+    }
+    return out;
+  }
+
+  // Owner changes since the last call (lib.rs collect_dirty_cells), as
+  // varint gaps + owner bytes (deltaCodec.js). Each human player gets only the
+  // cells it sees (fog.js), after its `sim-vision` update when its view
+  // changed; everyone else in the room (spectators, the eliminated) gets them
+  // all. Nothing is sent when nothing changed.
+  _sendDelta(tick) {
+    const tFog = performance.now();
+    const viewers = this._fogFactions();
+    // The view: ~5×/s, and at once for a player who has none yet.
+    if (viewers.length && (tick % this.visionEveryTicks === 0 || viewers.some((f) => !this.fog.known.has(f)))) {
+      this.fog.compute();
+      const perFaction = [];
+      const transfer = [];
+      for (const fid of viewers) {
+        this.fogged.add(fid);
+        const buf = this.fog.visionUpdate(fid);
+        if (buf) { perFaction.push([fid, buf]); transfer.push(buf); this.load.visionBytes = (this.load.visionBytes || 0) + buf.byteLength; }
+      }
+      if (perFaction.length) parentPort.postMessage({ type: 'emitFogged', event: 'sim-vision', perFaction, fallback: null }, transfer);
+    }
+    // The minimap layer, once a second, to everyone.
+    if (tick % this.coarseEveryTicks === 0) {
+      if (!this.fog.computed || !viewers.length) this.fog.compute();
+      const coarse = this.fog.coarseDiff();
+      if (coarse) {
+        this.load.coarseBytes = (this.load.coarseBytes || 0) + coarse.byteLength;
+        parentPort.postMessage({ type: 'emit', event: 'sim-coarse', payload: coarse, stream: true }, [coarse]);
+      }
+    }
+    // Watchers that died or became bots stop being fogged.
+    for (const fid of this.fog.watching()) if (!viewers.includes(fid)) this.fog.forget(fid);
+
     const count = this.exports.simulationstate_collect_dirty_cells(this.statePtr);
+    this.load.fogMs += performance.now() - tFog;
     if (!count) return;
     // The scratch buffer can move when it grows: read the pointer after collect.
     const ptr = this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr);
-    // Compact wire form: varint cell-id gaps + owner bytes (deltaCodec.js).
-    const encoded = encodeDelta(new Uint32Array(this.exports.memory.buffer, ptr, count));
+    const entries = new Uint32Array(this.exports.memory.buffer, ptr, count);
+    const encoded = encodeDelta(entries);
     const payload = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
 
     this.profileMetrics.snapshotCount++;
@@ -485,7 +543,16 @@ class RoomSimWorker {
     this.profileMetrics.totalDirtyCells += count;
     this.load.bytes += payload.byteLength;
 
-    parentPort.postMessage({ type: 'emit', event: 'sim-delta', payload, stream: true }, [payload]);
+    if (!viewers.length) {
+      parentPort.postMessage({ type: 'emit', event: 'sim-delta', payload, stream: true }, [payload]);
+      return;
+    }
+    const tFilter = performance.now();
+    const perFaction = [...this.fog.filterDelta(entries, viewers)];
+    this.load.fogMs += performance.now() - tFilter;
+    for (const [, buf] of perFaction) this.load.fogBytes = (this.load.fogBytes || 0) + buf.byteLength;
+    parentPort.postMessage({ type: 'emitFogged', event: 'sim-delta', perFaction, fallback: payload },
+      [payload, ...perFaction.map(([, b]) => b)]);
   }
 
   // Per-player stats record, packed by the sim (layout: STATS_* in lib.rs).
@@ -549,15 +616,24 @@ class RoomSimWorker {
   // Everything a client needs to rebuild the match from nothing — sent to one
   // socket when it (re)joins a running match (reconnect, page reload). Deltas
   // only carry changes, so without this such a client sees a blank map.
-  sendFullState(socketId) {
+  // `factionId`: the requesting player's faction — a fogged player (alive
+  // human) gets only what it sees (`vision`, owners: null); anyone else the
+  // whole map. `factionId` alone (no socket) sends to that faction's player.
+  sendFullState(socketId, factionId = 0) {
     if (this.destroyed) return;
     const tick = this.exports.simulationstate_get_current_tick(this.statePtr);
-
-    // Owners, run-length encoded (see lib.rs write_full_owners).
-    const runs = this.exports.simulationstate_write_full_owners(this.statePtr);
-    const owners = this._copyOut(
-      this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr), runs * 4);
-
+    const fogged = factionId && this._fogFactions().includes(factionId);
+    if (!this.fog.computed) this.fog.compute();
+    const coarse = this.fog.coarseFull();
+    let vision = null;
+    let owners = null;
+    if (fogged) {
+      vision = this.fog.fullVision(factionId);
+    } else {
+      // Owners, run-length encoded (see lib.rs write_full_owners).
+      const runs = this.exports.simulationstate_write_full_owners(this.statePtr);
+      owners = this._copyOut(this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr), runs * 4);
+    }
     // Buildings (shares the scratch buffer — owners were copied out above).
     const count = this.exports.simulationstate_write_buildings(this.statePtr);
     const rec = new Uint32Array(
@@ -579,10 +655,13 @@ class RoomSimWorker {
     }
 
     const stats = this._packStats(tick);
-    parentPort.postMessage({
-      type: 'emitToSocket', socketId, event: 'sim-full',
-      payload: { owners, buildings, stats },
-    }, [owners, stats]);
+    const payload = { owners, vision, coarse, buildings, stats };
+    const transfer = [coarse, stats, ...(owners ? [owners] : []), ...(vision ? [vision] : [])];
+    if (socketId) {
+      parentPort.postMessage({ type: 'emitToSocket', socketId, event: 'sim-full', payload }, transfer);
+    } else {
+      parentPort.postMessage({ type: 'emitToFaction', factionId, event: 'sim-full', payload }, transfer);
+    }
   }
 
   _checkAlive() {
@@ -608,6 +687,8 @@ class RoomSimWorker {
           this.survivedSec[fid] = survivedSec;
           const killerId = this._findKiller(fid);
           if (killerId) this.eliminations[killerId]++;
+          // A fogged player who is out spectates: the whole map, unfogged.
+          if (this.fogged.delete(fid)) { this.fog.forget(fid); this.sendFullState(null, fid); }
           parentPort.postMessage({ type: 'emit', event: 'player-eliminated', payload: {
             factionId: fid,
             killerId,
@@ -851,7 +932,7 @@ if (parentPort && workerData) {
         sim.setBotFactions(msg.factionIds);
         break;
       case 'fullState':
-        sim.sendFullState(msg.socketId);
+        sim.sendFullState(msg.socketId, msg.factionId || 0);
         break;
       case 'destroy':
         sim.destroy();
