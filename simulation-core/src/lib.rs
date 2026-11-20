@@ -269,8 +269,14 @@ pub struct SimulationState {
     //   * each player's troop density, sampled once a second;
     //   * one bit per cell taken since that sample (such a cell costs 0 until
     //     the next one — "freshly taken cells are cheap to re-contest").
+    //   * a cell whose defense tier changed since the sample (a tower finished
+    //     or was destroyed) keeps its tier as of the sample until the next one,
+    //     so prices behave exactly as when the whole map was re-priced once a
+    //     second (`tier_changed` bit + the old tier in `tier_at_sample`).
     density_snapshot: [f32; PLAYER_ARRAY_SIZE],
     fresh_cells: Vec<u64>,
+    tier_changed: Vec<u64>,
+    tier_at_sample: std::collections::HashMap<u32, u8>,
     // Per-block scan state (BLOCK_UNKNOWN / QUIET / ACTIVE) — see the block index
     // consts above.
     block_state: Vec<u8>,
@@ -426,7 +432,11 @@ impl SimulationState {
             // Map Initializers
             cell_data: vec![0; TOTAL_CELLS],
             density_snapshot: [0.0; PLAYER_ARRAY_SIZE],
-            fresh_cells: vec![0; (TOTAL_CELLS + 63) / 64],
+            // Before the first sample every cell costs 0 (the old per-cell
+            // array started zeroed).
+            fresh_cells: vec![u64::MAX; (TOTAL_CELLS + 63) / 64],
+            tier_changed: vec![0; (TOTAL_CELLS + 63) / 64],
+            tier_at_sample: std::collections::HashMap::new(),
             block_state: vec![BLOCK_UNKNOWN; BLOCKS_W * BLOCKS_H],
             delta_scratch: Vec::new(),
             front_candidates: vec![Vec::new(); PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
@@ -586,6 +596,15 @@ impl SimulationState {
     #[allow(dead_code)]
     #[inline]
     fn set_cell_defense(&mut self, i: usize, tier: u8) {
+        // Prices use the tier as of the last density sample (see the fields).
+        let (w, b) = (i >> 6, 1u64 << (i & 63));
+        if self.tier_changed[w] & b == 0 && self.fresh_cells[w] & b == 0 {
+            let old = ((self.cell_data[i] & DEFENSE_MASK) >> DEFENSE_SHIFT) as u8;
+            if old != tier {
+                self.tier_changed[w] |= b;
+                self.tier_at_sample.insert(i as u32, old);
+            }
+        }
         self.cell_data[i] =
             (self.cell_data[i] & !DEFENSE_MASK) | (((tier as u16) << DEFENSE_SHIFT) & DEFENSE_MASK);
     }
@@ -970,6 +989,10 @@ impl SimulationState {
             };
         }
         self.fresh_cells.iter_mut().for_each(|w| *w = 0);
+        for &cell in self.tier_at_sample.keys() {
+            self.tier_changed[(cell >> 6) as usize] = 0;
+        }
+        self.tier_at_sample.clear();
     }
 
     // Troops an attacker pays to take `cell`: (owner's density at the last
@@ -989,9 +1012,13 @@ impl SimulationState {
             2 => 6.0,     // Mountains
             _ => 0.0,     // Water (never in candidates anyway)
         };
-        // Defense tier stored in bits 11-14; 0 counts as 1.
+        // Defense tier stored in bits 11-14 (as of the last sample); 0 counts as 1.
         let def_tier = {
-            let raw = ((packed & DEFENSE_MASK) >> DEFENSE_SHIFT) as f32;
+            let raw = if self.tier_changed[cell >> 6] & (1u64 << (cell & 63)) != 0 {
+                self.tier_at_sample[&(cell as u32)] as f32
+            } else {
+                ((packed & DEFENSE_MASK) >> DEFENSE_SHIFT) as f32
+            };
             if raw < 1.0 { 1.0 } else { raw }
         };
         let player_density = if owner >= 1 && owner < PLAYER_ARRAY_SIZE {
