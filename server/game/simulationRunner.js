@@ -38,6 +38,7 @@ export class RoomSim {
           startGrowthRate: opts.startGrowthRate,
           startMaxCap: opts.startMaxCap,
           domination: opts.domination,
+          teams: opts.teams || null,
         },
         env: envConfig
       }

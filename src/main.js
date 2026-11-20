@@ -260,16 +260,29 @@ function initLobbyUI() {
   };
   const stopRankedTimer = () => {
     if (rankedTimerInterval) clearInterval(rankedTimerInterval);
+    rankedTimerInterval = null;
   };
+  const rankedQueueVisible = () => document.getElementById('homeStateRankedQueue')?.style.display === 'flex';
+  const showRankedQueue = (on) => {
+    const loggedInView = document.getElementById('homeStateLoggedIn');
+    const queueView = document.getElementById('homeStateRankedQueue');
+    if (queueView) queueView.style.display = on ? 'flex' : 'none';
+    if (loggedInView) loggedInView.style.display = on ? 'none' : 'block';
+    if (!on) stopRankedTimer();
+  };
+  // The server refused or dropped us from the queue (not logged in, already
+  // in a match…): back to the menu instead of a timer that never ends.
+  socket.on('ranked-queue-left', () => { if (rankedQueueVisible()) showRankedQueue(false); });
+  socket.on('ranked-match-found', () => stopRankedTimer());
+  // After a reconnect the server has forgotten our place in the queue.
+  socket.io.on('reconnect', () => { if (rankedQueueVisible()) socket.emit('join-ranked-queue'); });
 
   const btnRankedPlay = document.getElementById('btn-ranked-play');
   if (btnRankedPlay) {
     btnRankedPlay.onclick = () => {
-      const loggedInView = document.getElementById('homeStateLoggedIn');
-      const queueView = document.getElementById('homeStateRankedQueue');
-      if (loggedInView) loggedInView.style.display = 'none';
-      if (queueView) queueView.style.display = 'flex';
-      
+      showRankedQueue(true);
+      const lbl = document.getElementById('lblRankedPlayers');
+      if (lbl) lbl.innerText = 'Searching for opponents…';
       socket.emit('join-ranked-queue');
       startRankedTimer();
     };
@@ -278,13 +291,8 @@ function initLobbyUI() {
   const btnLeaveRanked = document.getElementById('btn-leave-ranked');
   if (btnLeaveRanked) {
     btnLeaveRanked.onclick = () => {
-      const loggedInView = document.getElementById('homeStateLoggedIn');
-      const queueView = document.getElementById('homeStateRankedQueue');
-      if (queueView) queueView.style.display = 'none';
-      if (loggedInView) loggedInView.style.display = 'block';
-      
+      showRankedQueue(false);
       socket.emit('leave-ranked-queue');
-      stopRankedTimer();
     };
   }
 

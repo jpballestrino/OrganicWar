@@ -2,6 +2,8 @@ import { login, register, fetchProfile, logout, isLoggedIn, getUser, getToken, s
 import { setServerMode, renderProgressCards } from './progression.js';
 import { socket, socketAuth } from './network.js';
 import { updateGuildChatVisibility } from './guildUI.js';
+import { escapeHtml } from './escape.js';
+import { tierFor, MODE_LABELS, ordinal } from './ranks.js';
 
 function getE(id) { return document.getElementById(id); }
 
@@ -376,70 +378,87 @@ export async function showUserProfile(username) {
   }
 }
 
-function renderProfileModal({ profile, history }) {
+// Profile: ranked first (tier, rating, position, record), then every mode
+// (placements, kills, land), recent form and the last matches.
+function renderProfileModal({ profile, history, stats = {} }) {
+  const esc = (v) => escapeHtml(String(v ?? ''));
+  const pct = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)}%` : '—');
+  const num = (v) => Math.round(v || 0).toLocaleString('en-US');
+  const box = (label, value, color = '#fff', title = '') =>
+    `<div class="stat-box" title="${esc(title)}"><div class="stat-label">${esc(label)}</div><div class="stat-value" style="color:${color}">${esc(value)}</div></div>`;
+
   getE('profileDisplayName').textContent = profile.display_name;
   getE('profileUsername').textContent = `@${profile.username}`;
-  getE('profileWins').textContent = profile.total_wins;
-  getE('profileLosses').textContent = profile.total_losses;
-  getE('profileGames').textContent = profile.total_games;
-  getE('profileEloRating').textContent = `${profile.elo_rating} ELO`;
-    
+  const badge = getE('profileGuildBadge');
   if (profile.guild_name) {
-    const badge = getE('profileGuildBadge');
     badge.textContent = `[${profile.guild_tag}] ${profile.guild_name}`;
     badge.style.display = 'block';
   } else {
-    getE('profileGuildBadge').style.display = 'none';
+    badge.style.display = 'none';
   }
-    
-  let rankTier = 'Bronze';
-  let rankColor = '#cd7f32';
-  if (profile.elo_rating >= 1800) { rankTier = 'Diamond'; rankColor = '#b9f2ff'; }
-  else if (profile.elo_rating >= 1500) { rankTier = 'Platinum'; rankColor = '#e5e4e2'; }
-  else if (profile.elo_rating >= 1300) { rankTier = 'Gold'; rankColor = '#ffd700'; }
-  else if (profile.elo_rating >= 1100) { rankTier = 'Silver'; rankColor = '#c0c0c0'; }
-    
+
+  // ── Ranked ──
+  const r = stats.ranked;
+  const games = r ? r.ranked_games : 0;
+  const tier = tierFor(profile.elo_rating, games);
   const rankEl = getE('profileRankTier');
-  rankEl.textContent = rankTier;
-  rankEl.style.color = rankColor;
-    
-  let winRate = profile.total_games > 0 ? Math.round((profile.total_wins / profile.total_games) * 100) : 0;
-  getE('profileWinRateText').textContent = `${winRate}%`;
-  getE('profileWinRateBar').style.width = `${winRate}%`;
-    
+  rankEl.textContent = tier.name;
+  rankEl.style.color = tier.color;
+  getE('profileEloRating').textContent = games ? `${profile.elo_rating} rating` : 'Play ranked to get rated';
+  getE('profilePosition').textContent = r ? `#${r.position} of ${r.ranked_players} ranked players` : '';
+  getE('profileRankedStats').innerHTML = r ? [
+    box('Ranked games', games, '#60a5fa'),
+    box('Win rate', pct(r.ranked_wins, games), '#4ade80', 'Matches finished 1st among the human players'),
+    box('Avg place', r.avg_place ? r.avg_place.toFixed(1) : '—', '#fbbf24', 'Average finishing place among the human players'),
+    box('Wins', r.ranked_wins || 0, '#4ade80'),
+    box('Peak rating', r.peak_rating, '#ffc107'),
+    box('Rating', profile.elo_rating, tier.color),
+  ].join('') : '<div class="profile-empty">No ranked matches yet.</div>';
+  getE('profileTierProgress').textContent = r && tier.next
+    ? `${tier.toNext} rating to ${tier.next.name}` : (r ? 'Top tier' : '');
+
+  // ── All modes ──
+  const o = stats.overall || {};
+  getE('profileOverallStats').innerHTML = [
+    box('Games', profile.total_games, '#60a5fa'),
+    box('Victories', profile.total_wins, '#4ade80', 'Matches won outright'),
+    box('Top 3', o.placed_games ? pct(o.top3, o.placed_games) : '—', '#4ade80', 'Share of matches finished in the top 3'),
+    box('Avg place', o.avg_placement ? o.avg_placement.toFixed(1) : '—', '#fbbf24', 'Average finishing place among all factions'),
+    box('Kills', num(profile.total_kills), '#f87171', 'Enemy troops destroyed, all matches'),
+    box('Land taken', num(profile.total_cells_conquered), '#a78bfa', 'Cells held at the end of matches, all matches'),
+  ].join('');
+
+  // ── Recent form: last 10 placements, newest first ──
+  const form = stats.form || [];
+  getE('profileForm').innerHTML = form.length ? form.map((m) => {
+    const place = m.mode === 'ranked' ? m.human_place : m.placement;
+    const of = m.mode === 'ranked' ? m.humans : m.players;
+    const cls = m.result === 'abandoned' ? 'quit' : place === 1 ? 'win' : (place && of && place <= Math.max(3, Math.ceil(of / 4))) ? 'good' : 'loss';
+    const label = m.result === 'abandoned' ? 'Q' : (place ? ordinal(place) : '–');
+    return `<span class="form-chip ${cls}" title="${esc(MODE_LABELS[m.mode] || m.mode)}${place ? ` · ${ordinal(place)} of ${of}` : ''}${m.elo_delta ? ` · ${m.elo_delta > 0 ? '+' : ''}${m.elo_delta}` : ''}">${esc(label)}</span>`;
+  }).join('') : '<div class="profile-empty">No matches yet.</div>';
+
+  // ── Recent matches ──
   const historyList = getE('profileHistoryList');
-  historyList.innerHTML = '';
-    
   if (!history || history.length === 0) {
-    historyList.innerHTML = '<div style="text-align: center; color: #666; font-size: 13px; padding: 10px;">No recent matches found.</div>';
+    historyList.innerHTML = '<div class="profile-empty">No recent matches found.</div>';
     return;
   }
-    
-  history.forEach(match => {
-    const row = document.createElement('div');
-    row.style.display = 'flex';
-    row.style.justifyContent = 'space-between';
-    row.style.padding = '8px 10px';
-    row.style.background = 'rgba(255,255,255,0.03)';
-    row.style.borderRadius = '4px';
-    row.style.fontSize = '12px';
-        
-    let isWin = match.result === 'win';
-    let resColor = isWin ? '#4ade80' : (match.result === 'loss' ? '#f87171' : '#9ca3af');
-    let resText = isWin ? 'W' : (match.result === 'loss' ? 'L' : 'A');
-        
-    const dateStr = new Date(match.played_at).toLocaleDateString();
-        
-    row.innerHTML = `
-            <div style="display:flex; gap: 10px; align-items: center;">
-                <span style="font-weight: bold; color: ${resColor}; width: 15px; text-align: center;">${resText}</span>
-                <span style="color: #ccc;">${dateStr}</span>
-            </div>
-            <div style="display:flex; gap: 15px; color: #888;">
-                <span>${match.duration_seconds}s</span>
-                <span style="color: #ffc107;">${match.cells_conquered} cells</span>
-            </div>
-        `;
-    historyList.appendChild(row);
-  });
+  historyList.innerHTML = history.map((m) => {
+    const ranked = m.mode === 'ranked';
+    const place = ranked ? m.human_place : m.placement;
+    const of = ranked ? m.humans : m.players;
+    const res = m.result === 'win' ? ['W', '#4ade80'] : m.result === 'abandoned' ? ['Q', '#9ca3af'] : ['L', '#f87171'];
+    const delta = ranked && m.elo_delta ? `<span style="color:${m.elo_delta > 0 ? '#4ade80' : '#f87171'}">${m.elo_delta > 0 ? '+' : ''}${m.elo_delta}</span>` : '';
+    const dur = m.duration_seconds ? `${Math.floor(m.duration_seconds / 60)}:${String(m.duration_seconds % 60).padStart(2, '0')}` : '';
+    return `<div class="profile-match">
+        <span class="pm-res" style="color:${res[1]}">${res[0]}</span>
+        <span class="pm-mode">${esc(MODE_LABELS[m.mode] || 'Match')}</span>
+        <span class="pm-place">${place ? `${ordinal(place)}/${of}` : ''}</span>
+        <span class="pm-delta">${delta}</span>
+        <span class="pm-stat" title="Kills">⚔ ${num(m.kills)}</span>
+        <span class="pm-stat" title="Land">▦ ${num(m.cells_conquered)}</span>
+        <span class="pm-date">${dur} · ${new Date(`${m.played_at}Z`).toLocaleDateString()}</span>
+      </div>`;
+  }).join('');
 }

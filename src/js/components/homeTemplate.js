@@ -235,15 +235,14 @@ export function homeTemplate() {
                 <div class="auth-welcome" style="text-align: center; width: 100%;">
                     <h2 style="color: #ffc107;">Queueing for Ranked...</h2>
                     <div style="font-size: 32px; font-weight: bold; margin: 15px 0; font-family: monospace;" id="lblRankedTimer">00:00</div>
-                    <div style="color: #aaa; margin-bottom: 20px; font-size: 16px;" id="lblRankedPlayers">Players: 1/20</div>
+                    <div style="color: #aaa; margin-bottom: 20px; font-size: 16px;" id="lblRankedPlayers">Searching for opponents…</div>
+                    <div style="color: #777; margin: -12px 0 20px; font-size: 12px; max-width: 320px; text-align: center;">You'll be matched with 2–8 players of similar rating. Bots fill the rest of the battle; only your place among the humans counts.</div>
                 </div>
                 <div class="home-buttons" style="width: 100%;">
                     <button id="btn-leave-ranked" class="home-btn" style="background: rgba(220, 53, 69, 0.2); border: 1px solid #dc3545;">
                         <span class="home-btn-icon">✖</span>
                         <span class="home-btn-text">Leave Queue</span>
                     </button>
-                    <!-- Hidden dev force start -->
-                    <button id="btn-force-start-ranked" style="position: absolute; top:0; right:0; opacity:0; width:20px; height:20px; z-index:9999; cursor:pointer;"></button>
                 </div>
             </div>
 

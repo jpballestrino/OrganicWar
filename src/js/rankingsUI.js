@@ -1,5 +1,6 @@
 import { showUserProfile } from './authUI.js';
 import { getUser } from './auth.js';
+import { tierFor } from './ranks.js';
 import { escapeHtml } from './escape.js';
 
 const PAGE_SIZE = 20;
@@ -70,9 +71,11 @@ function switchRankingsTab(tabName) {
     header.innerHTML = `
       <div style="width: 50px; text-align: center;">Rank</div>
       <div style="flex: 1;">Player</div>
-      <div style="width: 80px; text-align: center;">Matches</div>
-      <div style="width: 100px; text-align: center;">Win Rate</div>
-      <div style="width: 80px; text-align: right;">Elo</div>
+      <div style="width: 80px; text-align: center;" title="Tier from the ranked rating">Tier</div>
+      <div style="width: 70px; text-align: center;" title="Ranked matches played">Ranked</div>
+      <div style="width: 70px; text-align: center;" title="Ranked matches finished 1st among the human players">Win rate</div>
+      <div style="width: 70px; text-align: center;" title="Average finishing place among the human players">Avg place</div>
+      <div style="width: 70px; text-align: right;">Rating</div>
     `;
   } else {
     tabGuilds.classList.add('active');
@@ -81,9 +84,10 @@ function switchRankingsTab(tabName) {
     header.innerHTML = `
       <div style="width: 50px; text-align: center;">Rank</div>
       <div style="flex: 1;">Guild</div>
-      <div style="width: 80px; text-align: center;">Members</div>
-      <div style="width: 100px; text-align: center;">Matches</div>
-      <div style="width: 80px; text-align: right;">Elo</div>
+      <div style="width: 70px; text-align: center;">Members</div>
+      <div style="width: 70px; text-align: center;" title="Guild wars won – lost">W – L</div>
+      <div style="width: 70px; text-align: center;">Win rate</div>
+      <div style="width: 70px; text-align: right;">Rating</div>
       <div style="width: 80px; text-align: center;">Action</div>
     `;
   }
@@ -119,38 +123,37 @@ async function fetchAndRenderPlayers(page, search) {
 
     list.innerHTML = '';
     if (!data.players.length) {
-      list.innerHTML = '<div style="text-align:center; padding: 20px; color:#888;">No players found.</div>';
+      list.innerHTML = `<div style="text-align:center; padding: 20px; color:#888;">${search ? 'No ranked player matches your search.' : 'No ranked players yet — play a Ranked Match to appear here.'}</div>`;
       renderPagination(data.page, data.pages);
       return;
     }
 
     data.players.forEach((p, index) => {
-      const rank = (page - 1) * PAGE_SIZE + index + 1;
+      // The global position (also when searching), from the server.
+      const rank = p.position || (page - 1) * PAGE_SIZE + index + 1;
       const row = document.createElement('div');
       row.style.cssText = 'display:flex; padding:10px; background:rgba(255,255,255,0.05); border-radius:4px; cursor:pointer; transition:background 0.2s;';
       row.addEventListener('mouseover', () => { row.style.background = 'rgba(255,255,255,0.1)'; });
       row.addEventListener('mouseout',  () => { row.style.background = 'rgba(255,255,255,0.05)'; });
       row.addEventListener('click', () => showUserProfile(p.username));
 
-      let rankHtml = `<span>${rank}</span>`;
-      if (!search) {
-        if (rank === 1) rankHtml = '<span style="color:#ffd700; font-weight:bold;">🥇 1</span>';
-        else if (rank === 2) rankHtml = '<span style="color:#c0c0c0; font-weight:bold;">🥈 2</span>';
-        else if (rank === 3) rankHtml = '<span style="color:#cd7f32; font-weight:bold;">🥉 3</span>';
-      }
+      const rankHtml = medal(rank);
 
       const guildText = p.guild_tag
         ? `<span style="color:${escapeHtml(p.guild_color) || '#ffc107'}; font-size:11px;">[${escapeHtml(p.guild_tag)}]</span> `
         : '';
-      const winRate = p.total_games > 0 ? Math.round((p.total_wins / p.total_games) * 100) : 0;
-      const winRateColor = winRate >= 50 ? '#4ade80' : (winRate > 0 ? '#f87171' : '#888');
+      const winRate = p.ranked_games > 0 ? Math.round((p.ranked_wins / p.ranked_games) * 100) : 0;
+      const winRateColor = winRate >= 50 ? '#4ade80' : (winRate > 0 ? '#fbbf24' : '#888');
+      const tier = tierFor(p.elo_rating, p.ranked_games);
 
       row.innerHTML = `
         <div style="width:50px; text-align:center; font-size:14px; align-self:center;">${rankHtml}</div>
         <div style="flex:1; align-self:center;">${guildText}<span style="font-weight:bold; color:#fff;">${escapeHtml(p.display_name)}</span></div>
-        <div style="width:80px; text-align:center; color:#ccc; align-self:center; font-size:13px;">${p.total_games}</div>
-        <div style="width:100px; text-align:center; color:${winRateColor}; align-self:center; font-size:13px; font-weight:bold;">${winRate}%</div>
-        <div style="width:80px; text-align:right; color:#ffc107; font-weight:bold; align-self:center;">${p.elo_rating}</div>
+        <div style="width:80px; text-align:center; color:${tier.color}; align-self:center; font-size:12px; font-weight:bold;">${tier.name}</div>
+        <div style="width:70px; text-align:center; color:#ccc; align-self:center; font-size:13px;">${p.ranked_games}</div>
+        <div style="width:70px; text-align:center; color:${winRateColor}; align-self:center; font-size:13px; font-weight:bold;">${winRate}%</div>
+        <div style="width:70px; text-align:center; color:#ccc; align-self:center; font-size:13px;">${p.avg_place ? Number(p.avg_place).toFixed(1) : '—'}</div>
+        <div style="width:70px; text-align:right; color:#ffc107; font-weight:bold; align-self:center;" title="Peak ${p.peak_rating}">${p.elo_rating}</div>
       `;
       list.appendChild(row);
     });
@@ -186,18 +189,13 @@ async function fetchAndRenderGuilds(page, search) {
     const currentUser = getUser();
 
     data.guilds.forEach((g, index) => {
-      const rank = (page - 1) * PAGE_SIZE + index + 1;
       const row = document.createElement('div');
       row.style.cssText = 'display:flex; padding:10px; background:rgba(255,255,255,0.05); border-radius:4px;';
 
-      let rankHtml = `<span>${rank}</span>`;
-      if (!search) {
-        if (rank === 1) rankHtml = '<span style="color:#ffd700; font-weight:bold;">🥇 1</span>';
-        else if (rank === 2) rankHtml = '<span style="color:#c0c0c0; font-weight:bold;">🥈 2</span>';
-        else if (rank === 3) rankHtml = '<span style="color:#cd7f32; font-weight:bold;">🥉 3</span>';
-      }
-
+      // Rated guilds (at least one war) have a global position; the rest are unrated.
+      const rankHtml = g.position ? medal(g.position) : '<span style="color:#666; font-size:11px;">—</span>';
       const matches = g.total_guild_wins + g.total_guild_losses;
+      const gRate = matches ? Math.round((g.total_guild_wins / matches) * 100) : null;
       const membersColor = g.member_count >= g.max_members ? '#f87171' : '#4ade80';
 
       let actionHtml = '';
@@ -222,9 +220,10 @@ async function fetchAndRenderGuilds(page, search) {
           <span style="color:${escapeHtml(g.color) || '#ffc107'}; font-weight:bold;">[${escapeHtml(g.tag)}]</span>
           <span style="color:#fff;">${escapeHtml(g.name)}</span>
         </div>
-        <div style="width:80px; text-align:center; color:${membersColor}; align-self:center; font-size:13px;">${g.member_count}/${g.max_members}</div>
-        <div style="width:100px; text-align:center; color:#ccc; align-self:center; font-size:13px;">${matches}</div>
-        <div style="width:80px; text-align:right; color:#ffc107; font-weight:bold; align-self:center; padding-right:10px;">${g.elo_rating}</div>
+        <div style="width:70px; text-align:center; color:${membersColor}; align-self:center; font-size:13px;">${g.member_count}/${g.max_members}</div>
+        <div style="width:70px; text-align:center; color:#ccc; align-self:center; font-size:13px;">${matches ? `${g.total_guild_wins} – ${g.total_guild_losses}` : '—'}</div>
+        <div style="width:70px; text-align:center; color:${gRate === null ? '#888' : gRate >= 50 ? '#4ade80' : '#fbbf24'}; align-self:center; font-size:13px; font-weight:bold;">${gRate === null ? '—' : `${gRate}%`}</div>
+        <div style="width:70px; text-align:right; color:${matches ? '#ffc107' : '#666'}; font-weight:bold; align-self:center; padding-right:10px;">${matches ? g.elo_rating : 'Unrated'}</div>
         <div style="width:80px; text-align:center; align-self:center;" class="action-container">${actionHtml}</div>
       `;
 
@@ -245,6 +244,13 @@ async function fetchAndRenderGuilds(page, search) {
     if (rid !== fetchRequestId) return;
     list.innerHTML = `<div style="color:red; text-align:center; padding:20px;">Error: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+function medal(rank) {
+  if (rank === 1) return '<span style="color:#ffd700; font-weight:bold;">🥇 1</span>';
+  if (rank === 2) return '<span style="color:#c0c0c0; font-weight:bold;">🥈 2</span>';
+  if (rank === 3) return '<span style="color:#cd7f32; font-weight:bold;">🥉 3</span>';
+  return `<span>${rank}</span>`;
 }
 
 function renderPagination(page, pages) {

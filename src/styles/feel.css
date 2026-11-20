@@ -619,3 +619,10 @@ body.in-match #notificationContainer {
 @media (max-width: 1149px) {
     .ad-rail { display: none; }
 }
+
+/* Ranked rating change on the recap */
+.end-ranked { margin: 4px 0 10px; font-size: 14px; color: #cbd5e1; text-align: center; }
+.end-ranked b { color: #fff; }
+.end-ranked.up { color: #4ade80; }
+.end-ranked.down { color: #f87171; }
+.end-ranked-pending { color: #94a3b8; font-size: 12px; }

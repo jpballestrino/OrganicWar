@@ -1,5 +1,5 @@
 import express from 'express';
-import { getUserProfile, getMatchHistory, getPlayersPage, getGuildsPage, findUserById } from '../database.js';
+import { getUserProfile, getMatchHistory, getRankedPlayersPage, getGuildRankingsPage, getCompetitiveStats, findUserById } from '../database.js';
 import { log } from '../utils/logger.js';
 import { activeRooms } from '../game/state.js';
 import { io } from '../server.js';
@@ -13,8 +13,8 @@ apiRouter.get('/api/profile/:username', (req, res) => {
   try {
     const profile = getUserProfile(req.params.username);
     if (!profile) { return res.status(404).json({ error: 'Profile not found' }); }
-    const history = getMatchHistory(req.params.username, 1, 10);
-    res.json({ profile, history });
+    const history = getMatchHistory(req.params.username, 1, 15);
+    res.json({ profile, history, stats: getCompetitiveStats(profile.id) });
   } catch (err) {
     log('error', 'Profile API error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -39,7 +39,7 @@ apiRouter.get('/api/rankings/players', (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const search = (req.query.search || '').trim().slice(0, 50);
-    const { rows, total } = getPlayersPage(search, page, 20);
+    const { rows, total } = getRankedPlayersPage(search, page, 20);
     res.json({ players: rows, total, page, pages: Math.max(1, Math.ceil(total / 20)) });
   } catch (err) {
     log('error', 'Rankings players API error:', err);
@@ -51,7 +51,7 @@ apiRouter.get('/api/rankings/guilds', (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const search = (req.query.search || '').trim().slice(0, 50);
-    const { rows, total } = getGuildsPage(search, page, 20);
+    const { rows, total } = getGuildRankingsPage(search, page, 20);
     res.json({ guilds: rows, total, page, pages: Math.max(1, Math.ceil(total / 20)) });
   } catch (err) {
     log('error', 'Rankings guilds API error:', err);
