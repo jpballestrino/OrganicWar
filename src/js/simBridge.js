@@ -5,6 +5,7 @@
 import { TOTAL_CELLS, CELL_OWNER_MASK, COLS, ROWS } from './constants.js';
 import { terrainCodes, writeTerrainBits, MAP_POOL, TERRAIN, isValidMapId } from './mapGen.js';
 import { decodeDelta } from './deltaCodec.js';
+import { decodeVision, BLOCK_SHIFT, BLOCK } from './fogCodec.js';
 
 const DEFENSE_SHIFT = 11;
 const DEFENSE_MASK = 0x7800;
@@ -38,6 +39,7 @@ export function setMapSize(width, height) {
   cellDataPtr = 0;
   dirtyRows = new Uint8Array(H);
   paintedMapId = null;
+  resetFog();
   // Open sea until the terrain is painted (it can take a moment to compute).
   new Uint16Array(wasmMemory.buffer).fill(TERRAIN.WATER << 7);
   sizeVer++;
@@ -276,6 +278,101 @@ export function applyOwnerRuns(buf) {
     const end = Math.min(N, i + (runs[r] & 0xFFFFFF));
     for (; i < end; i++) cells[i] = (cells[i] & ~CELL_OWNER_MASK) | owner;
   }
+  markAllDirty();
+}
+
+// ── Fog of war ───────────────────────────────────────────────────────────────
+// Per 8×8 block: whether this player sees it (`vis`, 255/0 — live owners from
+// the server) and the minimap layer (`coarse`, one owner per block, for the
+// whole map). Under fog the renderer draws the coarse layer, dimmed; the exact
+// owners stored there are whatever was last seen. Off (all visible) before the
+// match and while spectating. Wire format: fogCodec.js.
+let BW = W >> BLOCK_SHIFT;
+let BH = H >> BLOCK_SHIFT;
+let vis = new Uint8Array(BW * BH).fill(255);
+let coarse = new Uint8Array(BW * BH);
+let fogOn = false;
+let fogVer = 0;
+export const fogEnabled = () => fogOn;
+export const fogVersion = () => fogVer;
+export const fogLayers = () => ({ vis, coarse, bw: BW, bh: BH });
+
+export function resetFog() {
+  BW = W >> BLOCK_SHIFT;
+  BH = H >> BLOCK_SHIFT;
+  vis = new Uint8Array(BW * BH).fill(255);
+  coarse = new Uint8Array(BW * BH);
+  fogOn = false;
+  fogVer++;
+}
+
+// Spectating / no fog: everything is live.
+export function setFogOff() {
+  fogOn = false;
+  vis.fill(255);
+  fogVer++;
+}
+
+// Can this player see the cell right now? (Missile aiming, labels, icons.)
+export function isCellVisible(cellId) {
+  if (!fogOn) return true;
+  const r = (cellId / W) | 0;
+  return vis[(r >> BLOCK_SHIFT) * BW + ((cellId - r * W) >> BLOCK_SHIFT)] !== 0;
+}
+
+// sim-vision: blocks that came into view (with their owners) or left it.
+// Returns the cells whose owner changed (for resyncZonesForCells).
+export function applyVision(buf) {
+  if (!wasmMemory || cellDataPtr === null || !buf) return changedBuf.subarray(0, 0);
+  const { shown, hidden, owners } = decodeVision(buf);
+  // The first update of a match lists what is in view: everything else is fog.
+  if (!fogOn) vis.fill(0);
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
+  let n = 0;
+  let k = 0;
+  if (changedBuf.length < shown.length * BLOCK * BLOCK) changedBuf = new Uint32Array(shown.length * BLOCK * BLOCK);
+  for (const b of shown) {
+    vis[b] = 255;
+    const r0 = Math.floor(b / BW) * BLOCK;
+    const c0 = (b % BW) * BLOCK;
+    for (let r = r0; r < r0 + BLOCK; r++) {
+      for (let c = c0; c < c0 + BLOCK; c++) {
+        const id = r * W + c;
+        const next = (cells[id] & ~CELL_OWNER_MASK) | (owners[k++] & CELL_OWNER_MASK);
+        if (next !== cells[id]) { cells[id] = next; changedBuf[n++] = id; }
+      }
+      markRow(r);
+    }
+  }
+  for (const b of hidden) vis[b] = 0;
+  fogOn = true;
+  fogVer++;
+  return changedBuf.subarray(0, n);
+}
+
+// sim-coarse: changed minimap blocks (sim-delta format, block ids).
+export function applyCoarse(buf) {
+  decodeDelta(buf, (b, owner) => { if (b < coarse.length) coarse[b] = owner; });
+  fogVer++;
+}
+
+// sim-full: the whole minimap layer, one byte per block.
+export function setCoarse(buf) {
+  if (!buf) return;
+  const src = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  coarse.set(src.subarray(0, coarse.length));
+  fogVer++;
+}
+
+// A fogged full sync: forget every owner (fog everywhere), then the visible
+// blocks arrive in a sim-vision payload.
+export function clearOwnersForFog() {
+  if (!wasmMemory || cellDataPtr === null) return;
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);
+  for (let i = 0; i < N; i++) cells[i] &= ~CELL_OWNER_MASK;
+  vis.fill(0);
+  fogOn = true;
+  fogVer++;
   markAllDirty();
 }
 

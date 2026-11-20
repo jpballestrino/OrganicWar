@@ -139,6 +139,11 @@ check('HUD shows live numbers', parseInt(hud.land.replace(/,/g, '')) > 0 && hud.
 const players = await page.evaluate(() => Object.values(window.__owState.activePlayerSlots).filter(Boolean).length);
 check('room has the expected number of factions', players === (MODE === 'mega' ? 64 : 20), `${players} factions`);
 
+// --- Fog of war and minimap ---
+const fogNow = await page.evaluate(() => ({ fog: window.__owFog(), minimap: document.getElementById('minimap')?.style.display }));
+check('fog of war: only the surroundings are live', fogNow.fog.on && fogNow.fog.seen > 0 && fogNow.fog.seen < fogNow.fog.blocks / 2, JSON.stringify(fogNow.fog));
+check('minimap is shown with every empire', fogNow.minimap === 'block' && fogNow.fog.coarseOwners >= 5, JSON.stringify(fogNow));
+
 // --- Reload mid-match: the reconnect token must bring back map, HUD, buildings ---
 const ownedBefore = await page.evaluate(() => window.__owCountOwned(parseInt(window.__owState.playerFaction)));
 const buildingsBefore = await page.evaluate(() => window.__owState.buildings.length);
@@ -156,6 +161,7 @@ const after = await page.evaluate(() => {
     land: parseInt(document.getElementById('lblMyCells').textContent.replace(/,/g, '')) || 0,
     others: [...Array(20).keys()].reduce((n, i) => n + (i + 1 !== fid && window.__owCountOwned(i + 1) > 0 ? 1 : 0), 0),
     buildings: st.buildings.length,
+    fog: window.__owFog(),
   };
 });
 await shot(page, '05-after-reload');
@@ -167,7 +173,10 @@ if (after.land === 0) {
   check('reload: own territory is back on the map', after.owned > 0 && Math.abs(after.owned - after.land) <= Math.max(50, after.land * 0.05),
     `before ${ownedBefore}, after ${after.owned}, HUD land ${after.land}`);
 }
-check('reload: rival territories are back on the map', after.others >= 5, `${after.others} rivals visible`);
+// Fog of war: rivals out of sight are on the minimap layer, not cell by cell.
+check('reload: rival territories are back (minimap layer)', after.fog.coarseOwners >= 5, `${after.fog.coarseOwners} empires on the minimap, ${after.others} in sight`);
+check('reload: the fog of war is back — only part of the map is live',
+  after.fog.on && after.fog.seen > 0 && after.fog.seen < after.fog.blocks, JSON.stringify(after.fog));
 check('reload: buildings are back', buildingsBefore === 0 || after.buildings > 0, `before ${buildingsBefore}, after ${after.buildings}`);
 
 // Layout last: it is slow under software GL, and an idle player is fair game

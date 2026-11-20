@@ -795,7 +795,7 @@ export function setupSocketHandlers(io) {
           });
           if (inMatch) {
             // Deltas only carry changes: bring this client fully up to date.
-            room.simReal.sendFullState(socket.id);
+            room.simReal.sendFullState(socket.id, fid);
           } else if (room.phase === 'SPAWN_SELECTION') {
             // Back into the spawn picker with the time that is left.
             socket.emit('spawn-selection-start', {

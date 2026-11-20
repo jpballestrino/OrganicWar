@@ -632,3 +632,9 @@ body.in-match #notificationContainer {
   background: rgba(10, 14, 20, 0.88); border: 1px solid rgba(255, 255, 255, 0.12); color: #cbd5e1;
   font: 12px 'Inter', sans-serif; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
 .terrain-hint b { color: #fff; font-weight: 600; margin-right: 4px; }
+
+/* Minimap (minimap.js): one pixel per 8×8 block, scaled to a fixed width. */
+.minimap { position: absolute; left: 10px; bottom: 96px; width: 240px; height: auto; z-index: 1000;
+  border: 1px solid rgba(255, 193, 7, 0.35); border-radius: 4px; background: #0b1220;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55); image-rendering: pixelated; cursor: crosshair; }
+@media (max-width: 1100px) { .minimap { width: 180px; } }

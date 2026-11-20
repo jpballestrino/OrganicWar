@@ -132,6 +132,7 @@ export function gameUITemplate() {
 
         <!-- Kill / elimination feed -->
         <div id="terrainHint" class="terrain-hint" style="display: none;"></div>
+        <canvas id="minimap" class="minimap" title="Minimap — click or drag to move the camera" style="display: none;"></canvas>
         <div id="killFeed" style="display: none; position: absolute; top: 70px; left: 10px; width: 240px; z-index: 1000; pointer-events: none; flex-direction: column; gap: 6px;"></div>
 
         <!-- Reconnecting overlay — shown when socket drops mid-game -->

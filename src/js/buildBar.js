@@ -7,7 +7,7 @@
 import { isTyping } from './typing.js';
 import { state } from './state.js';
 import { BUILD_ACTIONS, SILO_RANGE, fmtInt } from './constants.js';
-import { getCellOwner } from './simBridge.js';
+import { getCellOwner, isCellVisible } from './simBridge.js';
 import { showToast } from './guildUI.js';
 import { playSfx } from './sfx.js';
 
@@ -100,6 +100,9 @@ export function handleBuildClick(targetCell) {
   if (action.mode === 'missile') {
     // A missile must be aimed at an enemy cell. Clicking your own land or
     // nature is ignored without a message and keeps targeting mode on.
+    // Under the fog the owner isn't known: a silo sees everything it can hit,
+    // so a fogged cell is out of every silo's range anyway.
+    if (!isCellVisible(targetCell)) return true;
     const owner = getCellOwner(targetCell);
     if (owner <= 0 || owner === myFaction()) return true;
   }

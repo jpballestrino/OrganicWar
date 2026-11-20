@@ -78,6 +78,21 @@ export class RoomSim {
         }
         break;
 
+      case 'emitFogged': {
+        // Fog of war: each listed faction's player gets its own payload,
+        // everyone else in the room (spectators, the eliminated) the fallback.
+        const room = activeRooms[this.roomId];
+        const served = [];
+        for (const [fid, buf] of msg.perFaction) {
+          const socketId = room && room.activePlayerSlots[fid] && room.activePlayerSlots[fid].socketId;
+          if (!socketId) continue;
+          this.io.to(socketId).emit(msg.event, buf);
+          served.push(socketId);
+        }
+        if (msg.fallback) this.io.to(this.roomId).except(served).emit(msg.event, msg.fallback);
+        break;
+      }
+
       case 'emitToSocket':
         // Full-state sync for one (re)joining client.
         this.io.to(msg.socketId).emit(msg.event, msg.payload);
@@ -151,9 +166,9 @@ export class RoomSim {
 
   // Send the complete match state (owners, buildings, stats) to one socket.
   // Call after the socket has joined the room, so no later delta is missed.
-  sendFullState(socketId) {
+  sendFullState(socketId, factionId = 0) {
     if (this.destroyed) return;
-    this.worker.postMessage({ type: 'fullState', socketId });
+    this.worker.postMessage({ type: 'fullState', socketId, factionId });
   }
 
   spawnFaction(factionId, row, col) {

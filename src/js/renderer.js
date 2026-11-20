@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { takeDirtyRowSpans, terrainVersion, cellView, mapWidth, mapHeight, mapSizeVersion } from './simBridge.js';
+import { takeDirtyRowSpans, terrainVersion, cellView, mapWidth, mapHeight, mapSizeVersion, fogEnabled, fogVersion, fogLayers, isCellVisible } from './simBridge.js';
 import { isTyping } from './typing.js';
 import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
 
@@ -255,6 +255,14 @@ export class WebGLRenderer {
             uniform float u_zoom;
             uniform vec2 u_map_size;
 
+            // Fog of war (simBridge fog layers, one texel per 8×8 block):
+            // u_vis_tex 1 = this player sees the block (linear filtering softens
+            // the fog's edge), u_coarse_tex the block's owner (what fogged
+            // land shows). u_fog_on 0 = no fog (pre-match, spectating).
+            uniform sampler2D u_vis_tex;
+            uniform usampler2D u_coarse_tex;
+            uniform float u_fog_on;
+
             // Per-faction troop density ratio (troops-per-cell / DIFFICULTY_CAP, 0..1).
             // Combined per-pixel with the cell's terrain cost to produce per-cell opacity:
             // mountains in a dense empire render fully solid; plains in a weak one stay faint.
@@ -316,6 +324,19 @@ export class WebGLRenderer {
 
                 ivec2 sz = ivec2(u_map_size);
                 ivec2 nearest = ivec2(worldCoord);
+
+                // --- Fog of war: last-known coarse empires over darkened terrain ---
+                float seen = u_fog_on > 0.5 ? texture(u_vis_tex, worldCoord / u_map_size).r : 1.0;
+                vec3 fogColor = vec3(0.0);
+                if (seen < 0.999) {
+                    vec3 ter = texture(u_terrain_tex, worldCoord / u_map_size).rgb;
+                    float grey = dot(ter, vec3(0.3, 0.59, 0.11));
+                    fogColor = mix(ter, vec3(grey), 0.55) * 0.5;
+                    uint co = texelFetch(u_coarse_tex, nearest >> 3, 0).r;
+                    if (co > 0u && co <= ${MAX_FACTIONS}u) fogColor = mix(fogColor, u_palette[co] * 0.55, 0.38);
+                    if (seen < 0.001) { outColor = vec4(fogColor, 1.0); return; }
+                }
+
                 uint ownerVal = ownerAt(nearest);
 
                 // --- High-zoom smoothing ---
@@ -369,7 +390,7 @@ export class WebGLRenderer {
                     baseColor = vec3(1.0, 0.0, 0.0); // debug: out-of-range owner
                 }
 
-                outColor = vec4(baseColor, 1.0);
+                outColor = vec4(mix(fogColor, baseColor, seen), 1.0);
             }
         `;
 
@@ -410,8 +431,13 @@ export class WebGLRenderer {
             myFaction: this.gl.getUniformLocation(this.program, 'u_my_faction'),
             palette: this.gl.getUniformLocation(this.program, 'u_palette'),
             terrainTex: this.gl.getUniformLocation(this.program, 'u_terrain_tex'),
+            visTex: this.gl.getUniformLocation(this.program, 'u_vis_tex'),
+            coarseTex: this.gl.getUniformLocation(this.program, 'u_coarse_tex'),
+            fogOn: this.gl.getUniformLocation(this.program, 'u_fog_on'),
         };
         this.gl.uniform1i(this.uniforms.terrainTex, 1); // Texture unit 1
+        this.gl.uniform1i(this.uniforms.visTex, 2);     // Texture unit 2
+        this.gl.uniform1i(this.uniforms.coarseTex, 3);  // Texture unit 3
 
         this.gl.uniform2f(this.uniforms.mapSize, this.mapW, this.mapH);
         this.gl.uniform1i(this.uniforms.cellTex, 0); // Texture unit 0
@@ -488,6 +514,22 @@ export class WebGLRenderer {
         this.gl.framebufferTexture2D(this.gl.FRAMEBUFFER, this.gl.COLOR_ATTACHMENT0, this.gl.TEXTURE_2D, this.terrainTexture, 0);
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
         this.bakedTerrainVersion = -1;
+
+        // Fog layers, one texel per 8×8 block (uploaded when they change).
+        const { bw, bh } = fogLayers();
+        const blockTex = (internal, format, filter) => {
+            const t = this.gl.createTexture();
+            this.gl.bindTexture(this.gl.TEXTURE_2D, t);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, filter);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, filter);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+            this.gl.texImage2D(this.gl.TEXTURE_2D, 0, internal, bw, bh, 0, format, this.gl.UNSIGNED_BYTE, null);
+            return t;
+        };
+        this.visTexture = blockTex(this.gl.R8, this.gl.RED, this.gl.LINEAR);
+        this.coarseTexture = blockTex(this.gl.R8UI, this.gl.RED_INTEGER, this.gl.NEAREST);
+        this.fogVer = -1;
     }
 
     // Paint the terrain's look into terrainTexture (once per map: see
@@ -518,6 +560,8 @@ export class WebGLRenderer {
         if (this.cellTexture) gl.deleteTexture(this.cellTexture);
         if (this.terrainTexture) gl.deleteTexture(this.terrainTexture);
         if (this.terrainFbo) gl.deleteFramebuffer(this.terrainFbo);
+        if (this.visTexture) gl.deleteTexture(this.visTexture);
+        if (this.coarseTexture) gl.deleteTexture(this.coarseTexture);
         this.initTextures();
         gl.useProgram(this.program);
         gl.uniform2f(this.uniforms.mapSize, this.mapW, this.mapH);
@@ -666,6 +710,19 @@ export class WebGLRenderer {
             this.bakedTerrainVersion = terrainVersion();
             this.bakeTerrain();
         }
+        if (fogVersion() !== this.fogVer) {
+            this.fogVer = fogVersion();
+            const { vis, coarse, bw, bh } = fogLayers();
+            const gl = this.gl;
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, this.visTexture);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, bw, bh, gl.RED, gl.UNSIGNED_BYTE, vis);
+            gl.activeTexture(gl.TEXTURE3);
+            gl.bindTexture(gl.TEXTURE_2D, this.coarseTexture);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, bw, bh, gl.RED_INTEGER, gl.UNSIGNED_BYTE, coarse);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+        }
 
         // Draw
         this.gl.bindVertexArray(this.vao);
@@ -683,8 +740,13 @@ export class WebGLRenderer {
             this.playerOpacity.set(state.factionOpacity.subarray(0, FACTION_SLOTS));
         }
         this.gl.uniform1fv(this.uniforms.playerOpacity, this.playerOpacity);
+        this.gl.uniform1f(this.uniforms.fogOn, fogEnabled() ? 1 : 0);
         this.gl.activeTexture(this.gl.TEXTURE1);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.terrainTexture);
+        this.gl.activeTexture(this.gl.TEXTURE2);
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.visTexture);
+        this.gl.activeTexture(this.gl.TEXTURE3);
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.coarseTexture);
         this.gl.activeTexture(this.gl.TEXTURE0);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
 
@@ -813,7 +875,9 @@ export class WebGLRenderer {
     // drawn edge to edge between the two icons rather than through them.
     drawBuildingLinks(ctx, buildings) {
         if (!buildings || buildings.length < 2) return;
-        const linked = buildings.filter(b => b.links && !b.constructing);
+        const me = parseInt(state.playerFaction);
+        const linked = buildings.filter(b => b.links && !b.constructing
+            && (b.factionId === me || isCellVisible(b.row * this.mapW + b.col)));
         if (linked.length < 2) return;
         const r2 = LINK_RADIUS * LINK_RADIUS;
         const t = performance.now() * 0.02;
@@ -924,7 +988,10 @@ export class WebGLRenderer {
         if (!buildings || buildings.length === 0) return;
         const now = performance.now();
 
+        const me = parseInt(state.playerFaction);
         for (const b of buildings) {
+            // Rival buildings hidden in the fog of war stay hidden.
+            if (b.factionId !== me && !isCellVisible(b.row * this.mapW + b.col)) continue;
             const pos = this.worldToScreen(b.col, b.row);
             if (pos.x < -80 || pos.x > this.canvas.width + 80 ||
                 pos.y < -80 || pos.y > this.canvas.height + 80) continue;

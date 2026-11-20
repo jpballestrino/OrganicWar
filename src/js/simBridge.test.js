@@ -104,3 +104,37 @@ describe('fortification zones after a delta', () => {
     expect(full.some((v) => ((v >> 11) & 0xF) === 10)).toBe(true);
   });
 });
+
+describe('fog of war (sim-vision)', () => {
+  it('round-trips a vision update', async () => {
+    const { encodeVision, decodeVision } = await import('./fogCodec.js');
+    const owners = new Uint8Array(2 * 64).map((_, i) => i % 7);
+    const v = decodeVision(encodeVision([5, 900], [12], owners));
+    expect([...v.shown]).toEqual([5, 900]);
+    expect([...v.hidden]).toEqual([12]);
+    expect([...v.owners]).toEqual([...owners]);
+  });
+
+  it('the first update fogs everything not in view; blocks come and go', async () => {
+    const { encodeVision } = await import('./fogCodec.js');
+    const { applyVision, fogEnabled, fogLayers, isCellVisible, resetFog } = await import('./simBridge.js');
+    const cells = freshMap();
+    resetFog();
+    expect(fogEnabled()).toBe(false);
+    expect(isCellVisible(0)).toBe(true); // no fog before the match
+    const bw = COLS / 8;
+    const block = 3 * bw + 4; // rows 24-31, cols 32-39
+    const changed = applyVision(encodeVision([block], [], new Uint8Array(64).fill(9)));
+    expect(fogEnabled()).toBe(true);
+    expect(changed.length).toBe(64);
+    expect(cells[24 * COLS + 32] & 0x7F).toBe(9);
+    expect(cells[31 * COLS + 39] & 0x7F).toBe(9);
+    expect(cells[23 * COLS + 32] & 0x7F).toBe(0);
+    expect(isCellVisible(24 * COLS + 32)).toBe(true);
+    expect(isCellVisible(0)).toBe(false);
+    expect(fogLayers().vis.reduce((n, x) => n + (x ? 1 : 0), 0)).toBe(1);
+    applyVision(encodeVision([], [block], new Uint8Array(0)));
+    expect(isCellVisible(24 * COLS + 32)).toBe(false);
+    expect(cells[24 * COLS + 32] & 0x7F).toBe(9); // last seen stays
+  });
+});
