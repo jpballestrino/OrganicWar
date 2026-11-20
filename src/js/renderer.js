@@ -1,4 +1,5 @@
 import { state } from './state.js';
+import { takeDirtyRowSpans } from './simBridge.js';
 import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
 
 // Per-faction shader arrays: index 0 = neutral, 1..MAX_FACTIONS = players.
@@ -46,6 +47,8 @@ export class WebGLRenderer {
     constructor(canvas, wasmMemory) {
         this.canvas = canvas;
         this.wasmMemory = wasmMemory;
+        // Per-frame upload accounting (read by scripts/bench-render.mjs via ?debug).
+        this.stats = { frames: 0, uploads: 0, uploadedBytes: 0, uploadMs: 0 };
         this.gl = this.canvas.getContext('webgl2', { antialias: false, alpha: false });
         if (!this.gl) throw new Error("WebGL2 not supported");
 
@@ -427,13 +430,28 @@ export class WebGLRenderer {
 
         this.updateCamera(dt);
 
-        // Upload the packed cell buffer to the GPU (owner + terrain in one texture).
+        // Upload the packed cell buffer to the GPU (owner + terrain in one
+        // texture) — only the rows that changed since the last frame
+        // (simBridge marks them), and nothing when nothing changed. The map
+        // changes ~20 times a second at most, and only along the fronts.
+        const tUp = performance.now();
         if (this.cellDataPtr !== null && this.wasmMemory) {
-            const cellArray = new Uint16Array(this.wasmMemory.buffer, this.cellDataPtr, TOTAL_CELLS);
-            this.gl.activeTexture(this.gl.TEXTURE0);
-            this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
-            this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, 0, MAP_WIDTH, MAP_HEIGHT, this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, cellArray);
+            const spans = takeDirtyRowSpans();
+            if (spans.length) {
+                const cellArray = new Uint16Array(this.wasmMemory.buffer, this.cellDataPtr, TOTAL_CELLS);
+                this.gl.activeTexture(this.gl.TEXTURE0);
+                this.gl.bindTexture(this.gl.TEXTURE_2D, this.cellTexture);
+                for (const [r0, r1] of spans) {
+                    const rows = r1 - r0 + 1;
+                    this.gl.texSubImage2D(this.gl.TEXTURE_2D, 0, 0, r0, MAP_WIDTH, rows,
+                        this.gl.RED_INTEGER, this.gl.UNSIGNED_SHORT, cellArray, r0 * MAP_WIDTH);
+                    this.stats.uploadedBytes += rows * MAP_WIDTH * 2;
+                }
+                this.stats.uploads++;
+            }
         }
+        this.stats.uploadMs += performance.now() - tUp;
+        this.stats.frames++;
 
         // Draw
         this.gl.bindVertexArray(this.vao);

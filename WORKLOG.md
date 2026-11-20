@@ -359,3 +359,35 @@ placements, kills, land, form and match history with mode, place and rating
 change (migration 007).
 Tests: stats.test.js (5), e2e-guildwar.mjs (19), TEAMS=2 bench; vitest 41/41,
 e2e-ranked 18/18, smoke-ranked 10/10.
+
+## Session 9 — map data: GPU upload, difficulty, wire format (measured)
+
+The 16 bits per cell are kept (≈11 needed; a u16 is the smallest word that
+fits). The waste was in how the data moved. Before → after, same scripts:
+
+| | before | after |
+|---|---|---|
+| sim tick, native 20-bot match (median of 5) | 0.95 ms | 0.82 ms (−14%) |
+| sim tick, real worker 20-player match | 2.12 ms | 1.60 ms (−25%) |
+| room CPU (share of one core) | 5.3% | 4.0% |
+| room WASM heap | 8 MB | 7 MB |
+| deltas per client, raw | 75.2 KB/s | 50.0 KB/s (−34%) |
+| deltas per client, on the wire (deflate) | 65.8 KB/s | 27.6 KB/s (−58%) |
+| GPU upload at ~40 fps (320×180) | 156 MB/s | 43.6 MB/s (−72%) |
+| GPU upload, 800×450 early / mid-match | 61 / 16.6 MB/s | 31 / 9.3 MB/s |
+| ms per frame uploading (40 fps) | 0.60 | 0.25 |
+| ms to apply a sim-delta, mid-match | 1.26 | 0.20 (−84%) |
+
+- [x] Renderer uploads only changed rows, nothing when nothing changed.
+- [x] Fort zones re-derived only for cells that changed owner (equivalence
+      test against the full redraw).
+- [x] difficulty_to_invade computed on demand; exact same prices (density
+      sampled once a second, fresh-cell and tier-at-sample bits): the 20-bot
+      timeline is bit-identical. A first version applying tier changes at
+      once changed the match (ended at 411 s instead of 510 s) — rejected.
+- [x] sim-delta = varint id gap + owner byte (deltaCodec.js); full-sync check
+      0 cells differ.
+fps in headless Chromium (software GL) is fill-rate bound and did not move;
+the upload savings matter on real GPUs/phones and the delta-apply time on
+the main thread. Tests: simBridge.test.js (6), vitest 47/47, cargo 6/6,
+smoke-browser all passed. Tools: bench-render.mjs, bench-room wire size.

@@ -206,9 +206,8 @@ const DIFFICULTY_CAP: f32 = 50.0;
 
 // Flat troop cost to conquer a neutral (unowned) cell, regardless of terrain.
 // Neutral land is cheap to grab so factions spread quickly over open map;
-// the terrain-weighted difficulty_to_invade only governs owned (defended)
-// cells. This is a fractional cost, so it cannot live in the u32
-// difficulty_to_invade buffer — it is applied directly in process_war_fronts.
+// the terrain-weighted difficulty_to_invade() only governs owned (defended)
+// cells. It is applied directly in process_war_fronts.
 const NEUTRAL_INVADE_COST: f32 = 0.2;
 
 // ── Binary exports for the server (see the "Wire format" section of CLAUDE.md) ─
@@ -264,8 +263,20 @@ pub struct SimulationState {
     // --- Map Cell Data ---
     // Packed per-cell field: owner / terrain / defense / has_building (see layout above).
     cell_data: Vec<u16>,
-    // Troops an attacker pays to take each cell, 0..=DIFFICULTY_CAP (fits a u8).
-    difficulty_to_invade: Vec<u8>,
+    // What an attacker pays to take an owned cell is computed on demand
+    // (difficulty_to_invade()) from these, instead of a 2 MB per-cell array
+    // rewritten for every cell once a second:
+    //   * each player's troop density, sampled once a second;
+    //   * one bit per cell taken since that sample (such a cell costs 0 until
+    //     the next one — "freshly taken cells are cheap to re-contest").
+    //   * a cell whose defense tier changed since the sample (a tower finished
+    //     or was destroyed) keeps its tier as of the sample until the next one,
+    //     so prices behave exactly as when the whole map was re-priced once a
+    //     second (`tier_changed` bit + the old tier in `tier_at_sample`).
+    density_snapshot: [f32; PLAYER_ARRAY_SIZE],
+    fresh_cells: Vec<u64>,
+    tier_changed: Vec<u64>,
+    tier_at_sample: std::collections::HashMap<u32, u8>,
     // Per-block scan state (BLOCK_UNKNOWN / QUIET / ACTIVE) — see the block index
     // consts above.
     block_state: Vec<u8>,
@@ -420,7 +431,12 @@ impl SimulationState {
         let state = SimulationState {
             // Map Initializers
             cell_data: vec![0; TOTAL_CELLS],
-            difficulty_to_invade: vec![0; TOTAL_CELLS],
+            density_snapshot: [0.0; PLAYER_ARRAY_SIZE],
+            // Before the first sample every cell costs 0 (the old per-cell
+            // array started zeroed).
+            fresh_cells: vec![u64::MAX; (TOTAL_CELLS + 63) / 64],
+            tier_changed: vec![0; (TOTAL_CELLS + 63) / 64],
+            tier_at_sample: std::collections::HashMap::new(),
             block_state: vec![BLOCK_UNKNOWN; BLOCKS_W * BLOCKS_H],
             delta_scratch: Vec::new(),
             front_candidates: vec![Vec::new(); PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
@@ -580,6 +596,15 @@ impl SimulationState {
     #[allow(dead_code)]
     #[inline]
     fn set_cell_defense(&mut self, i: usize, tier: u8) {
+        // Prices use the tier as of the last density sample (see the fields).
+        let (w, b) = (i >> 6, 1u64 << (i & 63));
+        if self.tier_changed[w] & b == 0 && self.fresh_cells[w] & b == 0 {
+            let old = ((self.cell_data[i] & DEFENSE_MASK) >> DEFENSE_SHIFT) as u8;
+            if old != tier {
+                self.tier_changed[w] |= b;
+                self.tier_at_sample.insert(i as u32, old);
+            }
+        }
         self.cell_data[i] =
             (self.cell_data[i] & !DEFENSE_MASK) | (((tier as u16) << DEFENSE_SHIFT) & DEFENSE_MASK);
     }
@@ -945,49 +970,63 @@ impl SimulationState {
         self.process_construction();
         self.process_flak_recharge();
         if self.links_dirty { self.recompute_links(); }
-        // Recompute per-cell difficulty once per second. Interior cells of a dense
-        // territory become progressively harder to crack; freshly taken border cells
-        // reset to 0 at conquest and rebuild over this interval.
+        // Sample each player's troop density once per second (the input of
+        // difficulty_to_invade()); freshly taken cells cost 0 until then.
         if self.current_tick % self.tick_hz == 0 {
             self.update_cell_difficulties();
         }
     }
 
+    // Once a second: sample every player's troop density (troops / owned
+    // cells) and forget which cells were freshly taken.
     fn update_cell_difficulties(&mut self) {
-        // Pre-compute per-player troop density (troops / owned_cells) once.
-        let mut density = [0.0f32; PLAYER_ARRAY_SIZE];
         for p in 1..PLAYER_ARRAY_SIZE {
             let cells = self.player_owned_cells[p];
-            if cells > 0 {
-                density[p] = self.player_total_troops[p] / cells as f32;
-            }
-        }
-
-        for cell in 0..TOTAL_CELLS {
-            let packed = self.cell_data[cell];
-            let owner = (packed & OWNER_MASK) as usize;
-
-            let terrain_cost = match (packed >> TERRAIN_SHIFT) & 0x000F {
-                0 => 1.0f32,  // Plains
-                1 => 3.0,     // Highlands
-                2 => 6.0,     // Mountains
-                _ => 0.0,     // Water (never in candidates anyway)
-            };
-            // Defense tier stored in bits 11-14; default to 1 until buildings add tiers.
-            let def_tier = {
-                let raw = ((packed & DEFENSE_MASK) >> DEFENSE_SHIFT) as f32;
-                if raw < 1.0 { 1.0 } else { raw }
-            };
-            // Neutral cells have no troop density; owned cells add the player's density.
-            let player_density = if owner >= 1 && owner < PLAYER_ARRAY_SIZE {
-                density[owner]
+            self.density_snapshot[p] = if cells > 0 {
+                self.player_total_troops[p] / cells as f32
             } else {
                 0.0
             };
-
-            let difficulty = ((player_density + terrain_cost) * def_tier).min(DIFFICULTY_CAP);
-            self.difficulty_to_invade[cell] = difficulty as u8;
         }
+        self.fresh_cells.iter_mut().for_each(|w| *w = 0);
+        for &cell in self.tier_at_sample.keys() {
+            self.tier_changed[(cell >> 6) as usize] = 0;
+        }
+        self.tier_at_sample.clear();
+    }
+
+    // Troops an attacker pays to take `cell`: (owner's density at the last
+    // sample + terrain cost) × defense tier, capped at DIFFICULTY_CAP and
+    // rounded down to a whole troop; 0 for a cell taken since the last sample.
+    // (Neutral cells are priced separately — NEUTRAL_INVADE_COST.)
+    #[inline]
+    fn difficulty_to_invade(&self, cell: usize) -> f32 {
+        if self.fresh_cells[cell >> 6] & (1u64 << (cell & 63)) != 0 {
+            return 0.0;
+        }
+        let packed = self.cell_data[cell];
+        let owner = (packed & OWNER_MASK) as usize;
+        let terrain_cost = match (packed >> TERRAIN_SHIFT) & 0x000F {
+            0 => 1.0f32,  // Plains
+            1 => 3.0,     // Highlands
+            2 => 6.0,     // Mountains
+            _ => 0.0,     // Water (never in candidates anyway)
+        };
+        // Defense tier stored in bits 11-14 (as of the last sample); 0 counts as 1.
+        let def_tier = {
+            let raw = if self.tier_changed[cell >> 6] & (1u64 << (cell & 63)) != 0 {
+                self.tier_at_sample[&(cell as u32)] as f32
+            } else {
+                ((packed & DEFENSE_MASK) >> DEFENSE_SHIFT) as f32
+            };
+            if raw < 1.0 { 1.0 } else { raw }
+        };
+        let player_density = if owner >= 1 && owner < PLAYER_ARRAY_SIZE {
+            self.density_snapshot[owner]
+        } else {
+            0.0
+        };
+        ((player_density + terrain_cost) * def_tier).min(DIFFICULTY_CAP).floor()
     }
 
     fn apply_production(&mut self) {
@@ -1275,15 +1314,16 @@ impl SimulationState {
                     // What the ATTACKER pays to take this cell. Neutral land is a
                     // flat, cheap cost regardless of terrain so the open map fills
                     // quickly. Owned cells use the terrain-weighted
-                    // difficulty_to_invade = (density + terrain_cost) * defense_tier,
-                    // computed each second by update_cell_difficulties() and reset to 0
-                    // on conquest so freshly taken cells are cheap to re-contest. A
+                    // difficulty_to_invade() = (density + terrain_cost) * defense_tier,
+                    // with the density sampled each second by update_cell_difficulties(),
+                    // and 0 for a cell taken since then so freshly taken cells are cheap
+                    // to re-contest. A
                     // fortified (high defense_tier) cell is genuinely expensive for the
                     // attacker — that is the whole point of building defenses.
                     let total_cost = if n_owner == 0 {
                         NEUTRAL_INVADE_COST
                     } else {
-                        self.difficulty_to_invade[n_idx] as f32 * enemy_cost_mult
+                        self.difficulty_to_invade(n_idx) * enemy_cost_mult
                     };
 
                     if self.front_pool[fi] >= total_cost {
@@ -1338,9 +1378,9 @@ impl SimulationState {
                         }
 
                         self.set_cell_owner(n_idx, f as u32);
-                        // Freshly taken cell has no fortification yet; enclosure for the
-                        // new owner builds up within one second via update_cell_difficulties.
-                        self.difficulty_to_invade[n_idx] = 0;
+                        // Freshly taken: costs 0 to re-take until the next density
+                        // sample (update_cell_difficulties, once a second).
+                        self.fresh_cells[n_idx >> 6] |= 1u64 << (n_idx & 63);
                         // Fortification follows ownership: a cell taken inside one of
                         // our own building radii inherits tier 10, so a fort built near
                         // the border keeps protecting territory we expand into later.
@@ -1415,8 +1455,6 @@ impl SimulationState {
     #[wasm_bindgen]
     pub fn get_cell_data_ptr(&self) -> *const u16 { self.cell_data.as_ptr() }
 
-    #[wasm_bindgen]
-    pub fn get_difficulty_to_invade_ptr(&self) -> *const u8 { self.difficulty_to_invade.as_ptr() }
 
 
     
