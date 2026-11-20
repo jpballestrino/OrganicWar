@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { parentPort, workerData } from 'worker_threads';
 import { generateTerrain } from '../../src/js/mapGen.js';
 import { MAX_FACTIONS } from '../../src/js/constants.js';
+import { encodeDelta } from '../../src/js/deltaCodec.js';
 // We cannot use the global logger cleanly since it writes to files and we are in a thread.
 // We can either post logs to the parent or just use console.log. Let's post them.
 function logInfo(msg) {
@@ -459,7 +460,9 @@ class RoomSimWorker {
     if (!count) return;
     // The scratch buffer can move when it grows: read the pointer after collect.
     const ptr = this.exports.simulationstate_get_delta_scratch_ptr(this.statePtr);
-    const payload = this._copyOut(ptr, count * 4);
+    // Compact wire form: varint cell-id gaps + owner bytes (deltaCodec.js).
+    const encoded = encodeDelta(new Uint32Array(this.exports.memory.buffer, ptr, count));
+    const payload = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
 
     this.profileMetrics.snapshotCount++;
     this.profileMetrics.totalPayloadBytes += payload.byteLength;

@@ -3,7 +3,7 @@ import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken, isLoggedIn } from './auth.js';
 import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
-import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, repaintTerrain } from './simBridge.js';
+import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain } from './simBridge.js';
 import { escapeHtml } from './escape.js';
 import { onSnapshotStats } from './matchFeel.js';
 import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt } from './constants.js';
@@ -621,10 +621,10 @@ export function initNetwork() {
   // Owner changes, ~20×/s.
   socket.on('sim-delta', (buf) => {
     const t0 = state.debug ? performance.now() : 0;
-    applyOwnerDelta(buf);
-    // Owner bits changed; re-derive fort zones so newly-conquered cells inside
-    // a tower radius gain (and cells lost out of it drop) tier 10.
-    resyncBuildingZones(state.buildings);
+    const changed = applyOwnerDelta(buf);
+    // Owner bits changed; newly-conquered cells inside a tower radius gain
+    // (and cells lost out of it drop) tier 10 — only the changed cells.
+    resyncZonesForCells(changed, state.buildings);
     if (state.debug) {
       const ms = performance.now() - t0;
       state.lastApplyMs = ms;
@@ -709,7 +709,12 @@ export function initNetwork() {
     // would wipe an overlapping completed fort's tier until the next resync.
     const stampedZone = b && !b.constructing && b.type === 'defense';
     state.buildings = state.buildings.filter(b => !(b.row === row && b.col === col));
-    if (stampedZone) removeDefenseBuilding(row, col, radius);
+    if (stampedZone) {
+      removeDefenseBuilding(row, col, radius);
+      // An overlapping fort of the same owner keeps its zone (rare event, so
+      // re-deriving every zone here is fine).
+      resyncBuildingZones(state.buildings);
+    }
   });
 
   // A building's synergy links or anti-air interceptors changed.

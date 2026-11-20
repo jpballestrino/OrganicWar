@@ -4,6 +4,7 @@
 
 import { TOTAL_CELLS, CELL_OWNER_MASK, COLS, ROWS } from './constants.js';
 import { generateTerrain } from './mapGen.js';
+import { decodeDelta } from './deltaCodec.js';
 
 const DEFENSE_SHIFT = 11;
 const DEFENSE_MASK = 0x7800;
@@ -13,9 +14,43 @@ let wasmMemory = null;
 let cellDataPtr = null;
 let paintedMapId = null;
 
+// ── Which map rows changed since the renderer last uploaded them ────────────
+// The renderer used to upload the whole 4 MB cell texture every frame; now it
+// asks for the changed rows (takeDirtyRowSpans) and uploads only those, and
+// nothing at all when nothing changed. Every write into cell_data below marks
+// its rows.
+const dirtyRows = new Uint8Array(ROWS);
+let anyDirty = false;
+const markRow = (r) => { dirtyRows[r] = 1; anyDirty = true; };
+function markRows(r0, r1) {
+  for (let r = Math.max(0, r0); r <= Math.min(ROWS - 1, r1); r++) dirtyRows[r] = 1;
+  anyDirty = true;
+}
+export function markAllDirty() { dirtyRows.fill(1); anyDirty = true; }
+
+// Spans [firstRow, lastRow] to upload, merging spans less than `maxGap` rows
+// apart (fewer, larger uploads). Clears the marks. [] when nothing changed.
+export function takeDirtyRowSpans(maxGap = 16) {
+  if (!anyDirty) return [];
+  const spans = [];
+  let start = -1;
+  let last = -1;
+  for (let r = 0; r < ROWS; r++) {
+    if (!dirtyRows[r]) continue;
+    if (start >= 0 && r - last <= maxGap) { last = r; continue; }
+    if (start >= 0) spans.push([start, last]);
+    start = last = r;
+  }
+  if (start >= 0) spans.push([start, last]);
+  dirtyRows.fill(0);
+  anyDirty = false;
+  return spans;
+}
+
 export function registerSim({ memory, cellDataPtr: ptr }) {
   wasmMemory = memory;
   cellDataPtr = ptr;
+  markAllDirty();
 }
 
 // Repaint the static terrain for the server-chosen map. The client paints a
@@ -29,6 +64,7 @@ export function repaintTerrain(mapId) {
   if (mapId === paintedMapId) return;
   generateTerrain(wasmMemory, cellDataPtr, mapId);
   paintedMapId = mapId;
+  markAllDirty();
 }
 
 // Owner faction id (0 = nature) of a cell in the local render cache. Used for the
@@ -40,7 +76,7 @@ export function getCellOwner(cellId) {
 }
 
 // ── Wire format (encoded by the sim + server/game/simulationWorker.js) ───────
-// sim-delta : ArrayBuffer of u32, each `cell_id (21 bits) | owner << 21`.
+// sim-delta : changed cells, varint cell-id gaps + owner bytes (deltaCodec.js).
 // sim-full  : { owners: ArrayBuffer of u32 runs `length (24 bits) | owner << 24`
 //               covering every cell in row-major order, buildings: [...],
 //               stats: <sim-stats buffer> } — sent to a (re)joining client.
@@ -53,16 +89,57 @@ const toU32 = (buf) => (buf instanceof ArrayBuffer
   // A typed-array / Buffer view: copy so the u32 view is aligned.
   : new Uint32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)));
 
+// Apply a sim-delta. Returns the ids of the cells whose owner really changed
+// (a reused buffer, valid until the next call) for resyncZonesForCells.
+let changedBuf = new Uint32Array(4096);
 export function applyOwnerDelta(buf) {
-  if (!wasmMemory || cellDataPtr === null || !buf) return;
+  if (!wasmMemory || cellDataPtr === null || !buf) return changedBuf.subarray(0, 0);
   const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
-  const delta = toU32(buf);
-  for (let i = 0; i < delta.length; i++) {
-    const v = delta[i];
-    const id = v & 0x1FFFFF;
-    if (id < TOTAL_CELLS) {
-      cells[id] = (cells[id] & ~CELL_OWNER_MASK) | ((v >>> 21) & CELL_OWNER_MASK);
+  let n = 0;
+  decodeDelta(buf, (id, owner) => {
+    if (id >= TOTAL_CELLS) return;
+    const v = cells[id];
+    const next = (v & ~CELL_OWNER_MASK) | (owner & CELL_OWNER_MASK);
+    if (next === v) return;
+    cells[id] = next;
+    markRow((id / COLS) | 0);
+    if (n === changedBuf.length) {
+      const bigger = new Uint32Array(changedBuf.length * 2);
+      bigger.set(changedBuf);
+      changedBuf = bigger;
     }
+    changedBuf[n++] = id;
+  });
+  return changedBuf.subarray(0, n);
+}
+
+// After owner changes: the fortification tier of the cells that changed hands
+// follows the same rule as resyncBuildingZones — inside a completed tower's
+// zone, tier 10 if the cell belongs to that tower's owner, else 0; cells
+// outside every zone are left alone. Only the changed cells are visited
+// (resyncBuildingZones redid every zone on the map 20 times a second).
+export function resyncZonesForCells(changed, buildings) {
+  if (!changed.length || !buildings || !buildings.length) return;
+  const zones = buildings.filter((b) => b.type === 'defense' && !b.constructing);
+  if (!zones.length) return;
+  const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
+  for (let i = 0; i < changed.length; i++) {
+    const id = changed[i];
+    const r = (id / COLS) | 0;
+    const c = id - r * COLS;
+    const owner = cells[id] & CELL_OWNER_MASK;
+    let inZone = false;
+    let tierBits = -1;
+    for (const b of zones) {
+      const dr = r - b.row;
+      const dc = c - b.col;
+      if (dr * dr + dc * dc > b.radius * b.radius) continue;
+      inZone = true;
+      if (b.factionId === owner) { tierBits = (b.defTier & 0xF) << DEFENSE_SHIFT; break; }
+    }
+    if (!inZone) continue;
+    const next = (cells[id] & ~DEFENSE_MASK) | (tierBits >= 0 ? tierBits : 0);
+    if (next !== cells[id]) { cells[id] = next; markRow(r); }
   }
 }
 
@@ -77,6 +154,7 @@ export function applyOwnerRuns(buf) {
     const end = Math.min(TOTAL_CELLS, i + (runs[r] & 0xFFFFFF));
     for (; i < end; i++) cells[i] = (cells[i] & ~CELL_OWNER_MASK) | owner;
   }
+  markAllDirty();
 }
 
 // How many cells of the local render cache faction `fid` owns (debug / tests).
@@ -94,6 +172,7 @@ export function clearAllBuildingBits() {
   const cells = new Uint16Array(wasmMemory.buffer, cellDataPtr, TOTAL_CELLS);
   const keep = ~(DEFENSE_MASK | BUILDING_MASK_JS) & 0xFFFF;
   for (let i = 0; i < TOTAL_CELLS; i++) cells[i] &= keep;
+  markAllDirty();
 }
 
 // sim-stats: a 20-byte header then one 80-byte record per player (layout:
@@ -180,6 +259,7 @@ export function removeDefenseBuilding(buildingRow, buildingCol, radius) {
       }
     }
   }
+  markRows(Math.min(rMin, buildingRow - 4), Math.max(rMax, buildingRow + 3));
 }
 
 // Re-derive every building's fortification zone after an owner snapshot.
@@ -241,4 +321,5 @@ export function applyDefenseBuilding(buildingRow, buildingCol, radius, defTier, 
       }
     }
   }
+  markRows(Math.min(rMin, buildingRow - 4), Math.max(rMax, buildingRow + 3));
 }

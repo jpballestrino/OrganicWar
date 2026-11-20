@@ -10,9 +10,12 @@
 // full-state sync does not reproduce the delta-built map.
 
 import { Worker } from 'worker_threads';
+import zlib from 'zlib';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { terrainAt, TERRAIN } from '../src/js/mapGen.js';
+import { decodeDelta } from '../src/js/deltaCodec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER = path.join(__dirname, '..', 'server', 'game', 'simulationWorker.js');
@@ -60,6 +63,12 @@ const bytes = { 'sim-delta': 0, 'sim-stats': 0, other: 0 };
 const counts = {};
 const owners = new Uint8Array(TOTAL_CELLS); // map rebuilt from deltas only
 const loads = [];
+const deltaPayloads = []; // kept to measure the compressed (on-the-wire) size
+
+// Apply one sim-delta to the bench's own map (same decoding as the client).
+function applyDelta(buf, map) {
+  decodeDelta(buf, (id, owner) => { map[id] = owner; });
+}
 let eliminated = 0;
 let lastStats = null;
 let fullCheckDone = false;
@@ -85,8 +94,8 @@ worker.on('message', (msg) => {
     counts[msg.event] = (counts[msg.event] || 0) + 1;
     if (msg.event === 'sim-delta') {
       bytes['sim-delta'] += msg.payload.byteLength;
-      const d = new Uint32Array(msg.payload);
-      for (const v of d) owners[v & 0x1FFFFF] = v >>> 21;
+      deltaPayloads.push(msg.payload);
+      applyDelta(msg.payload, owners);
     } else if (msg.event === 'sim-stats') {
       bytes['sim-stats'] += msg.payload.byteLength;
       lastStats = msg.payload;
@@ -170,7 +179,23 @@ const limit = setTimeout(() => {
   worker.terminate();
 }, SECONDS * 1000);
 
-function report(secs) {
+// What the deltas cost on the wire. Socket.IO compresses each message of
+// 2 KB or more with permessage-deflate (server.js: threshold 2048), keeping the
+// compression context between messages; smaller ones go as they are.
+async function wireBytes(payloads) {
+  const deflate = zlib.createDeflateRaw();
+  let out = 0;
+  deflate.on('data', (c) => { out += c.length; });
+  for (const p of payloads) {
+    if (p.byteLength < 2048) { out += p.byteLength; continue; }
+    await new Promise((r) => { deflate.write(Buffer.from(p)); deflate.flush(zlib.constants.Z_SYNC_FLUSH, r); });
+    out -= 4; // permessage-deflate drops the 00 00 FF FF tail of each flush
+  }
+  deflate.end();
+  return out;
+}
+
+async function report(secs) {
   const avg = (k) => loads.length ? loads.reduce((s, l) => s + l[k], 0) / loads.length : 0;
   const max = (k) => loads.reduce((m, l) => Math.max(m, l[k]), 0);
   console.log('\n── room load (from the worker\'s own load reports) ──');
@@ -179,6 +204,13 @@ function report(secs) {
   console.log(`room memory    ${max('wasmMB')} MB of WASM heap (plus one V8 isolate)`);
   console.log('── wire, per connected client ──');
   const kb = (b) => (b / 1024 / secs).toFixed(1);
+  const wire = await wireBytes(deltaPayloads);
+  if (process.env.DUMP_DELTAS) {
+    // Length-prefixed raw payloads, for offline encoding experiments.
+    const parts = deltaPayloads.flatMap((p) => [Buffer.from(Uint32Array.of(p.byteLength).buffer), Buffer.from(p)]);
+    fs.writeFileSync(process.env.DUMP_DELTAS, Buffer.concat(parts));
+  }
+  console.log(`sim-delta on the wire (permessage-deflate) ${kb(wire)} KB/s`);
   console.log(`sim-delta ${kb(bytes['sim-delta'])} KB/s (${counts['sim-delta'] || 0} msgs), ` +
     `sim-stats ${kb(bytes['sim-stats'])} KB/s (${counts['sim-stats'] || 0} msgs), other events ${kb(bytes.other)} KB/s`);
   if (!lastStats) { fail('no sim-stats received'); return; }
