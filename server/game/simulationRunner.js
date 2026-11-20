@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { Worker } from 'worker_threads';
 import { log } from '../utils/logger.js';
 import { activeRooms } from './state.js';
+import { getTerrain, storeTerrain } from './terrainCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +32,7 @@ export class RoomSim {
         roomId,
         numPlayers,
         mapId: opts.mapId || 'north_america',
+        mapSize: opts.mapSize || 'standard',
         opts: {
           startCells: opts.startCells,
           startTroops: opts.startTroops,
@@ -39,6 +41,8 @@ export class RoomSim {
           startMaxCap: opts.startMaxCap,
           domination: opts.domination,
           teams: opts.teams || null,
+          // The map's finished terrain, shared (not copied) when cached.
+          terrain: getTerrain(opts.mapId || 'north_america', opts.mapSize || 'standard'),
         },
         env: envConfig
       }
@@ -95,6 +99,10 @@ export class RoomSim {
         if (this.onGameOver) {
           this.onGameOver(msg.winner, msg.stats, !!msg.byDomination);
         }
+        break;
+
+      case 'terrain':
+        storeTerrain(msg.mapId, msg.mapSize, msg.buffer);
         break;
 
       case 'ready':

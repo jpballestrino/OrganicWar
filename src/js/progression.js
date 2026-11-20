@@ -11,7 +11,7 @@
 // The pure core (normalizeProfile / scoreMatch / dayKey) is imported by both,
 // so XP and missions are identical wherever they are scored.
 
-import { QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS, MAX_FACTIONS } from './constants.js';
+import { QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS, MAX_FACTIONS, MAP_SIZES } from './constants.js';
 
 const MAX_PLAYERS_PER_MATCH = MAX_FACTIONS;
 
@@ -30,6 +30,12 @@ const KEY = 'ow_profile_v1';
 const CALIBRATION_PLAYERS = QUICK_PLAY_PLAYERS;
 export function fieldScale(totalPlayers) {
   return Math.max(1, (totalPlayers || CALIBRATION_PLAYERS) / CALIBRATION_PLAYERS);
+}
+// Land is also scaled by the map's size: Mega Battles play on a bigger map
+// (MAP_SIZES.mega), so the same share of the land is more cells there.
+const STANDARD_MAP_CELLS = MAP_SIZES.standard.width * MAP_SIZES.standard.height;
+export function landScale(totalPlayers, mapCells = STANDARD_MAP_CELLS) {
+  return fieldScale(totalPlayers) * STANDARD_MAP_CELLS / (mapCells || STANDARD_MAP_CELLS);
 }
 const VICTORY_XP = 150;
 
@@ -191,7 +197,8 @@ export function megaTarget(def) {
   const scale = fieldScale(MEGA_PLAY_PLAYERS);
   if (def.stat === 'placement') return `top ${Math.floor(def.goal * scale)} in Mega Battle`;
   if (def.stat === 'peakCells') {
-    return `${(Math.round(def.goal / scale / 1000) * 1000).toLocaleString('en-US')} in Mega Battle`;
+    const megaCells = MAP_SIZES.mega.width * MAP_SIZES.mega.height;
+    return `${(Math.round(def.goal / landScale(MEGA_PLAY_PLAYERS, megaCells) / 1000) * 1000).toLocaleString('en-US')} in Mega Battle`;
   }
   return '';
 }
@@ -208,7 +215,7 @@ export function missionViews(profile) {
 /**
  * Score one finished match against a profile. Pure: returns a new profile.
  * match: { placement, totalPlayers, won, eliminations, peakCells, survivedSec,
- *          towers, missiles, tookLead }
+ *          towers, missiles, tookLead, mapCells (the map's width × height) }
  * day / yesterday: the player's calendar days (dayKey) for streaks and missions.
  * Returns { lines: [{label, xp}], totalXp, before, after, leveledUp, missions, profile }.
  */
@@ -225,7 +232,7 @@ export function scoreMatch(rawProfile, match, { day = todayKey(), yesterday = ye
 
   const scale = fieldScale(total);
   // Standard-battle equivalents (see "Room-size scaling" above).
-  const equivLand = (match.peakCells || 0) * scale;
+  const equivLand = (match.peakCells || 0) * landScale(total, match.mapCells);
   const equivPlacement = Math.ceil(placement / scale);
 
   add('Battle fought', 20);

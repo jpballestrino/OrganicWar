@@ -24,6 +24,7 @@ import { log } from './utils/logger.js';
 import { activeRooms } from './game/state.js';
 import { setupSocketHandlers } from './game/socketHandlers.js';
 import { capacityReport } from './game/capacity.js';
+import { warmTerrainCache } from './game/terrainCache.js';
 import { guildWarMatchmakerInterval, rankedMatchmakerInterval, playerCountInterval } from './game/gameLoop.js';
 
 runMigrations();
@@ -271,6 +272,9 @@ if (process.env.NODE_ENV !== 'test') {
 httpServer.listen(PORT, () => {
   log('info', `Server listening on port ${PORT}`);
   log('info', describeAds());
+  // Every map's terrain, computed once in a background thread, so rooms
+  // start without generating theirs (game/terrainCache.js).
+  if (process.env.NODE_ENV !== 'test') warmTerrainCache();
 });
 
 function gracefulShutdown(signal) {

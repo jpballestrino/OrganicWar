@@ -3,7 +3,8 @@ import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, reclaimSlot, leaveRankedQueue, startGuildWarCountdown, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
-import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
+import { MAP_POOL } from '../../src/js/mapGen.js';
+import { isLandAt } from './terrainCache.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
@@ -43,7 +44,7 @@ function getFactionForSocket(room, socketId) {
 const createRoomSchema = z.object({
   name: z.string().min(1).max(50),
   maxPlayers: z.coerce.number().int().min(2).max(MAX_FACTIONS),
-  preset: z.enum(['north_america', 'europe', 'africa']).optional(),
+  preset: z.enum(MAP_POOL).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
 
@@ -277,7 +278,7 @@ export function setupSocketHandlers(io) {
         let room = Object.values(activeRooms)
           .find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout && r.maxPlayers === size);
         if (!room) {
-          room = createRoom(mode === 'mega' ? 'Mega Battle' : 'Quick Game', randomMapId(), size, true);
+          room = createRoom(mode === 'mega' ? 'Mega Battle' : 'Quick Game', null, size, true);
           if (!room) {
             // The client hid the menu when it asked; this brings it back.
             socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });
@@ -447,10 +448,10 @@ export function setupSocketHandlers(io) {
         if (!Number.isFinite(row) || !Number.isFinite(col)) return;
         row = Math.floor(row);
         col = Math.floor(col);
-        if (row < 0 || row >= 1080 || col < 0 || col >= 1920) return;
+        if (row < 0 || row >= room.mapHeight || col < 0 || col >= room.mapWidth) return;
 
         // A spawn on water claims no cells, leaving the player dead on arrival.
-        if (terrainAt(col / 1920, row / 1080, room.preset) === TERRAIN.WATER) {
+        if (!isLandAt(room.preset, room.mapSize, row, col)) {
           socket.emit('spawn-rejected', 'You cannot deploy on water. Pick a land cell.');
           return;
         }
@@ -799,6 +800,7 @@ export function setupSocketHandlers(io) {
             // Back into the spawn picker with the time that is left.
             socket.emit('spawn-selection-start', {
               duration: Math.max(1, room.spawnTicksLeft || 1), mapId: room.preset, safeZoneRadius: room.safeZoneRadius,
+              mapWidth: room.mapWidth, mapHeight: room.mapHeight,
             });
             const selections = {};
             for (let [f, p] of room.spawnSelections.entries()) selections[f] = p;

@@ -67,7 +67,9 @@ const end = await Promise.race([endA, new Promise((_, rej) => setTimeout(() => r
 const res = await Promise.race([resultA, new Promise((r) => setTimeout(() => r(null), 5000))]);
 check(`the server sends the XP result (${end.how})`, !!res, res ? `+${res.totalXp} XP, placed #${end.placement}` : 'no progression-result');
 if (res) {
-  check('the result is scored from the server\'s numbers', res.lines.some(l => l.label === `Placed #${end.placement} of 20`),
+  // Last place earns 0 placement XP, so it has no line; any other place has one.
+  check('the result is scored from the server\'s numbers',
+    end.placement === 20 ? !res.lines.some(l => l.label.startsWith('Placed #')) : res.lines.some(l => l.label === `Placed #${end.placement} of 20`),
     res.lines.map(l => `${l.label}: ${l.xp}`).join(', '));
   check('the result carries the saved profile', res.profile.games === 1 && res.profile.xp === res.totalXp);
 }

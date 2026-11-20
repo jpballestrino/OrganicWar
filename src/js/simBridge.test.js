@@ -8,7 +8,7 @@ import {
 } from './simBridge.js';
 import { TOTAL_CELLS, COLS, ROWS } from './constants.js';
 
-const pack = (id, owner) => (id | (owner << 21)) >>> 0;
+const pack = (id, owner) => (id | (owner << 25)) >>> 0;
 const decodeAll = (buf) => { const out = []; decodeDelta(buf, (id, o) => out.push([id, o])); return out; };
 
 describe('sim-delta codec', () => {

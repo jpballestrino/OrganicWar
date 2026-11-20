@@ -10,7 +10,7 @@ import { applyMatchResult, loadProfile, isServerMode, setServerProfile, renderPr
 import { adBreakThen, showRecapAd } from './ads.js';
 import { escapeHtml } from './escape.js';
 import { showToast } from './guildUI.js';
-import { getCellOwner } from './simBridge.js';
+import { getCellOwner, mapWidth, mapHeight } from './simBridge.js';
 import { DEFENSE_BUILDING_COST, SILO_BUILDING_COST } from './constants.js';
 
 const AUTO_QUICK_PLAY_KEY = 'ow_auto_quick_play';
@@ -19,7 +19,8 @@ const AUTO_QUICK_PLAY_KEY = 'ow_auto_quick_play';
 // Bigger rooms have a smaller fair share, so the milestones scale with it.
 const LAND_MILESTONES_20 = [100000, 250000, 500000, 1000000];
 const landMilestones = () => {
-  const scale = Math.min(1, 20 / Math.max(1, match.total || 20));
+  // Same share of the land: fewer cells each in a bigger room, more on a bigger map.
+  const scale = Math.min(1, 20 / Math.max(1, match.total || 20)) * (mapWidth() * mapHeight()) / (1920 * 1080);
   return LAND_MILESTONES_20.map(m => Math.round(m * scale / 5000) * 5000);
 };
 const ALIVE_CALLOUTS = {
@@ -297,6 +298,7 @@ function settle({ won, placement, survivedSec, killerId = 0, final = false, winn
     towers: match.towers,
     missiles: match.missiles,
     tookLead: match.tookLead,
+    mapCells: mapWidth() * mapHeight(),
   };
   // Guests score in the browser; a logged-in player's XP is scored by the
   // server, which sends it as `progression-result` (possibly already here).
@@ -719,7 +721,7 @@ export function initMatchFeel({ socket, quit }) {
     if (factionId === me) {
       match.missiles++;
       playSfx('launch');
-    } else if (!match.settled && getCellOwner(targetRow * 1920 + targetCol) === me) {
+    } else if (!match.settled && getCellOwner(targetRow * mapWidth() + targetCol) === me) {
       const now = performance.now();
       if (now - match.lastInboundAt > 5000) {
         match.lastInboundAt = now;

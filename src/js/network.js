@@ -3,10 +3,11 @@ import { state } from './state.js';
 import { showToast, toggleInGameIndicator } from './guildUI.js';
 import { getToken, isLoggedIn } from './auth.js';
 import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
-import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain } from './simBridge.js';
+import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain, setMapSize } from './simBridge.js';
 import { escapeHtml } from './escape.js';
+import { MAP_LABELS } from './mapGen.js';
 import { onSnapshotStats } from './matchFeel.js';
-import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt } from './constants.js';
+import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt, MAP_SIZES } from './constants.js';
 import { updateBuildBar, rejectMessage } from './buildBar.js';
 
 // The handshake carries the player's UTC offset so the server rolls daily
@@ -109,9 +110,40 @@ export function updateDevDashboard() {
 
 // Push an elimination into the kill feed (top-left). Newest on top, capped, each
 // entry auto-fades after a few seconds. Called from the `player-eliminated` event.
+// In a busy room (a Mega Battle opening loses ~30 factions in a minute) the
+// eliminations that don't involve you fold into one "+N more" line once three
+// arrived within FEED_BURST_MS.
+const FEED_BURST_MS = 4000;
+let feedBurst = [];
+let feedSummary = null;
+function foldIntoSummary(feed) {
+  const now = Date.now();
+  feedBurst = feedBurst.filter((t) => now - t < FEED_BURST_MS);
+  feedBurst.push(now);
+  if (feedBurst.length <= 3) return false;
+  if (!feedSummary || !feedSummary.isConnected) {
+    feedSummary = document.createElement('div');
+    feedSummary.className = 'kill-feed-entry';
+    feedSummary.dataset.count = '0';
+  }
+  feedSummary.dataset.count = String(Number(feedSummary.dataset.count) + 1);
+  feedSummary.innerHTML = `<span class="kill-feed-skull">☠</span><span>+${feedSummary.dataset.count} more eliminated</span>`;
+  feedSummary.classList.remove('fade-out');
+  feed.prepend(feedSummary);
+  clearTimeout(feedSummary.fadeTimer);
+  const el = feedSummary;
+  el.fadeTimer = setTimeout(() => {
+    el.classList.add('fade-out');
+    setTimeout(() => { el.remove(); if (feedSummary === el) feedSummary = null; }, 500);
+  }, 6000);
+  return true;
+}
+
 function addKillFeedEntry(factionId, killerId = 0) {
   const feed = document.getElementById('killFeed');
   if (!feed) return;
+  const me = parseInt(state.playerFaction);
+  if (factionId !== me && killerId !== me && foldIntoSummary(feed)) return;
   const slot = state.activePlayerSlots ? state.activePlayerSlots[factionId] : null;
   const name = slot && slot.nickname ? slot.nickname : `Player ${factionId}`;
   const color = factionHexColors[factionId] || '#ffffff';
@@ -287,6 +319,14 @@ socket.io.on('reconnect_failed', () => {
   showServerError('Server Unreachable', 'Could not reconnect after multiple attempts. Please return to the menu and try again.');
 });
 
+// The room's map size (Mega Battles use a bigger map): reallocate the local
+// map and the renderer's textures before anything is painted into them.
+function useRoomMapSize(width, height) {
+  const w = width || MAP_SIZES.standard.width;
+  const h = height || MAP_SIZES.standard.height;
+  if (setMapSize(w, h) && window.renderer) window.renderer.resizeMap();
+}
+
 export function initNetwork() {
   // ── Progression for logged-in players (server/game/progression.js) ──
   // The server owns their XP: it pushes the profile on connect and the scored
@@ -406,6 +446,7 @@ export function initNetwork() {
     // Repaint terrain to the room's map (covers the reconnect path, where the
     // client may have painted the default map at startup). Safe pre-match: only
     // terrain bits change and owner bits are still all-neutral.
+    useRoomMapSize(config.mapWidth, config.mapHeight);
     if (config.currentPreset) repaintTerrain(config.currentPreset);
     state.isQuickPlay = config.isQuickPlay || false;
     state.isRankedMatch = config.isRankedMatch || false;
@@ -477,14 +518,19 @@ export function initNetwork() {
     }, 300);
   });
 
-  socket.on('start-match-now', () => {
+  socket.on('start-match-now', ({ centroids } = {}) => {
     statsFlowing = false;
     state.gameState = 'PLAYING';
-    
-    if (window.renderer && state.spawnSelections && state.spawnSelections[state.playerFaction]) {
-      const spawn = state.spawnSelections[state.playerFaction];
-      centerCamera(spawn.row, spawn.col);
-    }
+
+    // Zoom in on our own land — the spawn we picked, or where the server put
+    // us if we didn't pick one. (Left at the whole-map zoom, the map fits the
+    // screen and the camera keys have nowhere to move it.)
+    const picked = state.spawnSelections && state.spawnSelections[state.playerFaction];
+    const placed = (centroids || state.factionCentroids || {})[state.playerFaction];
+    if (window.renderer && picked) centerCamera(picked.row, picked.col);
+    else if (window.renderer && placed) centerCamera(placed.r, placed.c);
+    // A text field from the menu may still hold the focus; game keys go to the map.
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     
     const killFeed = document.getElementById('killFeed');
     if (killFeed) killFeed.innerHTML = '';
@@ -501,6 +547,7 @@ export function initNetwork() {
     // so players pick spawns on the correct landmass. Falls back to the preset
     // received in init-config.
     const mapId = (data && data.mapId) || state.currentPreset;
+    useRoomMapSize(data && data.mapWidth, data && data.mapHeight);
     if (mapId) repaintTerrain(mapId);
 
     const gameArea = document.getElementById('gameArea');
@@ -599,7 +646,7 @@ export function initNetwork() {
       let detailDiv = document.createElement('div');
       detailDiv.style.fontSize = '11px';
       detailDiv.style.color = '#aaa';
-      detailDiv.textContent = `Map: ${room.preset} | Players: ${room.currentPlayers}/${room.maxPlayers}`;
+      detailDiv.textContent = `Map: ${MAP_LABELS[room.preset] || room.preset} | Players: ${room.currentPlayers}/${room.maxPlayers}`;
       infoDiv.appendChild(nameDiv);
       infoDiv.appendChild(detailDiv);
 

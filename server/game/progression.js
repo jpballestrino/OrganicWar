@@ -91,6 +91,7 @@ export function awardMatchXp(io, room, fid, outcome) {
       towers: outcome.towers || 0,
       missiles: outcome.missiles || 0,
       tookLead: !!outcome.tookLead,
+      mapCells: (room.mapWidth || 0) * (room.mapHeight || 0) || undefined,
     }, days(tz));
     result.profile.tzOffsetMin = tz;
     saveProgression(human.userId, result.profile);

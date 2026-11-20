@@ -391,3 +391,43 @@ fps in headless Chromium (software GL) is fill-rate bound and did not move;
 the upload savings matter on real GPUs/phones and the delta-apply time on
 the main thread. Tests: simBridge.test.js (6), vitest 47/47, cargo 6/6,
 smoke-browser all passed. Tools: bench-render.mjs, bench-room wire size.
+
+## Session 10 — camera keys (W/A/S/D) sometimes not moving
+
+Reproduced with `scripts/smoke-camera.mjs` (6 of 9 checks failed before):
+- [x] A player who didn't pick a spawn started at the whole-map zoom, where the
+      map fits the screen and the camera is clamped: no key moved it. → the
+      match starts zoomed in on the server-placed centroid too.
+- [x] A key held while the window lost focus stayed "down" (no keyup): it
+      cancelled the opposite key or drifted. → release all on blur / hidden.
+- [x] A hidden menu field (nickname, guild chat) kept the focus and every game
+      key was treated as typing (also build hotkeys and Space). → `isTyping()`
+      only for visible fields; focus cleared at match start.
+- [x] AZERTY / non-Latin layouts: keys read by letter. → physical `e.code`.
+smoke-camera 9/9, smoke-browser all, smoke-accounts all, vitest 47/47.
+
+## Session 11 — monotonous maps, crowded Mega Battles ("aplica todos los cambios")
+
+Five proposals, all applied:
+- [x] 1. Terrain look: palette, relief shading, coast shallows/surf, snow;
+      baked once per map into a texture (the per-frame shader got cheaper:
+      headless fps 17.3 → 19.8 instead of 8.0 for the first unbaked try).
+- [x] 2. Mega fixes: spawns spread by best-candidate sampling (spawns.js);
+      Mega Battles draw from the land-rich maps (MEGA_MAP_POOL); bot truce
+      measured and kept at 50 s (same share of early eliminations as 20p);
+      labels culled by overlap/size, kill feed folds bursts.
+- [x] 3. Gameplay terrain: forests (×3), river fords (×5), gold deposits
+      (+0.1 gold/s per cell), ruins (×10, 8 gold per cell); cargo test
+      terrain_features_gold_ruins_forest; hover hint. 20-bot matches still
+      end at 188–214 s.
+- [x] 4. Maps: South America, Asia, Oceania (polygonMap) and procedural
+      Pangaea; meandering rivers (flow field). One component each.
+- [x] 5. Mega map 2560×1440 (second sim build, cargo feature `mega`).
+- [x] Terrain off the hot path: computed at server boot in a background
+      thread (6 maps in 9.6 s) and shared with rooms: room start 2.4 s →
+      0.19 s (Mega 3.7 s → 0.22 s); browser computes in a Web Worker (no
+      3 s freeze). Spawns validated against the exact post-bridge terrain.
+
+Measured (64 players, before → after): spawn nearest neighbour median
+~75 → ~185 cells (min ≥ 140); free land gone 18–21 s → ~25 s; tick 2.6 →
+3.7–4.4 ms (bigger map); wire 38–40 KB/s per client.

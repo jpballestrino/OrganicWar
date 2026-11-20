@@ -5,19 +5,16 @@ import { initGuildUI } from './js/guildUI.js';
 import { initRankingsUI } from './js/rankingsUI.js';
 import { initFeedbackUI } from './js/feedbackUI.js';
 import { state } from './js/state.js';
-import initWasm, { SimulationState } from './wasm/simulation_core.js';
-import wasmUrl from './wasm/simulation_core_bg.wasm?url';
 import { WebGLRenderer } from './js/renderer.js';
-import { registerSim, getCellOwner, countOwnedCells } from './js/simBridge.js';
-import { generateTerrain, warmMapCache } from './js/mapGen.js';
+import { setMapSize, repaintTerrain, prefetchTerrain, getCellOwner, getCellTerrain, countOwnedCells, mapWidth, mapHeight } from './js/simBridge.js';
+import { MAP_SIZES } from './js/constants.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
 import { renderProgressCards } from './js/progression.js';
 import { initAds } from './js/ads.js';
+import { isTyping } from './js/typing.js';
 import { initBuildBar, handleBuildClick, cancelBuildMode, drawBuildPreview, syncBuildBarActive } from './js/buildBar.js';
 
-let wasmModule = null;
-let simulation = null;
 let renderer = null;
 
 // Global error surface. Details always go to the console; the player sees one
@@ -549,40 +546,58 @@ if (urlParams.has('debug')) {
 // ------------------------------------------------------------------
 // High-Density Simulation & Renderer Initialization
 // ------------------------------------------------------------------
+// What the special terrain under the cursor does (forests, river fords, gold
+// deposits, ruins — mapGen.js addFeatures, costs in lib.rs). Hidden over plain
+// terrain and while a build/targeting mode shows its own preview.
+const TERRAIN_HINTS = {
+  4: ['🌲 Forest', 'slow to claim (×3) · costly to attack'],
+  5: ['🌊 River ford', 'very slow to claim (×5) · a natural border'],
+  6: ['💰 Gold deposit', '+0.1 gold/s per cell (30× land)'],
+  7: ['🏛️ Ruins', 'costly to claim (×10) · 8 gold per cell taken'],
+};
+let terrainHintEl = null;
+function showTerrainHint(e, row, col) {
+  if (!terrainHintEl) terrainHintEl = document.getElementById('terrainHint');
+  if (!terrainHintEl) return;
+  const hint = e && !state.activePurchaseMode && !state.isSpectating
+    ? TERRAIN_HINTS[getCellTerrain(row * mapWidth() + col)] : null;
+  if (!hint) { terrainHintEl.style.display = 'none'; return; }
+  terrainHintEl.innerHTML = `<b>${hint[0]}</b> ${hint[1]}`;
+  terrainHintEl.style.left = `${e.clientX + 16}px`;
+  terrainHintEl.style.top = `${e.clientY + 18}px`;
+  terrainHintEl.style.display = 'block';
+}
+
 async function startSimulationEngine() {
   try {
-    wasmModule = await initWasm(wasmUrl);
-    simulation = new SimulationState();
-
-    // Local SimulationState is now just a render cache; the server holds
-    // authoritative state and pushes owner deltas via sim-snapshot.
-    // Owner + terrain + defense + has_building are bit-packed into one u16 per
-    // cell (cell_data); the renderer unpacks owner/terrain on the GPU.
-    const cellDataPtr = simulation.get_cell_data_ptr();
-
-    // Paint the static North America terrain into the packed cell buffer's
-    // terrain bits. It never changes, so this runs once at startup.
-    generateTerrain(wasmModule.memory, cellDataPtr);
+    // The client only stores and draws the map (the server runs the
+    // simulation): one u16 per cell in a plain buffer, owner + terrain +
+    // defense + has-building bits (simBridge). Start with the standard map;
+    // init-config switches to the room's map size and terrain.
+    setMapSize(MAP_SIZES.standard.width, MAP_SIZES.standard.height);
+    repaintTerrain('north_america');
 
     const canvas = document.getElementById('gameCanvas');
-    renderer = new WebGLRenderer(canvas, wasmModule.memory);
+    renderer = new WebGLRenderer(canvas);
     window.renderer = renderer; // Expose globally for network events
-    renderer.setMemoryPointers(cellDataPtr);
-    registerSim({ memory: wasmModule.memory, cellDataPtr });
 
-    console.log("WASM render cache & WebGL Renderer Started!");
+    console.log('Map cache & WebGL renderer started');
 
-    // Pre-warm the bridge cache asynchronously so it doesn't block the UI
-    // when a match starts and the server chooses a different map.
-    setTimeout(warmMapCache, 500);
+    // The other maps' terrain, computed in a Web Worker so the match starts
+    // without waiting for it (the server picks the map).
+    prefetchTerrain();
 
     // Track hovered cell for building placement preview.
     canvas.addEventListener('mousemove', (e) => {
       if (state.gameState === 'PLAYING') {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
         state.hoveredCell = { r: row, c: col };
+        showTerrainHint(e, row, col);
+      } else {
+        showTerrainHint(null);
       }
     });
+    canvas.addEventListener('mouseleave', () => showTerrainHint(null));
 
     // Handle game input (clicks)
     canvas.addEventListener('contextmenu', (e) => {
@@ -600,8 +615,8 @@ async function startSimulationEngine() {
           // Right-click backs out of a placement / targeting mode.
         } else if (state.gameState === 'PLAYING') {
           const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
-          if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
-            const targetCell = row * 1920 + col;
+          if (row >= 0 && row < mapHeight() && col >= 0 && col < mapWidth()) {
+            const targetCell = row * mapWidth() + col;
             let targetOwner = getCellOwner(targetCell);
             if (targetOwner === parseInt(state.playerFaction)) {
               // Right-clicking own territory cancels neutral expansion (target 0)
@@ -619,8 +634,8 @@ async function startSimulationEngine() {
         socket.emit('select-spawn', { row, col });
       } else if (state.gameState === 'PLAYING') {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
-        if (row >= 0 && row < 1080 && col >= 0 && col < 1920) {
-          const targetCell = row * 1920 + col;
+        if (row >= 0 && row < mapHeight() && col >= 0 && col < mapWidth()) {
+          const targetCell = row * mapWidth() + col;
           if (handleBuildClick(targetCell)) { return; }
           socket.emit('sim-input', {
             type: 'expand',
@@ -667,8 +682,7 @@ async function startSimulationEngine() {
     // Space cancels every in-progress attack, recalling the troops to defense.
     // (Build / missile hotkeys live in buildBar.js.)
     window.addEventListener('keydown', (e) => {
-      const active = document.activeElement;
-      const inField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+      const inField = isTyping();
       if (state.isSpectating) return;
 
       if (e.code === 'Space' && state.gameState === 'PLAYING') {
@@ -685,7 +699,7 @@ async function startSimulationEngine() {
 
     requestAnimationFrame(gameLoop);
   } catch (err) {
-    console.error('Failed to init WASM simulation:', err);
+    console.error('Failed to start the map renderer:', err);
     showErrorNotice('The game engine failed to start. Reload the page, or try another browser.', err.message);
   }
 }

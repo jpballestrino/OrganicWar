@@ -1,6 +1,6 @@
 // sim-delta wire format: which cells changed owner since the last delta.
 //
-// The sim lists the changed cells as u32s `cell_id (21 bits) | owner << 21`,
+// The sim lists the changed cells as u32s `cell_id (25 bits) | owner << 25`,
 // sorted by cell id (lib.rs collect_dirty_cells). On the wire each cell is
 //   varint(cell_id − previous cell_id)   (the first one: cell_id itself)
 //   u8 owner
@@ -10,20 +10,20 @@
 // (scripts/bench-room.mjs prints both). Used by the server worker (encode), the
 // client (simBridge.js) and the bench (decode).
 
-// u32 entries (sorted by cell id) → bytes. Worst case 4 bytes per cell (a
-// 21-bit gap takes 3 varint bytes), so the buffer is sized for that.
+// u32 entries (sorted by cell id) → bytes. Worst case 5 bytes per cell (a
+// gap of up to 25 bits takes 4 varint bytes), so the buffer is sized for that.
 export function encodeDelta(entries) {
-  const out = new Uint8Array(entries.length * 4);
+  const out = new Uint8Array(entries.length * 5);
   let n = 0;
   let prev = 0;
   for (let i = 0; i < entries.length; i++) {
     const v = entries[i];
-    const id = v & 0x1FFFFF;
+    const id = v & 0x1FFFFFF;
     let gap = id - prev;
     prev = id;
     while (gap >= 0x80) { out[n++] = (gap & 0x7F) | 0x80; gap >>>= 7; }
     out[n++] = gap;
-    out[n++] = (v >>> 21) & 0x7F;
+    out[n++] = (v >>> 25) & 0x7F;
   }
   return out.subarray(0, n);
 }

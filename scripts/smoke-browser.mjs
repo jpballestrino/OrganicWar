@@ -60,7 +60,10 @@ await page.waitForFunction(() => document.getElementById('spawnOverlay')?.style.
 const timerText = await page.textContent('#spawnTimerText');
 check('spawn timer shows the server duration', /^\d+$/.test((timerText || '').trim()), `"${timerText}"`);
 const radius = await page.evaluate(() => window.__owState.safeZoneRadius);
-check('spawn safe zone fits the room size', radius === (MODE === 'mega' ? 45 : 80), `radius ${radius}`);
+// 80 up to 20 players; a Mega room's 45 scaled to its bigger map (2560 / 1920).
+check('spawn safe zone fits the room size', radius === (MODE === 'mega' ? 60 : 80), `radius ${radius}`);
+const mapSize = await page.evaluate(() => [window.renderer.mapW, window.renderer.mapH].join('x'));
+check('the room\'s map size is in use', mapSize === (MODE === 'mega' ? '2560x1440' : '1920x1080'), mapSize);
 for (const [x, y] of [[960, 540], [700, 400], [1200, 600], [800, 700], [1100, 350]]) {
   await page.mouse.click(x, y);
   await page.waitForTimeout(150);
