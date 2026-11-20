@@ -477,14 +477,19 @@ export function initNetwork() {
     }, 300);
   });
 
-  socket.on('start-match-now', () => {
+  socket.on('start-match-now', ({ centroids } = {}) => {
     statsFlowing = false;
     state.gameState = 'PLAYING';
-    
-    if (window.renderer && state.spawnSelections && state.spawnSelections[state.playerFaction]) {
-      const spawn = state.spawnSelections[state.playerFaction];
-      centerCamera(spawn.row, spawn.col);
-    }
+
+    // Zoom in on our own land — the spawn we picked, or where the server put
+    // us if we didn't pick one. (Left at the whole-map zoom, the map fits the
+    // screen and the camera keys have nowhere to move it.)
+    const picked = state.spawnSelections && state.spawnSelections[state.playerFaction];
+    const placed = (centroids || state.factionCentroids || {})[state.playerFaction];
+    if (window.renderer && picked) centerCamera(picked.row, picked.col);
+    else if (window.renderer && placed) centerCamera(placed.r, placed.c);
+    // A text field from the menu may still hold the focus; game keys go to the map.
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     
     const killFeed = document.getElementById('killFeed');
     if (killFeed) killFeed.innerHTML = '';

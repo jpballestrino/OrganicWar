@@ -391,3 +391,17 @@ fps in headless Chromium (software GL) is fill-rate bound and did not move;
 the upload savings matter on real GPUs/phones and the delta-apply time on
 the main thread. Tests: simBridge.test.js (6), vitest 47/47, cargo 6/6,
 smoke-browser all passed. Tools: bench-render.mjs, bench-room wire size.
+
+## Session 10 — camera keys (W/A/S/D) sometimes not moving
+
+Reproduced with `scripts/smoke-camera.mjs` (6 of 9 checks failed before):
+- [x] A player who didn't pick a spawn started at the whole-map zoom, where the
+      map fits the screen and the camera is clamped: no key moved it. → the
+      match starts zoomed in on the server-placed centroid too.
+- [x] A key held while the window lost focus stayed "down" (no keyup): it
+      cancelled the opposite key or drifted. → release all on blur / hidden.
+- [x] A hidden menu field (nickname, guild chat) kept the focus and every game
+      key was treated as typing (also build hotkeys and Space). → `isTyping()`
+      only for visible fields; focus cleared at match start.
+- [x] AZERTY / non-Latin layouts: keys read by letter. → physical `e.code`.
+smoke-camera 9/9, smoke-browser all, smoke-accounts all, vitest 47/47.

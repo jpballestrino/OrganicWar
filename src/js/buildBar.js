@@ -4,6 +4,7 @@
 // one-line change there instead of edits in the template, key handler, click
 // handler, snapshot handler and toast messages.
 
+import { isTyping } from './typing.js';
 import { state } from './state.js';
 import { BUILD_ACTIONS, SILO_RANGE, fmtInt } from './constants.js';
 import { getCellOwner } from './simBridge.js';
@@ -202,8 +203,7 @@ export function initBuildBar({ emit }) {
     const action = ACTION_BY_KEY[e.key];
     if (!action || e.ctrlKey || e.metaKey || e.altKey) return;
     if (state.gameState !== 'PLAYING') return;
-    const el = document.activeElement;
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+    if (isTyping()) return;
     e.preventDefault();
     toggleMode(action);
   });

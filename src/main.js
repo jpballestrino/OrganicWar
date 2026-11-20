@@ -14,6 +14,7 @@ import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
 import { renderProgressCards } from './js/progression.js';
 import { initAds } from './js/ads.js';
+import { isTyping } from './js/typing.js';
 import { initBuildBar, handleBuildClick, cancelBuildMode, drawBuildPreview, syncBuildBarActive } from './js/buildBar.js';
 
 let wasmModule = null;
@@ -667,8 +668,7 @@ async function startSimulationEngine() {
     // Space cancels every in-progress attack, recalling the troops to defense.
     // (Build / missile hotkeys live in buildBar.js.)
     window.addEventListener('keydown', (e) => {
-      const active = document.activeElement;
-      const inField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+      const inField = isTyping();
       if (state.isSpectating) return;
 
       if (e.code === 'Space' && state.gameState === 'PLAYING') {

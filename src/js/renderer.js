@@ -1,5 +1,6 @@
 import { state } from './state.js';
 import { takeDirtyRowSpans } from './simBridge.js';
+import { isTyping } from './typing.js';
 import { factionHexColors, factionRGB, BUILDING_RADIUS, SILO_RANGE, MISSILE_BLAST_RADIUS, ANTIAIR_RADIUS, MAX_FACTIONS, BUILDING_LINKS, LINK_RADIUS, RADAR_RANGE_MULT } from './constants.js';
 
 // Per-faction shader arrays: index 0 = neutral, 1..MAX_FACTIONS = players.
@@ -53,7 +54,9 @@ export class WebGLRenderer {
         if (!this.gl) throw new Error("WebGL2 not supported");
 
         this.camera = { x: 0, y: 0, zoom: 1.0 };
-        this.keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false };
+        // Camera keys held down, by PHYSICAL key (KeyboardEvent.code), so the
+        // W/A/S/D positions work on any layout (AZERTY types Z/Q there).
+        this.keys = { up: false, down: false, left: false, right: false };
 
         // Single packed-cell buffer (u16/cell): owner + terrain + defense + building.
         this.cellDataPtr = null;
@@ -323,20 +326,27 @@ export class WebGLRenderer {
     }
 
     setupControls() {
+        const DIRS = {
+            KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down',
+            KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right',
+        };
         window.addEventListener('keydown', (e) => {
-            if (!e.key) return;
-            // Typing in a text field (guild chat, nickname…) must not move the camera.
-            const el = document.activeElement;
-            if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
-            const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-            if (Object.prototype.hasOwnProperty.call(this.keys, key)) this.keys[key] = true;
+            const dir = DIRS[e.code];
+            if (!dir || e.ctrlKey || e.metaKey || e.altKey) return;
+            // Typing in a visible text field (guild chat…) must not move the camera.
+            if (isTyping()) return;
+            this.keys[dir] = true;
         });
-
         window.addEventListener('keyup', (e) => {
-            if (!e.key) return;
-            const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-            if (Object.prototype.hasOwnProperty.call(this.keys, key)) this.keys[key] = false;
+            const dir = DIRS[e.code];
+            if (dir) this.keys[dir] = false;
         });
+        // A key released while the window wasn't focused (Alt-Tab, a click
+        // into another window) never sends keyup: forget every held key, or it
+        // stays "down" — drifting the camera, or cancelling the opposite key.
+        const releaseAll = () => { for (const k in this.keys) this.keys[k] = false; };
+        window.addEventListener('blur', releaseAll);
+        document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
 
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
@@ -387,10 +397,10 @@ export class WebGLRenderer {
         // Move camera at speed relative to zoom (so it feels consistent)
         const speed = 500.0 / this.camera.zoom * (dt / 1000);
         
-        if (this.keys['w'] || this.keys['ArrowUp']) this.camera.y -= speed;
-        if (this.keys['s'] || this.keys['ArrowDown']) this.camera.y += speed;
-        if (this.keys['a'] || this.keys['ArrowLeft']) this.camera.x -= speed;
-        if (this.keys['d'] || this.keys['ArrowRight']) this.camera.x += speed;
+        if (this.keys.up) this.camera.y -= speed;
+        if (this.keys.down) this.camera.y += speed;
+        if (this.keys.left) this.camera.x -= speed;
+        if (this.keys.right) this.camera.x += speed;
 
         // View-aware clamp: when the map is smaller than the viewport on an axis
         // (zoomed out / letterboxed), pin it centred; once zoomed in past the
