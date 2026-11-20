@@ -9,6 +9,7 @@ import { MAX_FACTIONS, safeZoneRadiusFor, MAP_SIZES, mapSizeFor } from '../../sr
 import { roomRefusal } from './capacity.js';
 import { awardMatchXp } from './progression.js';
 import { placeSpawns } from './spawns.js';
+import { isLandAt } from './terrainCache.js';
 
 // How unpicked spawns are placed ('spread' or 'random'; see spawns.js).
 const SPAWN_MODE = process.env.SPAWN_MODE || 'spread';
@@ -682,6 +683,7 @@ export function finalizeSpawns(room) {
     height: room.mapHeight,
     safeRadius: room.safeZoneRadius,
     mode: SPAWN_MODE,
+    isLand: (row, col) => isLandAt(room.preset, room.mapSize, row, col),
   });
   missing.forEach((fid, i) => room.spawnSelections.set(fid, placed[i]));
 

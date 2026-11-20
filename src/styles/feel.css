@@ -626,3 +626,9 @@ body.in-match #notificationContainer {
 .end-ranked.up { color: #4ade80; }
 .end-ranked.down { color: #f87171; }
 .end-ranked-pending { color: #94a3b8; font-size: 12px; }
+
+/* Special terrain under the cursor (main.js showTerrainHint). */
+.terrain-hint { position: fixed; z-index: 1100; pointer-events: none; padding: 4px 8px; border-radius: 6px;
+  background: rgba(10, 14, 20, 0.88); border: 1px solid rgba(255, 255, 255, 0.12); color: #cbd5e1;
+  font: 12px 'Inter', sans-serif; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
+.terrain-hint b { color: #fff; font-weight: 600; margin-right: 4px; }

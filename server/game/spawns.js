@@ -10,11 +10,11 @@
 
 import { terrainAt, TERRAIN } from '../../src/js/mapGen.js';
 
-function randomLand(mapId, rand, W, H) {
+function randomLand(isLand, rand, W, H) {
   for (let guard = 0; guard < 20000; guard++) {
     const row = Math.floor(rand() * H);
     const col = Math.floor(rand() * W);
-    if (terrainAt(col / W, row / H, mapId) !== TERRAIN.WATER) return { row, col };
+    if (isLand(row, col)) return { row, col };
   }
   return { row: H >> 1, col: W >> 1 };
 }
@@ -22,8 +22,11 @@ function randomLand(mapId, rand, W, H) {
 const dist2 = (a, b) => (a.row - b.row) ** 2 + (a.col - b.col) ** 2;
 
 // taken: spots already chosen (players' picks). Returns `count` new spots.
-export function placeSpawns({ taken = [], count, mapId, width = 1920, height = 1080, safeRadius = 80, mode = 'spread', candidates = 40, rand = Math.random }) {
-  const land = () => randomLand(mapId, rand, width, height);
+// isLand(row, col): the land test (default: the map's classifier; the server
+// passes the exact terrain — terrainCache.isLandAt).
+export function placeSpawns({ taken = [], count, mapId, width = 1920, height = 1080, safeRadius = 80, mode = 'spread', candidates = 40, rand = Math.random, isLand }) {
+  const landTest = isLand || ((row, col) => terrainAt(col / width, row / height, mapId) !== TERRAIN.WATER);
+  const land = () => randomLand(landTest, rand, width, height);
   const all = [...taken];
   const out = [];
   for (let n = 0; n < count; n++) {

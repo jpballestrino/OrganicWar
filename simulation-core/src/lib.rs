@@ -220,6 +220,25 @@ const DIFFICULTY_CAP: f32 = 50.0;
 // cells. It is applied directly in process_war_fronts.
 const NEUTRAL_INVADE_COST: f32 = 0.2;
 
+// Terrain codes 4-7: features mapGen.js adds on top of the base terrain
+// (forests, rivers, gold deposits, ruins). Mirrored there (TERRAIN) and in the
+// renderer's terrain bake.
+const TERRAIN_FOREST: u16 = 4;
+const TERRAIN_RIVER: u16 = 5;
+const TERRAIN_GOLD: u16 = 6;
+const TERRAIN_RUINS: u16 = 7;
+// Neutral land is NEUTRAL_INVADE_COST × this: forests and river fords slow the
+// land grab (natural borders), ruins are a fortified enclave worth the detour.
+const NEUTRAL_FOREST_MULT: f32 = 3.0;
+const NEUTRAL_RIVER_MULT: f32 = 5.0;
+const NEUTRAL_RUINS_MULT: f32 = 10.0;
+// A gold-deposit cell yields this much gold/s to its owner (a plain cell
+// GOLD_PER_CELL_PER_SEC — 30×); a deposit of ~250 cells ≈ +12% income for
+// a fair-share empire. Counted per player in set_cell_owner.
+const GOLD_DEPOSIT_PER_CELL_PER_SEC: f32 = 0.1;
+// Gold paid for each ruins cell taken from neutral (~1,200 for a site).
+const RUINS_GOLD_PER_CELL: f32 = 8.0;
+
 // ── Binary exports for the server (see the "Wire format" section of CLAUDE.md) ─
 // write_stats() packs one record per player behind a small header, so the
 // server ships a single buffer instead of one per field and the client never
@@ -364,6 +383,8 @@ pub struct SimulationState {
 
     // --- Player Data ---
     player_owned_cells: Vec<u32>,
+    // Gold-deposit cells (TERRAIN_GOLD) each player owns; set_cell_owner.
+    player_gold_cells: Vec<u32>,
     player_total_troops: Vec<f32>,
     // Per-player TOTAL troops committed to attacks (sum of all that player's
     // fronts). Derived from `front_pool` each tick; exported for the HUD.
@@ -470,6 +491,7 @@ impl SimulationState {
 
             // Player Initializers
             player_owned_cells: vec![0; PLAYER_ARRAY_SIZE],
+            player_gold_cells: vec![0; PLAYER_ARRAY_SIZE],
             player_total_troops: vec![0.0; PLAYER_ARRAY_SIZE],
             player_attack_pool: vec![0.0; PLAYER_ARRAY_SIZE],
             front_pool: vec![0.0; PLAYER_ARRAY_SIZE * PLAYER_ARRAY_SIZE],
@@ -519,6 +541,11 @@ impl SimulationState {
         let old_owner = self.cell_data[i] & OWNER_MASK;
         let new_owner = (owner as u16) & OWNER_MASK;
         if old_owner != new_owner {
+            if (self.cell_data[i] & TERRAIN_MASK) >> TERRAIN_SHIFT == TERRAIN_GOLD {
+                let (o, n) = (old_owner as usize, new_owner as usize);
+                if o < PLAYER_ARRAY_SIZE { self.player_gold_cells[o] = self.player_gold_cells[o].saturating_sub(1); }
+                if n < PLAYER_ARRAY_SIZE { self.player_gold_cells[n] += 1; }
+            }
             self.cell_data[i] = (self.cell_data[i] & !OWNER_MASK) | new_owner;
             self.dirty_cells.push(i as u32);
             self.invalidate_blocks_around(i);
@@ -1020,6 +1047,10 @@ impl SimulationState {
             0 => 1.0f32,  // Plains
             1 => 3.0,     // Highlands
             2 => 6.0,     // Mountains
+            4 => 4.0,     // Forest
+            5 => 5.0,     // River (a ford)
+            6 => 1.0,     // Gold deposit (open ground)
+            7 => 6.0,     // Ruins (old walls)
             _ => 0.0,     // Water (never in candidates anyway)
         };
         // Defense tier stored in bits 11-14 (as of the last sample); 0 counts as 1.
@@ -1072,7 +1103,9 @@ impl SimulationState {
                     }
                 }
 
-                let income_per_sec = cells as f32 * GOLD_PER_CELL_PER_SEC * (1.0 + mine_bonus);
+                let income_per_sec = (cells as f32 * GOLD_PER_CELL_PER_SEC
+                    + self.player_gold_cells[i] as f32 * GOLD_DEPOSIT_PER_CELL_PER_SEC)
+                    * (1.0 + mine_bonus);
                 self.player_income_per_sec[i] = income_per_sec;
                 self.player_gold[i] += income_per_sec / tick_hz;
 
@@ -1330,8 +1363,15 @@ impl SimulationState {
                     // to re-contest. A
                     // fortified (high defense_tier) cell is genuinely expensive for the
                     // attacker — that is the whole point of building defenses.
+                    // Neutral forests, fords and ruins cost a multiple of it.
+                    let n_terrain = (self.cell_data[n_idx] & TERRAIN_MASK) >> TERRAIN_SHIFT;
                     let total_cost = if n_owner == 0 {
-                        NEUTRAL_INVADE_COST
+                        NEUTRAL_INVADE_COST * match n_terrain {
+                            TERRAIN_FOREST => NEUTRAL_FOREST_MULT,
+                            TERRAIN_RIVER => NEUTRAL_RIVER_MULT,
+                            TERRAIN_RUINS => NEUTRAL_RUINS_MULT,
+                            _ => 1.0,
+                        }
                     } else {
                         self.difficulty_to_invade(n_idx) * enemy_cost_mult
                     };
@@ -1403,6 +1443,9 @@ impl SimulationState {
                         self.player_row_sum[f] += nr;
                         self.player_col_sum[f] += nc;
                         conquers += 1;
+                        if n_owner == 0 && n_terrain == TERRAIN_RUINS {
+                            self.player_gold[f] += RUINS_GOLD_PER_CELL;
+                        }
                         if bounty_front {
                             self.player_gold[f] += BOUNTY_GOLD_PER_CELL;
                             self.player_bounty_earned[f] += BOUNTY_GOLD_PER_CELL;
@@ -2683,6 +2726,62 @@ mod tests {
         assert_eq!(s.player_owned_cells[2], cells2, "nothing was affordable");
         assert_eq!(s.front_pool[fi], 0.0, "the stalled front must close");
         assert!(s.player_total_troops[1] >= reserve_before + 1.5, "its troops are refunded");
+    }
+
+    // Terrain features: gold deposits pay their owner (and follow conquest),
+    // ruins pay gold when taken from neutral, forests slow the land grab.
+    #[test]
+    fn terrain_features_gold_ruins_forest() {
+        let mut s = SimulationState::new();
+        s.init_players(2, 0, 50, 5000);
+        s.set_tick_hz(25);
+        // A gold deposit inside faction 1's spawn nucleus (radius 12).
+        for r in 498..503 { for c in 498..503 { s.set_cell_terrain(r * MAP_WIDTH + c, TERRAIN_GOLD as u8); } }
+        // Ruins all around faction 2's spawn (spawned now: a faction with no
+        // cells at a tick is dead).
+        for r in 270..330 { for c in 870..930 { s.set_cell_terrain(r * MAP_WIDTH + c, TERRAIN_RUINS as u8); } }
+        s.spawn_faction(1, 500, 500);
+        s.spawn_faction(2, 300, 900);
+        assert_eq!(s.player_gold_cells[1], 25, "spawning on a deposit owns it");
+        s.tick();
+        let plain = s.player_owned_cells[1] as f32 * GOLD_PER_CELL_PER_SEC;
+        let expected = plain + 25.0 * GOLD_DEPOSIT_PER_CELL_PER_SEC;
+        assert!((s.player_income_per_sec[1] - expected).abs() < 1e-3,
+            "income {} != {}", s.player_income_per_sec[1], expected);
+
+        // The deposit changes hands with its cells.
+        for r in 498..503 { for c in 498..503 { s.set_cell_owner(r * MAP_WIDTH + c, 2); } }
+        assert_eq!((s.player_gold_cells[1], s.player_gold_cells[2]), (0, 25));
+        for r in 498..503 { for c in 498..503 { s.set_cell_owner(r * MAP_WIDTH + c, 1); } }
+
+        // Taking the ruins pays RUINS_GOLD_PER_CELL each.
+        let gold0 = s.player_gold[2];
+        let cells0 = s.player_owned_cells[2];
+        s.player_total_troops[2] = 4_000.0;
+        s.execute_expansion(2, (300 * MAP_WIDTH + 900) as u32, 50);
+        for _ in 0..10 { s.tick(); }
+        let taken = (s.player_owned_cells[2] - cells0) as f32;
+        assert!(taken > 0.0);
+        let income = s.player_income_per_sec[2] * 10.0 / 25.0;
+        assert!(s.player_gold[2] - gold0 >= taken * RUINS_GOLD_PER_CELL - 1.0 && s.player_gold[2] - gold0 <= taken * RUINS_GOLD_PER_CELL + income + 1.0,
+            "ruins gold {} for {} cells", s.player_gold[2] - gold0, taken);
+
+        // The same troops take 3× fewer forest cells than plains (all cheap neutral).
+        let grab = |forest: bool| {
+            let mut s = SimulationState::new();
+            s.init_players(1, 0, 50, 5000);
+            s.set_tick_hz(25);
+            if forest { for i in 0..MAP_WIDTH * MAP_HEIGHT { s.set_cell_terrain(i, TERRAIN_FOREST as u8); } }
+            s.spawn_faction(1, 500, 500);
+            let c0 = s.player_owned_cells[1];
+            s.player_total_troops[1] = 300.0;
+            s.execute_expansion(1, (500 * MAP_WIDTH + 500) as u32, 50); // 150 troops
+            for _ in 0..200 { s.player_total_troops[1] = 0.0; s.tick(); }
+            s.player_owned_cells[1] - c0
+        };
+        let (plains, forest) = (grab(false), grab(true));
+        assert!(plains > 600 && (forest as f32 - plains as f32 / NEUTRAL_FOREST_MULT).abs() < 25.0,
+            "plains {} forest {}", plains, forest);
     }
 
     // The delta, full-owner and stats exports must describe the same world the

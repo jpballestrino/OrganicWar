@@ -87,6 +87,7 @@ const elapsed = () => ((Date.now() - started) / 1000).toFixed(0).padStart(4) + '
 
 worker.on('message', (msg) => {
   if (msg.type === 'ready') {
+    console.log(`worker ready (terrain generated) after ${Date.now() - started} ms`);
     for (const [i, s] of spawnSpots.entries()) {
       worker.postMessage({ type: 'spawnFaction', factionId: i + 1, row: s.row, col: s.col });
     }

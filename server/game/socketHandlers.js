@@ -3,7 +3,8 @@ import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, reclaimSlot, leaveRankedQueue, startGuildWarCountdown, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
-import { randomMapId, terrainAt, TERRAIN } from '../../src/js/mapGen.js';
+import { randomMapId } from '../../src/js/mapGen.js';
+import { isLandAt } from './terrainCache.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
 import { verifyToken } from '../auth.js';
@@ -450,7 +451,7 @@ export function setupSocketHandlers(io) {
         if (row < 0 || row >= room.mapHeight || col < 0 || col >= room.mapWidth) return;
 
         // A spawn on water claims no cells, leaving the player dead on arrival.
-        if (terrainAt(col / room.mapWidth, row / room.mapHeight, room.preset) === TERRAIN.WATER) {
+        if (!isLandAt(room.preset, room.mapSize, row, col)) {
           socket.emit('spawn-rejected', 'You cannot deploy on water. Pick a land cell.');
           return;
         }

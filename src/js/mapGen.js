@@ -21,7 +21,17 @@ function useSize(width = MAP_WIDTH, height = MAP_HEIGHT) {
   W = width; H = height; N = W * H;
 }
 
-export const TERRAIN = { PLAINS: 0, HIGHLANDS: 1, MOUNTAINS: 2, WATER: 3 };
+// Terrain codes (bits 7-10 of a cell; lib.rs and the renderer mirror them).
+// 0-3 are the base terrain from each map's classifier (terrainAt); 4-7 are
+// the features generateTerrain adds on top (see addFeatures):
+//   FOREST  slows expansion (neutral ×3) and is costly to take (cost 4)
+//   RIVER   a ford: slow to cross (neutral ×5, cost 5) — natural borders
+//   GOLD    a deposit: +0.1 gold/s per owned cell (30× plains)
+//   RUINS   a fortified neutral enclave (×10) that pays 8 gold per cell taken
+export const TERRAIN = {
+  PLAINS: 0, HIGHLANDS: 1, MOUNTAINS: 2, WATER: 3,
+  FOREST: 4, RIVER: 5, GOLD: 6, RUINS: 7,
+};
 
 // --- Deterministic value noise (no per-frame cost; map is static) ---
 function hash2(ix, iy) {
@@ -310,10 +320,6 @@ const BRIDGE_HALF_WIDTH = 2; // brush half-width → (2*HW+1)=5-cell-wide bridge
 // islands are always bridged, never deleted.
 const MIN_ISLAND_SIZE = 300;
 
-// Per-map cache of the { bridges, erase } cell-index lists. Each map is static,
-// so this is computed once per map id per process.
-const bridgeCache = new Map();
-
 // 8-connected flood-fill labeling of the land grid. Returns { comp, sizes, nc }.
 function labelComponents(land) {
   const comp = new Int32Array(N).fill(-1);
@@ -354,17 +360,9 @@ function labelComponents(land) {
 // mainland — link with short, sensible causeways instead of one long crossing.
 // Deterministic — identical on browser and Node V8, so client and server carve
 // the exact same map.
-function computeBridgeCarveIndices(mapId) {
-  // Build the land/water grid straight from the terrain classifier (the same
-  // function the base generation loop uses), so no packed-bit read-back is needed.
-  const land = new Uint8Array(N);
-  let i = 0;
-  for (let y = 0; y < H; y++) {
-    const ny = y / H;
-    for (let x = 0; x < W; x++) {
-      land[i++] = terrainAt(x / W, ny, mapId) === TERRAIN.WATER ? 0 : 1;
-    }
-  }
+function computeBridgeCarveIndices(land) {
+  // `land` (1 = land, 0 = water) is updated in place: speckles erased,
+  // bridges carved.
 
   // Pass 1: erase sub-threshold speckles (→ water) so they neither bridge nor
   // obstruct later BFS. Sub-threshold blobs are coastline noise, not real islands.
@@ -458,47 +456,211 @@ function computeBridgeCarveIndices(mapId) {
   return { bridges: Int32Array.from(bridges), erase: Int32Array.from(erase) };
 }
 
-// Write the static terrain into the packed cell buffer in place. `memory` is the
-// WASM Memory, `ptr` the cell_data pointer (N u16s). Only the terrain
-// bits are touched; owner/defense/building bits are preserved. Called once at
-// startup (cell_data starts all-zero, so this effectively seeds the map).
-export function generateTerrain(memory, ptr, mapId = 'north_america', width = MAP_WIDTH, height = MAP_HEIGHT) {
+// The finished terrain of a map at a size, one code per cell (TERRAIN):
+// base terrain from the map's classifier, noise speckles erased, island
+// bridges carved, then forests, rivers, gold deposits and ruins. Deterministic
+// (same bytes in the browser and in Node). Takes ~1–3 s, so callers keep the
+// result: a small cache here, and the server/browser run it off the main
+// thread (server/game/terrainCache.js, src/js/terrainWorker.js).
+const codesCache = new Map();
+const CODES_CACHE_MAX = 3;
+
+export function terrainCodes(mapId = 'north_america', width = MAP_WIDTH, height = MAP_HEIGHT) {
   useSize(width, height);
   const map = isValidMapId(mapId) ? mapId : 'north_america';
-  const cells = new Uint16Array(memory.buffer, ptr, N);
+  const key = `${map}@${W}x${H}`;
+  const hit = codesCache.get(key);
+  if (hit) { codesCache.delete(key); codesCache.set(key, hit); return hit; }
+
+  const codes = new Uint8Array(N);
+  const land = new Uint8Array(N);
   let i = 0;
   for (let y = 0; y < H; y++) {
     const ny = y / H;
     for (let x = 0; x < W; x++) {
-      const t = (terrainAt(x / W, ny, map) << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
-      cells[i] = (cells[i] & ~CELL_TERRAIN_MASK) | t;
-      i++;
+      const t = terrainAt(x / W, ny, map);
+      codes[i] = t;
+      land[i++] = t === TERRAIN.WATER ? 0 : 1;
     }
   }
+  // Erase noise speckles (→ water), carve island bridges (→ plains) so no
+  // land mass is sealed off by water.
+  const carve = computeBridgeCarveIndices(land);
+  for (const idx of carve.erase) codes[idx] = TERRAIN.WATER;
+  for (const idx of carve.bridges) codes[idx] = TERRAIN.PLAINS;
+  addFeatures(codes, key);
 
-  // Erase noise speckles (→ water) then carve island bridges (→ plains) so no
-  // land mass is sealed off by water. Cached per map after the first call.
-  const key = `${map}@${W}x${H}`;
-  let carve = bridgeCache.get(key);
-  if (!carve) { carve = computeBridgeCarveIndices(map); bridgeCache.set(key, carve); }
-  const plains = (TERRAIN.PLAINS << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
-  const water = (TERRAIN.WATER << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK;
-  for (let k = 0; k < carve.erase.length; k++) {
-    const idx = carve.erase[k];
-    cells[idx] = (cells[idx] & ~CELL_TERRAIN_MASK) | water;
-  }
-  for (let k = 0; k < carve.bridges.length; k++) {
-    const idx = carve.bridges[k];
-    cells[idx] = (cells[idx] & ~CELL_TERRAIN_MASK) | plains;
+  codesCache.set(key, codes);
+  while (codesCache.size > CODES_CACHE_MAX) codesCache.delete(codesCache.keys().next().value);
+  return codes;
+}
+
+// Write terrain codes into the terrain bits of a packed cell array (u16 per
+// cell), keeping the owner/defense/building bits.
+export function writeTerrainBits(cells, codes) {
+  for (let i = 0; i < codes.length; i++) {
+    cells[i] = (cells[i] & ~CELL_TERRAIN_MASK) | ((codes[i] << CELL_TERRAIN_SHIFT) & CELL_TERRAIN_MASK);
   }
 }
 
-// Pre-compute the island bridging for all maps so it doesn't freeze the UI
-// when a match starts. Should be called at idle time (e.g. app startup).
-export function warmMapCache(width = MAP_WIDTH, height = MAP_HEIGHT) {
-  useSize(width, height);
-  for (const mapId of MAP_POOL) {
-    const key = `${mapId}@${W}x${H}`;
-    if (!bridgeCache.has(key)) bridgeCache.set(key, computeBridgeCarveIndices(mapId));
+// Write the static terrain into the packed cell buffer in place. `memory` is
+// the WASM Memory (or any { buffer }), `ptr` the cell_data byte offset.
+export function generateTerrain(memory, ptr, mapId = 'north_america', width = MAP_WIDTH, height = MAP_HEIGHT) {
+  const codes = terrainCodes(mapId, width, height);
+  writeTerrainBits(new Uint16Array(memory.buffer, ptr, codes.length), codes);
+}
+
+// ── Terrain features ────────────────────────────────────────────────────────
+// Deterministic from the map id and size (seeded PRNG + value noise), so the
+// browser and the server add exactly the same features. Sized to the land:
+// about one river per 160k land cells, a gold deposit per 110k, ruins per 250k.
+function seededRandom(key) {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  let a = h >>> 0;
+  return () => { // mulberry32
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// codes: the base terrain (after bridging); features are written into it.
+function addFeatures(codes, key) {
+  const rand = seededRandom(key);
+  const terr = codes.slice();
+  let land = 0;
+  for (let i = 0; i < N; i++) if (terr[i] !== TERRAIN.WATER) land++;
+  const out = new Uint8Array(N); // 0 = no feature, else the feature's code
+  const ox = rand() * 1000;
+  const oy = rand() * 1000;
+
+  // Forests: noise blobs over plains and highlands (~12% of that land).
+  const fs = 1 / 45;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (terr[i] !== TERRAIN.PLAINS && terr[i] !== TERRAIN.HIGHLANDS) continue;
+      const n = valueNoise(x * fs + ox, y * fs + oy) * 0.7 + valueNoise(x * fs * 3 + oy, y * fs * 3 + ox) * 0.3;
+      if (n > 0.68) out[i] = TERRAIN.FOREST;
+    }
   }
+
+  // Distance to the sea over land (8-connected BFS) — rivers run down it.
+  const dist = new Int32Array(N).fill(-1);
+  const queue = new Int32Array(N);
+  let qh = 0;
+  let qt = 0;
+  for (let i = 0; i < N; i++) if (terr[i] === TERRAIN.WATER) { dist[i] = 0; queue[qt++] = i; }
+  while (qh < qt) {
+    const c = queue[qh++];
+    const cx = c % W;
+    const cy = (c / W) | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const X = cx + dx;
+        const Y = cy + dy;
+        if ((!dx && !dy) || X < 0 || Y < 0 || X >= W || Y >= H) continue;
+        const ni = Y * W + X;
+        if (dist[ni] === -1) { dist[ni] = dist[c] + 1; queue[qt++] = ni; }
+      }
+    }
+  }
+
+  // Spots spread over the land: best-candidate sampling, `minDist` from the
+  // coast, on land that `ok` accepts, away from the spots already taken.
+  const taken = [];
+  const spreadSpots = (count, minDist, ok) => {
+    const spots = [];
+    for (let n = 0; n < count; n++) {
+      let best = null;
+      let bestD = -1;
+      for (let k = 0; k < 60; k++) {
+        const i = Math.floor(rand() * N);
+        if (dist[i] < minDist || !ok(i)) continue;
+        const x = i % W;
+        const y = (i / W) | 0;
+        let d = Infinity;
+        for (const p of taken) d = Math.min(d, (p.x - x) ** 2 + (p.y - y) ** 2);
+        if (d > bestD) { bestD = d; best = { x, y, i }; }
+      }
+      if (best) { taken.push(best); spots.push(best); }
+    }
+    return spots;
+  };
+  // A rough blob of `radius` around a spot.
+  const blob = (spot, radius, code, ok) => {
+    const r2 = radius * radius;
+    for (let dy = -radius - 3; dy <= radius + 3; dy++) {
+      for (let dx = -radius - 3; dx <= radius + 3; dx++) {
+        const X = spot.x + dx;
+        const Y = spot.y + dy;
+        if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+        const i = Y * W + X;
+        const wobble = 1 + 0.35 * (valueNoise(X * 0.15 + ox, Y * 0.15 + oy) - 0.5) * 2;
+        if (dx * dx + dy * dy <= r2 * wobble && ok(i)) out[i] = code;
+      }
+    }
+  };
+  const flat = (i) => terr[i] === TERRAIN.PLAINS || terr[i] === TERRAIN.HIGHLANDS;
+
+  // Rivers: from inland (preferably high ground) down the distance field to
+  // the sea, meandering; two cells wide.
+  const rivers = Math.max(3, Math.round(land / 160000));
+  const sources = spreadSpots(rivers, 70, (i) => terr[i] !== TERRAIN.WATER);
+  for (const src of sources) {
+    let c = src.i;
+    let dirX = 0;
+    let dirY = 0;
+    for (let step = 0; step < 4000 && dist[c] > 0; step++) {
+      const cx = c % W;
+      const cy = (c / W) | 0;
+      for (let dy = 0; dy <= 1; dy++) {
+        for (let dx = 0; dx <= 1; dx++) {
+          const X = cx + dx;
+          const Y = cy + dy;
+          if (X < W && Y < H && terr[Y * W + X] !== TERRAIN.WATER) out[Y * W + X] = TERRAIN.RIVER;
+        }
+      }
+      // Next cell: downhill (or level), keeping some of the previous
+      // direction plus noise, so the course meanders instead of zig-zagging.
+      let best = -1;
+      let bestScore = -Infinity;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const X = cx + dx;
+          const Y = cy + dy;
+          if ((!dx && !dy) || X < 0 || Y < 0 || X >= W || Y >= H) continue;
+          const ni = Y * W + X;
+          const drop = dist[c] - dist[ni];
+          if (drop < 0) continue;
+          const score = drop * 1.2 + (dx * dirX + dy * dirY) * 0.9 + rand() * 0.9;
+          if (score > bestScore) { bestScore = score; best = ni; }
+        }
+      }
+      if (best < 0) break;
+      dirX = (best % W) - cx;
+      dirY = ((best / W) | 0) - cy;
+      c = best;
+    }
+  }
+
+  // Gold deposits and ruins, spread over flat land away from the coast.
+  const scale = W / 1920;
+  for (const spot of spreadSpots(Math.max(4, Math.round(land / 110000)), 25, flat)) {
+    blob(spot, Math.round(9 * scale), TERRAIN.GOLD, (i) => flat(i) && out[i] !== TERRAIN.RIVER);
+  }
+  for (const spot of spreadSpots(Math.max(2, Math.round(land / 250000)), 25, flat)) {
+    blob(spot, Math.round(7 * scale), TERRAIN.RUINS, (i) => flat(i) && out[i] !== TERRAIN.RIVER);
+  }
+
+  for (let i = 0; i < N; i++) if (out[i]) codes[i] = out[i];
+}
+
+// Compute every map of the pool at a size ahead of time (blocks; meant for a
+// background thread — src/js/terrainWorker.js, server/game/terrainWarmWorker.js).
+export function warmMapCache(width = MAP_WIDTH, height = MAP_HEIGHT) {
+  for (const mapId of MAP_POOL) terrainCodes(mapId, width, height);
 }

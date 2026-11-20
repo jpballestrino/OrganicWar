@@ -3,7 +3,7 @@
 // network.js feeds it the sim-delta / sim-full / sim-stats messages.
 
 import { TOTAL_CELLS, CELL_OWNER_MASK, COLS, ROWS } from './constants.js';
-import { generateTerrain } from './mapGen.js';
+import { terrainCodes, writeTerrainBits, MAP_POOL, TERRAIN, isValidMapId } from './mapGen.js';
 import { decodeDelta } from './deltaCodec.js';
 
 const DEFENSE_SHIFT = 11;
@@ -38,6 +38,8 @@ export function setMapSize(width, height) {
   cellDataPtr = 0;
   dirtyRows = new Uint8Array(H);
   paintedMapId = null;
+  // Open sea until the terrain is painted (it can take a moment to compute).
+  new Uint16Array(wasmMemory.buffer).fill(TERRAIN.WATER << 7);
   sizeVer++;
   markAllDirty();
   terrainVer++;
@@ -93,19 +95,81 @@ export function registerSim({ memory, cellDataPtr: ptr }) {
 // default map at startup (before it knows which map the room uses), so this is
 // called once the map id arrives (spawn-selection-start / init-config) to make
 // the local render cache match the authoritative terrain. Only terrain bits are
-// touched; owner/defense/building bits are preserved. No-op if the sim isn't
-// registered yet or the map is already painted.
-export function repaintTerrain(mapId) {
-  if (!wasmMemory || cellDataPtr === null || !mapId) return;
-  if (mapId === paintedMapId) return;
-  generateTerrain(wasmMemory, cellDataPtr, mapId, W, H);
+// touched; owner/defense/building bits are preserved.
+//
+// Terrain takes 1–3 s to compute, so it's computed in a Web Worker
+// (terrainWorker.js) and kept per map; a map not computed yet is painted when
+// it arrives (the map shows open sea meanwhile). The standard-size maps are
+// computed in the background at startup (prefetchTerrain).
+const terrainStore = new Map(); // `${mapId}@${w}x${h}` → Uint8Array
+const terrainWaiting = new Map(); // key → [resolve]
+let terrainWorker;
+let wantedTerrain = null; // { mapId, key } the map should show
+
+const terrainKey = (mapId, w, h) => `${isValidMapId(mapId) ? mapId : 'north_america'}@${w}x${h}`;
+
+function computeTerrain(mapId, w, h) {
+  const key = terrainKey(mapId, w, h);
+  if (terrainStore.has(key)) return Promise.resolve(terrainStore.get(key));
+  if (terrainWorker === undefined) {
+    try {
+      terrainWorker = new Worker(new URL('./terrainWorker.js', import.meta.url), { type: 'module' });
+      terrainWorker.onmessage = (e) => {
+        const k = terrainKey(e.data.mapId, e.data.width, e.data.height);
+        terrainStore.set(k, e.data.codes);
+        for (const resolve of terrainWaiting.get(k) || []) resolve(e.data.codes);
+        terrainWaiting.delete(k);
+      };
+    } catch {
+      terrainWorker = null; // no workers (tests): compute here
+    }
+  }
+  if (!terrainWorker) {
+    const codes = terrainCodes(mapId, w, h);
+    terrainStore.set(key, codes);
+    return Promise.resolve(codes);
+  }
+  return new Promise((resolve) => {
+    const queued = terrainWaiting.get(key);
+    if (queued) { queued.push(resolve); return; }
+    terrainWaiting.set(key, [resolve]);
+    terrainWorker.postMessage({ mapId, width: w, height: h });
+  });
+}
+
+function paintTerrain(mapId, codes) {
+  writeTerrainBits(new Uint16Array(wasmMemory.buffer, cellDataPtr, N), codes);
   paintedMapId = mapId;
   markAllDirty();
   terrainVer++;
 }
 
+export function repaintTerrain(mapId) {
+  if (!wasmMemory || cellDataPtr === null || !mapId) return Promise.resolve();
+  if (mapId === paintedMapId) return Promise.resolve();
+  const key = terrainKey(mapId, W, H);
+  wantedTerrain = { mapId, key };
+  const cached = terrainStore.get(key);
+  if (cached) { paintTerrain(mapId, cached); return Promise.resolve(); }
+  return computeTerrain(mapId, W, H).then((codes) => {
+    // Still the map (and size) we want? The room may have changed meanwhile.
+    if (wantedTerrain && wantedTerrain.key === key && terrainKey(mapId, W, H) === key) paintTerrain(mapId, codes);
+  });
+}
+
+// Compute the standard maps in the background, one after the other.
+export async function prefetchTerrain(width = COLS, height = ROWS) {
+  for (const mapId of MAP_POOL) await computeTerrain(mapId, width, height);
+}
+
 // Owner faction id (0 = nature) of a cell in the local render cache. Used for the
 // client-side missile target pre-check (can't aim at own/nature land).
+// Terrain code (mapGen.js TERRAIN) of a cell; -1 out of the map.
+export function getCellTerrain(cellId) {
+  if (!wasmMemory || cellDataPtr === null || cellId < 0 || cellId >= N) return -1;
+  return (new Uint16Array(wasmMemory.buffer, cellDataPtr, N)[cellId] >> 7) & 0xF;
+}
+
 export function getCellOwner(cellId) {
   if (!wasmMemory || cellDataPtr === null || cellId < 0 || cellId >= N) return -1;
   const cellView = new Uint16Array(wasmMemory.buffer, cellDataPtr, N);

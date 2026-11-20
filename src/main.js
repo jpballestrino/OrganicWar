@@ -6,8 +6,7 @@ import { initRankingsUI } from './js/rankingsUI.js';
 import { initFeedbackUI } from './js/feedbackUI.js';
 import { state } from './js/state.js';
 import { WebGLRenderer } from './js/renderer.js';
-import { setMapSize, repaintTerrain, getCellOwner, countOwnedCells, mapWidth, mapHeight } from './js/simBridge.js';
-import { warmMapCache } from './js/mapGen.js';
+import { setMapSize, repaintTerrain, prefetchTerrain, getCellOwner, getCellTerrain, countOwnedCells, mapWidth, mapHeight } from './js/simBridge.js';
 import { MAP_SIZES } from './js/constants.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
@@ -547,6 +546,28 @@ if (urlParams.has('debug')) {
 // ------------------------------------------------------------------
 // High-Density Simulation & Renderer Initialization
 // ------------------------------------------------------------------
+// What the special terrain under the cursor does (forests, river fords, gold
+// deposits, ruins — mapGen.js addFeatures, costs in lib.rs). Hidden over plain
+// terrain and while a build/targeting mode shows its own preview.
+const TERRAIN_HINTS = {
+  4: ['🌲 Forest', 'slow to claim (×3) · costly to attack'],
+  5: ['🌊 River ford', 'very slow to claim (×5) · a natural border'],
+  6: ['💰 Gold deposit', '+0.1 gold/s per cell (30× land)'],
+  7: ['🏛️ Ruins', 'costly to claim (×10) · 8 gold per cell taken'],
+};
+let terrainHintEl = null;
+function showTerrainHint(e, row, col) {
+  if (!terrainHintEl) terrainHintEl = document.getElementById('terrainHint');
+  if (!terrainHintEl) return;
+  const hint = e && !state.activePurchaseMode && !state.isSpectating
+    ? TERRAIN_HINTS[getCellTerrain(row * mapWidth() + col)] : null;
+  if (!hint) { terrainHintEl.style.display = 'none'; return; }
+  terrainHintEl.innerHTML = `<b>${hint[0]}</b> ${hint[1]}`;
+  terrainHintEl.style.left = `${e.clientX + 16}px`;
+  terrainHintEl.style.top = `${e.clientY + 18}px`;
+  terrainHintEl.style.display = 'block';
+}
+
 async function startSimulationEngine() {
   try {
     // The client only stores and draws the map (the server runs the
@@ -562,17 +583,21 @@ async function startSimulationEngine() {
 
     console.log('Map cache & WebGL renderer started');
 
-    // Pre-warm the bridge cache asynchronously so it doesn't block the UI
-    // when a match starts and the server chooses a different map.
-    setTimeout(warmMapCache, 500);
+    // The other maps' terrain, computed in a Web Worker so the match starts
+    // without waiting for it (the server picks the map).
+    prefetchTerrain();
 
     // Track hovered cell for building placement preview.
     canvas.addEventListener('mousemove', (e) => {
       if (state.gameState === 'PLAYING') {
         const { row, col } = renderer.screenToWorld(e.clientX, e.clientY);
         state.hoveredCell = { r: row, c: col };
+        showTerrainHint(e, row, col);
+      } else {
+        showTerrainHint(null);
       }
     });
+    canvas.addEventListener('mouseleave', () => showTerrainHint(null));
 
     // Handle game input (clicks)
     canvas.addEventListener('contextmenu', (e) => {

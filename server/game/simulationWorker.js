@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { parentPort, workerData } from 'worker_threads';
-import { generateTerrain } from '../../src/js/mapGen.js';
+import { terrainCodes, writeTerrainBits, TERRAIN } from '../../src/js/mapGen.js';
 import { MAX_FACTIONS, MAP_SIZES } from '../../src/js/constants.js';
 import { encodeDelta } from '../../src/js/deltaCodec.js';
 // We cannot use the global logger cleanly since it writes to files and we are in a thread.
@@ -130,16 +130,24 @@ class RoomSimWorker {
       throw new Error(`sim map ${simW}x${simH} != MAP_SIZES.${MAP_SIZE} ${MAP_WIDTH}x${MAP_HEIGHT} — rebuild the WASM (npm run build:wasm)`);
     }
 
+    // The map's terrain: from the server's cache (terrainCache.js) when it has
+    // it, else generated here and sent back so the next room on it starts at once.
     const cellPtr = this.exports.simulationstate_get_cell_data_ptr(this.statePtr);
-    generateTerrain(this.exports.memory, cellPtr, this.mapId, MAP_WIDTH, MAP_HEIGHT);
-
-    // Total conquerable land (terrain bits 7-10; 3 = water), counted once: the
-    // denominator for the domination victory and the clients' "% of map" HUD.
-    const terrainCells = new Uint16Array(this.exports.memory.buffer, cellPtr, TOTAL_CELLS);
-    let land = 0;
-    for (let i = 0; i < TOTAL_CELLS; i++) {
-      if (((terrainCells[i] >> 7) & 0xF) !== 3) land++;
+    let codes;
+    if (opts.terrain instanceof SharedArrayBuffer && opts.terrain.byteLength === TOTAL_CELLS) {
+      codes = new Uint8Array(opts.terrain);
+    } else {
+      codes = terrainCodes(this.mapId, MAP_WIDTH, MAP_HEIGHT);
+      const buffer = new SharedArrayBuffer(TOTAL_CELLS);
+      new Uint8Array(buffer).set(codes);
+      parentPort.postMessage({ type: 'terrain', mapId: this.mapId, mapSize: MAP_SIZE, buffer });
     }
+    writeTerrainBits(new Uint16Array(this.exports.memory.buffer, cellPtr, TOTAL_CELLS), codes);
+
+    // Total conquerable land, counted once: the denominator for the domination
+    // victory and the clients' "% of map" HUD.
+    let land = 0;
+    for (let i = 0; i < TOTAL_CELLS; i++) if (codes[i] !== TERRAIN.WATER) land++;
     this.landCells = land;
     // Domination rule: { share, decayStartSec, decayEverySec, decayStep, floor }
     // (null/absent disables). See _dominationShare() for the schedule.
