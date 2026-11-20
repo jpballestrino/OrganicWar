@@ -103,12 +103,23 @@ export function registerSim({ memory, cellDataPtr: ptr }) {
 // computed in the background at startup (prefetchTerrain).
 const terrainStore = new Map(); // `${mapId}@${w}x${h}` → Uint8Array
 const terrainWaiting = new Map(); // key → [resolve]
+const terrainQueue = []; // { key, mapId, w, h } not yet sent to the worker
+let terrainBusy = false; // the worker is computing one map
 let terrainWorker;
 let wantedTerrain = null; // { mapId, key } the map should show
 
 const terrainKey = (mapId, w, h) => `${isValidMapId(mapId) ? mapId : 'north_america'}@${w}x${h}`;
 
-function computeTerrain(mapId, w, h) {
+// One map at a time, so a map the player needs now (urgent: front of the
+// queue) never waits behind the background prefetch of the others.
+function pumpTerrain() {
+  if (terrainBusy || !terrainQueue.length) return;
+  const job = terrainQueue.shift();
+  terrainBusy = true;
+  terrainWorker.postMessage({ mapId: job.mapId, width: job.w, height: job.h });
+}
+
+function computeTerrain(mapId, w, h, urgent = false) {
   const key = terrainKey(mapId, w, h);
   if (terrainStore.has(key)) return Promise.resolve(terrainStore.get(key));
   if (terrainWorker === undefined) {
@@ -119,6 +130,8 @@ function computeTerrain(mapId, w, h) {
         terrainStore.set(k, e.data.codes);
         for (const resolve of terrainWaiting.get(k) || []) resolve(e.data.codes);
         terrainWaiting.delete(k);
+        terrainBusy = false;
+        pumpTerrain();
       };
     } catch {
       terrainWorker = null; // no workers (tests): compute here
@@ -131,9 +144,17 @@ function computeTerrain(mapId, w, h) {
   }
   return new Promise((resolve) => {
     const queued = terrainWaiting.get(key);
-    if (queued) { queued.push(resolve); return; }
+    if (queued) {
+      queued.push(resolve);
+      // Already waiting in the queue: move it to the front if now urgent.
+      const at = terrainQueue.findIndex((j) => j.key === key);
+      if (urgent && at > 0) terrainQueue.unshift(...terrainQueue.splice(at, 1));
+      return;
+    }
     terrainWaiting.set(key, [resolve]);
-    terrainWorker.postMessage({ mapId, width: w, height: h });
+    const job = { key, mapId, w, h };
+    if (urgent) terrainQueue.unshift(job); else terrainQueue.push(job);
+    pumpTerrain();
   });
 }
 
@@ -151,7 +172,7 @@ export function repaintTerrain(mapId) {
   wantedTerrain = { mapId, key };
   const cached = terrainStore.get(key);
   if (cached) { paintTerrain(mapId, cached); return Promise.resolve(); }
-  return computeTerrain(mapId, W, H).then((codes) => {
+  return computeTerrain(mapId, W, H, true).then((codes) => {
     // Still the map (and size) we want? The room may have changed meanwhile.
     if (wantedTerrain && wantedTerrain.key === key && terrainKey(mapId, W, H) === key) paintTerrain(mapId, codes);
   });
