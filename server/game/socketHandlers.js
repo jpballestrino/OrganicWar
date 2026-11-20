@@ -3,7 +3,7 @@ import { clientIp } from '../clientIp.js';
 import { sendProfile, importGuestProfile, parseTzOffset } from './progression.js';
 import { MAX_FACTIONS, QUICK_PLAY_PLAYERS, MEGA_PLAY_PLAYERS } from '../../src/js/constants.js';
 import { handlePlayerDisconnect, reclaimSlot, leaveRankedQueue, startGuildWarCountdown, endedMatchFor, sendInitConfig, updateLobbyList, buildLobbyList, createGuildWarRoom, matchmakeRanked, handleGameOver, createRoom, startSpawnSelection, finalizeSpawns } from './roomManager.js';
-import { randomMapId } from '../../src/js/mapGen.js';
+import { MAP_POOL } from '../../src/js/mapGen.js';
 import { isLandAt } from './terrainCache.js';
 import { log } from '../utils/logger.js';
 import { ipConnectionCounts } from '../server.js';
@@ -44,7 +44,7 @@ function getFactionForSocket(room, socketId) {
 const createRoomSchema = z.object({
   name: z.string().min(1).max(50),
   maxPlayers: z.coerce.number().int().min(2).max(MAX_FACTIONS),
-  preset: z.enum(['north_america', 'europe', 'africa']).optional(),
+  preset: z.enum(MAP_POOL).optional(),
   nickname: z.string().min(1).max(20).optional(),
 });
 
@@ -278,7 +278,7 @@ export function setupSocketHandlers(io) {
         let room = Object.values(activeRooms)
           .find(r => r.isQuickPlay && r.isOpen && !r.gcTimeout && r.maxPlayers === size);
         if (!room) {
-          room = createRoom(mode === 'mega' ? 'Mega Battle' : 'Quick Game', randomMapId(), size, true);
+          room = createRoom(mode === 'mega' ? 'Mega Battle' : 'Quick Game', null, size, true);
           if (!room) {
             // The client hid the menu when it asked; this brings it back.
             socket.emit('matchmaking-failed', { message: 'Servers are full right now. Please try again in a minute.' });

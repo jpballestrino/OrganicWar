@@ -4,6 +4,7 @@ node_modules
 dist
 src/wasm
 server/wasm
+server/wasm-mega
 simulation-core/target
 server/*.db
 server/*.db-*

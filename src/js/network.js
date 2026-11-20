@@ -5,6 +5,7 @@ import { getToken, isLoggedIn } from './auth.js';
 import { setServerMode, setServerProfile, loadLocalProfile, renderProgressCards } from './progression.js';
 import { applyOwnerDelta, applyOwnerRuns, clearAllBuildingBits, decodeStats, applyDefenseBuilding, removeDefenseBuilding, resyncBuildingZones, resyncZonesForCells, repaintTerrain, setMapSize } from './simBridge.js';
 import { escapeHtml } from './escape.js';
+import { MAP_LABELS } from './mapGen.js';
 import { onSnapshotStats } from './matchFeel.js';
 import { GROWTH_PEAK_RATIO, BUILDING_RADIUS, DEFENSE_BUILD_MS, factionHexColors, fmtInt, MAP_SIZES } from './constants.js';
 import { updateBuildBar, rejectMessage } from './buildBar.js';
@@ -109,9 +110,40 @@ export function updateDevDashboard() {
 
 // Push an elimination into the kill feed (top-left). Newest on top, capped, each
 // entry auto-fades after a few seconds. Called from the `player-eliminated` event.
+// In a busy room (a Mega Battle opening loses ~30 factions in a minute) the
+// eliminations that don't involve you fold into one "+N more" line once three
+// arrived within FEED_BURST_MS.
+const FEED_BURST_MS = 4000;
+let feedBurst = [];
+let feedSummary = null;
+function foldIntoSummary(feed) {
+  const now = Date.now();
+  feedBurst = feedBurst.filter((t) => now - t < FEED_BURST_MS);
+  feedBurst.push(now);
+  if (feedBurst.length <= 3) return false;
+  if (!feedSummary || !feedSummary.isConnected) {
+    feedSummary = document.createElement('div');
+    feedSummary.className = 'kill-feed-entry';
+    feedSummary.dataset.count = '0';
+  }
+  feedSummary.dataset.count = String(Number(feedSummary.dataset.count) + 1);
+  feedSummary.innerHTML = `<span class="kill-feed-skull">☠</span><span>+${feedSummary.dataset.count} more eliminated</span>`;
+  feedSummary.classList.remove('fade-out');
+  feed.prepend(feedSummary);
+  clearTimeout(feedSummary.fadeTimer);
+  const el = feedSummary;
+  el.fadeTimer = setTimeout(() => {
+    el.classList.add('fade-out');
+    setTimeout(() => { el.remove(); if (feedSummary === el) feedSummary = null; }, 500);
+  }, 6000);
+  return true;
+}
+
 function addKillFeedEntry(factionId, killerId = 0) {
   const feed = document.getElementById('killFeed');
   if (!feed) return;
+  const me = parseInt(state.playerFaction);
+  if (factionId !== me && killerId !== me && foldIntoSummary(feed)) return;
   const slot = state.activePlayerSlots ? state.activePlayerSlots[factionId] : null;
   const name = slot && slot.nickname ? slot.nickname : `Player ${factionId}`;
   const color = factionHexColors[factionId] || '#ffffff';
@@ -614,7 +646,7 @@ export function initNetwork() {
       let detailDiv = document.createElement('div');
       detailDiv.style.fontSize = '11px';
       detailDiv.style.color = '#aaa';
-      detailDiv.textContent = `Map: ${room.preset} | Players: ${room.currentPlayers}/${room.maxPlayers}`;
+      detailDiv.textContent = `Map: ${MAP_LABELS[room.preset] || room.preset} | Players: ${room.currentPlayers}/${room.maxPlayers}`;
       infoDiv.appendChild(nameDiv);
       infoDiv.appendChild(detailDiv);
 

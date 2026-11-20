@@ -336,7 +336,7 @@ export function createRoom(name = 'Game', preset = 'north_america', maxPlayers =
 
   // Force random map for Quick Play regardless of passed preset
   if (isQuickPlay) {
-    preset = randomMapId();
+    preset = randomMapId(mapSizeFor(maxPlayers));
   }
 
   const room = buildRoomObject({

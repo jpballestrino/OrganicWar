@@ -55,6 +55,10 @@ export function lobbyTemplate() {
                     <option value="north_america" style="background: #222; color: #fff;">North America</option>
                     <option value="europe" style="background: #222; color: #fff;">Europe</option>
                     <option value="africa" style="background: #222; color: #fff;">Africa</option>
+                    <option value="south_america" style="background: #222; color: #fff;">South America</option>
+                    <option value="asia" style="background: #222; color: #fff;">Asia</option>
+                    <option value="oceania" style="background: #222; color: #fff;">Oceania</option>
+                    <option value="pangaea" style="background: #222; color: #fff;">Pangaea (generated)</option>
                 </select>
             </div>
 

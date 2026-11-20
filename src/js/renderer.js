@@ -732,6 +732,11 @@ export class WebGLRenderer {
         ctx.textBaseline = 'middle';
         ctx.lineJoin = 'round';
 
+        // Busy maps (a 64-player Mega Battle) would bury the map under names:
+        // labels are placed biggest empire first (yours and the bounty target
+        // before anyone), and one that would overlap a label already placed,
+        // or whose territory is a speck at this zoom, is left out.
+        const order = [];
         for (const fid in centroids) {
             const c = centroids[fid];
             // Only the sim-snapshot shape has row/col/troops; ignore the
@@ -739,11 +744,27 @@ export class WebGLRenderer {
             if (!c || typeof c.row !== 'number' || typeof c.col !== 'number' || typeof c.troops !== 'number') {
                 continue;
             }
+            const id = parseInt(fid);
+            const rank = id === myFactionId ? 2e9 : id === state.bountyFid ? 1e9 : (c.cells || 0);
+            order.push([rank, fid, c]);
+        }
+        order.sort((a, b) => b[0] - a[0]);
+        const placed = [];
+
+        for (const [, fid, c] of order) {
             const pos = this.worldToScreen(c.col, c.row);
 
             // Cull labels outside the viewport.
             if (pos.x < -60 || pos.x > this.canvas.width + 60 ||
                 pos.y < -30 || pos.y > this.canvas.height + 30) { continue; }
+
+            const isMine = parseInt(fid) === myFactionId;
+            // A territory under ~22 px across on screen gets no label.
+            if (!isMine && Math.sqrt(c.cells || 0) * this.camera.zoom < 22) continue;
+            const boxSize = territoryLabelSize(c.cells || 0);
+            const box = { x0: pos.x - boxSize * 3.2, x1: pos.x + boxSize * 3.2, y0: pos.y - boxSize * 1.4, y1: pos.y + boxSize * 1.4 };
+            if (!isMine && placed.some((p) => p.x0 < box.x1 && box.x0 < p.x1 && p.y0 < box.y1 && box.y0 < p.y1)) continue;
+            placed.push(box);
 
             const slot = slots && slots[fid];
             const name = slot && slot.nickname ? slot.nickname : ('Faction ' + fid);
