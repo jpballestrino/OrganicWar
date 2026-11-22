@@ -34,7 +34,8 @@ const MODE = process.env.MODE || (SPECTATE ? 'mega' : 'standard');
 async function measure(page, seconds) {
   const sample = () => page.evaluate(() => {
     const s = window.renderer.stats;
-    return { t: performance.now(), frames: s.frames, bytes: s.uploadedBytes, uploadMs: s.uploadMs, uploads: s.uploads, frameMs: s.frameMs || 0 };
+    return { t: performance.now(), frames: s.frames, bytes: s.uploadedBytes, uploadMs: s.uploadMs, uploads: s.uploads, frameMs: s.frameMs || 0, buildingsMs: s.buildingsMs || 0,
+      onScreen: (window.__owState.buildings || []).filter((b) => { const r = window.renderer; const x = (b.col - r.camera.x) * r.camera.zoom; const y = (b.row - r.camera.y) * r.camera.zoom; return x > -80 && y > -80 && x < r.canvas.width + 80 && y < r.canvas.height + 80; }).length };
   });
   const a = await sample();
   const applies = [];
@@ -53,9 +54,12 @@ async function measure(page, seconds) {
     applyMs: applies.reduce((x, y) => x + y, 0) / applies.length,
     // Main-thread time per frame spent in the game loop (render + overlays).
     frameMs: (b.frameMs - a.frameMs) / Math.max(1, frames),
+    // …of which drawing buildings and their links.
+    buildingsMs: (b.buildingsMs - a.buildingsMs) / Math.max(1, frames),
+    onScreen: b.onScreen,
   };
 }
-const fmt = (r) => `${r.fps.toFixed(1)} fps, ${r.frameMs.toFixed(1)} ms/frame in the game loop, GPU upload ${r.uploadMBps.toFixed(1)} MB/s ` +
+const fmt = (r) => `${r.fps.toFixed(1)} fps, ${r.frameMs.toFixed(1)} ms/frame in the game loop (buildings ${r.buildingsMs.toFixed(2)} ms, ${r.onScreen} on screen), GPU upload ${r.uploadMBps.toFixed(1)} MB/s ` +
   `(${r.uploadsPerSec.toFixed(1)} uploads/s, ${r.uploadMsPerFrame.toFixed(2)} ms per frame), sim-delta apply ${r.applyMs.toFixed(2)} ms`;
 
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
@@ -84,6 +88,12 @@ for (let run = 1; run <= RUNS; run++) {
     await page.waitForTimeout(1000);
     const r = await measure(page, SECONDS);
     console.log(`run ${run} spectating: ${fmt(r)}`);
+    // The worst case for building drawing: the whole map, every building on screen.
+    await page.evaluate(() => window.renderer.fitCameraToMap());
+    await page.waitForTimeout(500);
+    const whole = await measure(page, SECONDS);
+    console.log(`run ${run} whole map:  ${fmt(whole)}`);
+    r.whole = whole;
     if (process.env.PROFILE_LAYERS) {
       for (const skip of [{ labels: 1 }, { buildings: 1 }, { minimap: 1 }, { map: 1 }, { labels: 1, buildings: 1, minimap: 1 }]) {
         await page.evaluate((k) => { window.__owSkip = k; }, skip);

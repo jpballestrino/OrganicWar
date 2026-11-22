@@ -6,7 +6,7 @@ import { initRankingsUI } from './js/rankingsUI.js';
 import { initFeedbackUI } from './js/feedbackUI.js';
 import { state } from './js/state.js';
 import { WebGLRenderer } from './js/renderer.js';
-import { setMapSize, repaintTerrain, prefetchTerrain, getCellOwner, getCellTerrain, countOwnedCells, mapWidth, mapHeight, fogLayers, fogEnabled } from './js/simBridge.js';
+import { setMapSize, repaintTerrain, prefetchTerrain, getCellOwner, getCellTerrain, countOwnedCells, mapWidth, mapHeight, fogLayers, fogEnabled, setFogOff } from './js/simBridge.js';
 import { MAP_SIZES } from './js/constants.js';
 import { initSfx, playSfx, isMuted, setMuted } from './js/sfx.js';
 import { initMatchFeel, consumeAutoQuickPlay } from './js/matchFeel.js';
@@ -534,6 +534,8 @@ if (urlParams.has('debug')) {
     return { on: fogEnabled(), seen: vis.reduce((n, v) => n + (v ? 1 : 0), 0), blocks: vis.length,
       coarseOwners: new Set(coarse.filter((o) => o)).size };
   };
+  // Browser tests: see the whole map as a spectator does.
+  window.__owFogOff = setFogOff;
   window.__owSocket = socket;
   const debugDiv = document.createElement('div');
   debugDiv.id = 'debugUI';
@@ -772,8 +774,10 @@ function gameLoop(time) {
           if (!SKIP.labels) renderer.drawFactionLabels(ctx, state.factionCentroids, state.activePlayerSlots, parseInt(state.playerFaction));
           // Building icons, then synergy links on top (tower auras are opaque
           // enough to hide anything drawn underneath them).
+          const tB = performance.now();
           if (!SKIP.buildings) renderer.drawBuildings(ctx, state.buildings);
           if (!SKIP.buildings) renderer.drawBuildingLinks(ctx, state.buildings);
+          renderer.stats.buildingsMs = (renderer.stats.buildingsMs || 0) + performance.now() - tB;
           // Active missiles flying through the air
           state.activeMissiles = renderer.drawMissiles(ctx, state.activeMissiles, state.activeExplosions);
           // Active missile blasts (expanding flash), pruned when finished.

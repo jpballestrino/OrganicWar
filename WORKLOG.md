@@ -462,3 +462,18 @@ spectating 27.2 ms/frame CPU, 11.6 MB/s to the GPU; recap open 123.5 ms/frame.
 - [x] Blitz button refreshes the moment it's pressed (the browser test's
       intermittent "Blitz button shows it is active" was a slow frame).
 Result: spectating 27.2 → 1.6 ms/frame CPU, recap 123.5 → 3.8 ms/frame.
+
+## Session 14 — buildings drawn by the GPU (WebGL)
+
+Measured with `SPECTATE=1 node scripts/bench-render.mjs` (Mega Battle, spectating;
+new: CPU ms spent on buildings + a whole-map view with every building on screen).
+- [x] Icon art moved to `buildingArt.js` (unchanged), painted once per distinct icon
+      into a sprite atlas; `buildingLayer.js` draws all icons in one instanced
+      draw (+ a rotated layer for the spinning parts); zone rings and synergy
+      links as instanced distance-field strokes. Construction bar, silo
+      cooldown, anti-air charges stay on the overlay canvas.
+Whole map (~260 buildings): buildings 6.7–9.1 → 1.0–1.5 ms CPU per frame, frame
+8.1–11.9 → 2.2–2.7 ms, 1.9–2.0 → 6.2–6.8 fps (software GL). Zoomed in:
+0.7–0.9 → 0.4 ms.
+- [x] smoke-camera: checks start away from the map's edges (a spawn at the edge
+      pinned the camera there and read as a stuck key — intermittent).

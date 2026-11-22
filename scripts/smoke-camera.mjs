@@ -42,8 +42,20 @@ async function hold(key, code, ms = 600) {
 }
 
 // 1. Auto-placed spawn: the match starts zoomed in on our land, and D moves.
+// (At the map's right edge D can't go further: then A must move it.)
 let m = await hold('d', 'KeyD');
-check('a player who did not pick a spawn can move the camera (D)', m.dx > 5, `moved ${m.dx.toFixed(1)}, zoom ${m.zoom.toFixed(2)}`);
+if (m.dx <= 5) m = await hold('a', 'KeyA');
+check('a player who did not pick a spawn can move the camera (D, or A at the right edge)', Math.abs(m.dx) > 5, `moved ${m.dx.toFixed(1)}, zoom ${m.zoom.toFixed(2)}`);
+
+// From here on, start each check from the middle of the map: a spawn at the
+// map's edge pins the camera there (S can't move it further down), which
+// read as a stuck key.
+const centre = () => page.evaluate(() => {
+  const r = window.renderer;
+  r.camera.x = r.mapW / 2 - r.canvas.width / r.camera.zoom / 2;
+  r.camera.y = r.mapH / 2 - r.canvas.height / r.camera.zoom / 2;
+});
+await centre();
 
 // 2. Key held when the window loses focus: no stuck key afterwards.
 await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', bubbles: true })));
@@ -57,6 +69,7 @@ check('…and the camera does not keep drifting on its own', Math.abs((await cam
 
 // 3. Focus left in a hidden text field (the menu's nickname box).
 await page.evaluate(() => { const i = document.getElementById('nicknameInput'); i.focus(); });
+await centre();
 m = await hold('a', 'KeyA');
 check('with the focus in a hidden menu field, A still moves the camera', m.dx < -5, `moved ${m.dx.toFixed(1)}`);
 // …but typing in a visible field (guild chat, if shown) must not move it: a
@@ -73,12 +86,15 @@ check('typing in a visible text field does not move the camera', Math.abs(m.dx) 
 await page.evaluate(() => { document.getElementById('__camTestInput').remove(); document.activeElement?.blur?.(); });
 
 // 4. AZERTY: the physical W/A keys type "z"/"q".
+await centre();
 m = await hold('z', 'KeyW');
 check('AZERTY: the key in the W position moves up', m.dy < -5, `moved ${m.dy.toFixed(1)}`);
+await centre();
 m = await hold('q', 'KeyA');
 check('AZERTY: the key in the A position moves left', m.dx < -5, `moved ${m.dx.toFixed(1)}`);
 
 // Arrows keep working.
+await centre();
 m = await hold('ArrowRight', 'ArrowRight');
 check('arrow keys move the camera', m.dx > 5, `moved ${m.dx.toFixed(1)}`);
 
