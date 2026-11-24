@@ -357,20 +357,7 @@ function initLobbyUI() {
   }
 
   // Tutorial / Info Modal
-  const linkTutorial = document.getElementById('linkTutorial');
-  const tutorialModal = document.getElementById('tutorialModal');
-  const btnCloseTutorial = document.getElementById('btnCloseTutorial');
-  if (linkTutorial && tutorialModal) {
-    linkTutorial.onclick = (e) => {
-      e.preventDefault();
-      tutorialModal.style.display = 'block';
-    };
-  }
-  if (btnCloseTutorial && tutorialModal) {
-    btnCloseTutorial.onclick = () => {
-      tutorialModal.style.display = 'none';
-    };
-  }
+  // How to Play: opened and closed in authUI.js (as a centred flex overlay).
 
   // Profile Close
   const btnCloseProfile = document.getElementById('btn-close-profile');
