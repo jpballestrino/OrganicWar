@@ -108,6 +108,7 @@ export function modalsTemplate() {
                 <ul style="padding-left: 20px; margin-bottom: 20px;">
                     <li><strong>Pick a start:</strong> At the start of a match you have 8 seconds to click a land spot to begin from (each start has a small safe zone around it). If you don't pick, you're placed automatically.</li>
                     <li><strong>Troops &amp; gold:</strong> Your troop cap, troop growth and gold income all grow with the land you hold. Troops grow fastest when your army is around 40% full, so keeping troops on the attack pays.</li>
+                    <li><strong>Bots:</strong> Empty slots are played by bots. They leave everyone alone for the first 50 seconds; after that only one bot at a time may attack you until 1:30, and never more than two at once.</li>
                     <li><strong>Leaderboard:</strong> Top right. Below it you can see how close the biggest empire is to winning.</li>
                 </ul>
 

@@ -86,6 +86,17 @@ const GOLD_PER_CELL_PER_SEC: f32 = 0.00333;
 // half the lobby is gone by 90s.
 const BOT_PEACE_SECONDS: u32 = 50;
 
+// No pile-ons (see bot_think_all): each bot picks its weakest neighbour on its
+// own, so when the truce ended every bot bordering the same faction — usually
+// a human, whose troops are out on attacks — hit it at once from every side.
+// Now at most BOT_MAX_ATTACKERS bots press one faction at a time, and only
+// HUMAN_GRACE_ATTACKERS presses a human until HUMAN_GRACE_SECONDS. A capped
+// bot takes its next-weakest neighbour, or neutral land, instead. The bounty
+// target is exempt: ganging up on a runaway leader is the point of the bounty.
+const BOT_MAX_ATTACKERS: u32 = 2;
+const HUMAN_GRACE_SECONDS: u32 = 90;
+const HUMAN_GRACE_ATTACKERS: u32 = 1;
+
 // A freshly spawned faction starts with troops = this fraction of its max pop.
 const INITIAL_FILL_RATIO: f32 = 0.80;
 
@@ -892,19 +903,15 @@ impl SimulationState {
         if !any { return; }
 
         // Per-bot accumulators, filled in one pass over the border blocks.
+        const S: usize = PLAYER_ARRAY_SIZE;
         let mut best_neutral_cost = [f32::INFINITY; PLAYER_ARRAY_SIZE];
         let mut best_neutral_cell = [-1i64; PLAYER_ARRAY_SIZE];
-        let mut weakest_enemy_strength = [f32::INFINITY; PLAYER_ARRAY_SIZE];
-        let mut weakest_enemy_cell = [-1i64; PLAYER_ARRAY_SIZE];
-        // Tie-break for equally weak enemies: the lowest (cell, direction) key,
-        // i.e. what a plain row-major scan would have met first. Keeps the choice
-        // independent of the order blocks are visited in.
-        let mut weakest_enemy_key = [u64::MAX; PLAYER_ARRAY_SIZE];
-        // A cell of the bounty target bordering each bot (lowest key wins, as
-        // above, so the pick is independent of scan order).
+        // Every enemy each bot borders, with a representative cell: the lowest
+        // (cell, direction) key, i.e. what a plain row-major scan would have met
+        // first — so the choice is independent of the order blocks are visited in.
+        let mut enemy_cell = vec![-1i64; S * S];
+        let mut enemy_key = vec![u64::MAX; S * S];
         let bounty = self.bounty_faction;
-        let mut bounty_cell = [-1i64; PLAYER_ARRAY_SIZE];
-        let mut bounty_key = [u64::MAX; PLAYER_ARRAY_SIZE];
 
         for br in 0..BLOCKS_H {
             for bc in 0..BLOCKS_W {
@@ -941,27 +948,38 @@ impl SimulationState {
                                     best_neutral_cell[o] = n_idx as i64;
                                 }
                             } else if n_owner < PLAYER_ARRAY_SIZE {
-                                if n_owner == bounty {
-                                    let key = (cell * 8 + dir) as u64;
-                                    if key < bounty_key[o] { bounty_key[o] = key; bounty_cell[o] = n_idx as i64; }
-                                }
-                                let cells = self.player_owned_cells[n_owner].max(1) as f32;
-                                let mut strength = self.player_total_troops[n_owner] / cells;
-                                // The bounty target is cheaper to hit; bots know it.
-                                if n_owner == self.bounty_faction { strength *= BOUNTY_COST_MULT; }
                                 let key = (cell * 8 + dir) as u64;
-                                if strength < weakest_enemy_strength[o]
-                                    || (strength == weakest_enemy_strength[o] && key < weakest_enemy_key[o])
-                                {
-                                    weakest_enemy_strength[o] = strength;
-                                    weakest_enemy_cell[o] = n_idx as i64;
-                                    weakest_enemy_key[o] = key;
-                                }
+                                let k = o * S + n_owner;
+                                if key < enemy_key[k] { enemy_key[k] = key; enemy_cell[k] = n_idx as i64; }
                             }
                         }
                     }
                 }
             }
+        }
+
+        // How many bots are already pressing each faction (fronts in flight).
+        let mut attackers = [0u32; PLAYER_ARRAY_SIZE];
+        for b in 1..S {
+            if self.player_is_bot[b] != 1 || self.player_owned_cells[b] == 0 { continue; }
+            for t in 1..S {
+                if self.front_pool[b * S + t] > FRONT_EPS { attackers[t] += 1; }
+            }
+        }
+        let grace = self.current_tick < HUMAN_GRACE_SECONDS * self.tick_hz;
+        let cap = |t: usize, s: &Self| -> u32 {
+            if t == bounty { u32::MAX }
+            else if grace && s.player_is_bot[t] != 1 { HUMAN_GRACE_ATTACKERS }
+            else { BOT_MAX_ATTACKERS }
+        };
+        // Troops per cell of each faction, as bots judge it (the bounty target
+        // is cheaper to hit; bots know it).
+        let mut strength = [f32::INFINITY; PLAYER_ARRAY_SIZE];
+        for t in 1..S {
+            if self.player_owned_cells[t] == 0 { continue; }
+            let mut st = self.player_total_troops[t] / self.player_owned_cells[t] as f32;
+            if t == bounty { st *= BOUNTY_COST_MULT; }
+            strength[t] = st;
         }
 
         // Decide + commit per bot.
@@ -971,10 +989,23 @@ impl SimulationState {
             let our_cells = self.player_owned_cells[f].max(1) as f32;
             let our_strength = self.player_total_troops[f] / our_cells;
             let has_neutral = best_neutral_cell[f] != -1;
-            let has_enemy = weakest_enemy_cell[f] != -1;
+            // The weakest bordering enemy that isn't already pressed by as many
+            // bots as allowed (ties: the lowest representative key).
+            let mut target_enemy = 0usize;
+            for e in 1..S {
+                let k = f * S + e;
+                if enemy_cell[k] == -1 || attackers[e] >= cap(e, self) { continue; }
+                if target_enemy == 0
+                    || strength[e] < strength[target_enemy]
+                    || (strength[e] == strength[target_enemy] && enemy_key[k] < enemy_key[f * S + target_enemy])
+                {
+                    target_enemy = e;
+                }
+            }
+            let has_enemy = target_enemy != 0;
             // Attack only if it's worth it: we comfortably out-muscle the weakest
             // bordering enemy (1.5x troops-per-cell margin covers the invade cost).
-            let can_overpower = has_enemy && our_strength > weakest_enemy_strength[f] * 1.5;
+            let can_overpower = has_enemy && our_strength > strength[target_enemy] * 1.5;
             // Opening truce: bots leave other factions alone for the first
             // BOT_PEACE_SECONDS, so nobody is wiped out before they've had a chance
             // to claim land and learn the controls. (Humans are not bound by it.)
@@ -985,18 +1016,20 @@ impl SimulationState {
             // "Stop the leader": a bot bordering the bounty target turns on it
             // (outside the truce) — the counterweight only works if the
             // runaway's neighbours actually gang up on it.
-            let target_cell = if !peace && bounty_cell[f] != -1 {
-                bounty_cell[f]
+            let bounty_cell = if bounty != 0 && bounty < S { enemy_cell[f * S + bounty] } else { -1 };
+            let (target_cell, target_faction) = if !peace && bounty_cell != -1 {
+                (bounty_cell, bounty)
             } else if has_neutral && (!can_overpower || peace) {
-                best_neutral_cell[f]
+                (best_neutral_cell[f], 0)
             } else if has_enemy && !peace {
-                weakest_enemy_cell[f]
+                (enemy_cell[f * S + target_enemy], target_enemy)
             } else {
-                -1 // walled in (only water borders) or at peace — hold this tick
+                (-1, 0) // walled in, at peace, or every neighbour already pressed — hold this tick
             };
 
             if target_cell != -1 {
                 self.execute_expansion(f as u32, target_cell as u32, attack_percentage);
+                if target_faction != 0 && self.has_active_front(f) { attackers[target_faction] += 1; }
             }
         }
     }
@@ -3120,6 +3153,41 @@ mod tests {
         assert!(sees(&s, 1, 400, 600), "a silo sees its range");
         assert!(!sees(&s, 1, 400, 404 + SILO_RANGE as usize + 20), "but not past it");
         assert!(!sees(&s, 2, 400, 400), "the rival gains nothing");
+    }
+
+    // No pile-ons: four bots surround a human with no troops (each of them
+    // would pick it as its weakest neighbour). During the grace period only
+    // one may attack it, after that at most two — never all four at once.
+    #[test]
+    fn bots_do_not_all_pile_onto_one_faction() {
+        let mut s = SimulationState::new();
+        s.init_players(5, 500, 50, 5000);
+        s.set_tick_hz(25);
+        s.spawn_faction(1, 500, 500); // the human
+        for (f, (r, c)) in [(2u32, (475, 500)), (3, (525, 500)), (4, (500, 475)), (5, (500, 525))] {
+            s.spawn_faction(f, r, c);
+            s.set_player_is_bot(f, true);
+        }
+        let attackers_on_human = |s: &SimulationState| (2..=5).filter(|&b| s.front_pool[b * PLAYER_ARRAY_SIZE + 1] > FRONT_EPS).count();
+        let think_at = |s: &mut SimulationState, seconds: u32| {
+            // Hold everyone still until then (no fronts; the human well garrisoned)…
+            for b in 2..=5u32 { s.cancel_expansion(b); }
+            while s.current_tick < seconds * 25 {
+                s.player_total_troops[1] = 100_000.0;
+                s.tick();
+            }
+            // …then make the human by far the weakest neighbour and let the bots decide.
+            for b in 2..=5u32 { s.cancel_expansion(b); s.player_total_troops[b as usize] = 50_000.0; }
+            s.player_total_troops[1] = 0.0;
+            s.bot_think_all(45);
+        };
+        think_at(&mut s, 55); // after the truce, inside the human's grace period
+        assert_eq!(attackers_on_human(&s), 1, "one bot at a time on a human early on");
+        think_at(&mut s, 95); // grace over
+        assert!(s.player_owned_cells[1] > 0, "the human is still there");
+        assert_eq!(attackers_on_human(&s), 2, "at most two bots on one faction");
+        // A bot that couldn't attack the human did something else (not idle).
+        assert!((2..=5).all(|b| s.has_active_front(b as usize)), "capped bots take another target");
     }
 
     // Bounty: a runaway leader is marked, is cheaper to attack and pays gold.
