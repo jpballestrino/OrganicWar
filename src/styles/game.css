@@ -640,3 +640,75 @@
     font-size: 11px;
     filter: drop-shadow(0 0 4px rgba(255, 107, 74, 0.8));
 }
+
+/* ===== Waiting room (lobby / Quick and Mega Battle matchmaking) =====
+   The box always fits the window: title, countdown and buttons stay visible
+   and only the slot list scrolls. When the window is shorter than even that,
+   the overlay scrolls (margin:auto centres without cutting off the top). */
+#waitingOverlay {
+    justify-content: flex-start;
+    overflow-y: auto;
+    padding: 16px 0;
+    box-sizing: border-box;
+}
+#waitingOverlay .setup-container {
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 32px);
+    min-height: 0;
+}
+#waitingOverlay .slots-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 4px;
+    flex: 1 1 auto;
+    min-height: 120px;
+}
+#slotsGrid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    min-height: 0;
+    padding-right: 4px;
+}
+/* Big rooms: compact cards in columns, in a wider box. */
+#waitingOverlay.many-slots .setup-container {
+    width: min(920px, 94vw);
+    max-width: 94vw;
+    padding: 24px;
+}
+#waitingOverlay.many-slots #slotsGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+}
+.slot-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+.slot-card:hover { background: rgba(255, 255, 255, 0.08); }
+.slot-card.taken { background: rgba(255, 193, 7, 0.08); cursor: default; }
+.slot-card.active { outline: 1px solid #ffc107; }
+.slot-card .slot-name { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.slot-card .slot-who {
+    font-size: 11px;
+    opacity: 0.75;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.slot-card.taken .slot-who { opacity: 1; color: #ffc107; font-weight: 600; }
+.slot-card .faction-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
