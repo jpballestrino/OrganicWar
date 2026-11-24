@@ -40,24 +40,31 @@ export function updateSlotsUI(slots) {
   const grid = document.getElementById('slotsGrid');
   if (!grid) return;
   grid.innerHTML = '';
+  const ids = Object.keys(slots || {});
+  const taken = ids.filter((fid) => slots[fid]).length;
+  // Big rooms (a Mega Battle's 64 slots) get a compact multi-column grid in a
+  // wider box; the list scrolls inside it so the title and buttons stay on screen.
+  const overlay = document.getElementById('waitingOverlay');
+  if (overlay) overlay.classList.toggle('many-slots', ids.length > 12);
+  const label = document.getElementById('slotsLabel');
+  if (label) {
+    label.textContent = `Select your faction slot — ${taken} of ${ids.length} taken by players, bots fill the rest`;
+  }
 
-  for (let fid in slots) {
-    let slot = slots[fid];
-    let card = document.createElement('div');
+  for (const fid of ids) {
+    const slot = slots[fid];
+    const card = document.createElement('div');
     card.className = `slot-card ${slot ? 'taken' : ''} ${state.selectedSlot == fid ? 'active' : ''}`;
-    card.style.borderLeft = `5px solid ${factionHexColors[fid] || '#fff'}`;
-        
-    let statusText = slot ? `Occupied by ${escapeHtml(slot.nickname)}` : 'Available (Bot Control)';
-    let fName = `Faction ${fid}`;
-        
+    card.style.borderLeft = `4px solid ${factionHexColors[fid] || '#fff'}`;
+    card.title = slot ? `Faction ${fid}: ${slot.nickname}` : `Faction ${fid}: open — a bot plays it unless you take it`;
     card.innerHTML = `
-            <span>
+            <span class="slot-name">
                 <span class="faction-dot" style="background-color: ${factionHexColors[fid] || '#fff'};"></span>
-                ${fName}
+                Faction ${fid}
             </span>
-            <span style="font-size: 11px; opacity: 0.8;">${statusText}</span>
+            <span class="slot-who">${slot ? escapeHtml(slot.nickname) : 'Bot'}</span>
         `;
-        
+
     if (!slot) {
       card.onclick = () => {
         state.selectedSlot = fid;

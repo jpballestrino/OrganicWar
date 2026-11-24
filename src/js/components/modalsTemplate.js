@@ -96,45 +96,76 @@ export function modalsTemplate() {
 
     <!-- How to Play Modal -->
     <div id="tutorialModal" class="modal-float" style="display: none; z-index: 1100;">
-        <div class="modal-card" style="width: 620px; max-height: 82vh;">
+        <div class="modal-card" style="width: 680px; max-height: 86vh; box-sizing: border-box;">
             <div class="modal-header">
                 <span class="modal-title">📖 How to Play OrganicWar.io</span>
                 <button id="btnCloseTutorial" class="modal-close">&times;</button>
             </div>
 
-            <div style="font-size: 14px; line-height: 1.7; color: #ccc;">
+            <div class="tutorial-body" style="font-size: 14px; line-height: 1.7; color: #ccc;">
                 <h3 style="color: #ffc107; margin-top: 0; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🎮 The Basics</h3>
-                <p>Welcome to <strong>OrganicWar.io</strong>, a real-time multiplayer territory-conquest game! Your goal is to expand your empire, build defenses, and eliminate rival factions to dominate the map.</p>
+                <p>Welcome to <strong>OrganicWar.io</strong>, a real-time territory-conquest game. Grow your empire, build up your economy and defenses, and break your rivals before they break you.</p>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Pick a start:</strong> At the start of a match you have 8 seconds to click a land spot to begin from (each start has a small safe zone around it). If you don't pick, you're placed automatically.</li>
+                    <li><strong>Troops &amp; gold:</strong> Your troop cap, troop growth and gold income all grow with the land you hold. Troops grow fastest when your army is around 40% full, so keeping troops on the attack pays.</li>
+                    <li><strong>Bots:</strong> Empty slots are played by bots. They leave everyone alone for the first 50 seconds; after that only one bot at a time may attack you until 1:30, and never more than two at once.</li>
+                    <li><strong>Leaderboard:</strong> Top right. Below it you can see how close the biggest empire is to winning.</li>
+                </ul>
 
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">⚔️ Conquest &amp; Expansion</h3>
                 <ul style="padding-left: 20px; margin-bottom: 20px;">
-                    <li><strong>Attack / Expand:</strong> Click on neutral land or enemy territory to start an attack front. Your troops push forward automatically.</li>
-                    <li><strong>Cancel Specific Attack:</strong> Right-click on a faction's territory to cancel your attack against that specific enemy.</li>
-                    <li><strong>Cancel All Attacks:</strong> Press <strong>Space</strong> to instantly refund and cancel all active attacks.</li>
-                    <li><strong>Blitz (Press '1'):</strong> For 6 seconds your attacks advance twice as fast and pay 40% less to take enemy land. Recharges in 45 seconds — save it for the breakthrough.</li>
+                    <li><strong>Attack / Expand:</strong> Click neutral land to expand, or an enemy's land to attack that faction only. Your troops push forward along the whole border on their own.</li>
+                    <li><strong>Attack size:</strong> The Attack slider (or <strong>Shift + mouse wheel</strong>) sets what share of your troops each click sends.</li>
+                    <li><strong>Cancel:</strong> Right-click a faction's land to call off the attack on it (right-click your own land to stop expanding). <strong>Space</strong> calls off every attack and refunds the troops.</li>
+                    <li><strong>Blitz (Press '1'):</strong> For 6 seconds your attacks advance twice as fast and pay 40% less to take enemy land. Recharges in 45 seconds, so save it for the breakthrough.</li>
                     <li><strong>Bounty:</strong> When one empire runs away with the map (over twice its fair share and 1.5× the runner-up), it gets a 🎯 bounty. Everyone else pays 25% fewer troops to take its land and earns gold for every cell taken.</li>
                     <li><strong>Plunder:</strong> Eliminate a rival and you take their whole treasury. Razing an enemy Defense Tower pays 1,000 gold of salvage.</li>
-                    <li><strong>Troops &amp; Gold:</strong> Troop cap, growth rate, and gold income all scale with territory owned.</li>
-                    <li><strong>Attack size:</strong> The Attack slider (or <strong>Shift + mouse wheel</strong>) sets what share of your troops each click commits.</li>
-                    <li><strong>Camera:</strong> Drag the map or use <strong>WASD</strong> / arrow keys to move; mouse wheel zooms.</li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🗺️ The Map</h3>
+                <p style="margin-top: 0;">Seven maps: North America, Europe, Africa, South America, Asia, Oceania and the generated supercontinent Pangaea. Land is harder to take on rough ground; hover over a special spot to see what it does.</p>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Highlands &amp; mountains:</strong> Cost more troops to attack, so they make good borders to hold.</li>
+                    <li><strong>🌲 Forests:</strong> Three times slower to claim, and costly to attack.</li>
+                    <li><strong>🌊 River fords:</strong> Five times slower to claim. Rivers make natural frontiers.</li>
+                    <li><strong>💰 Gold deposits:</strong> Each cell you hold pays extra gold every second (30 times a normal cell).</li>
+                    <li><strong>🏛️ Ruins:</strong> Ten times slower to claim, but every cell taken pays 8 gold.</li>
+                    <li><strong>Bridges:</strong> Islands are joined to the mainland by narrow land bridges, so every empire can be reached on foot.</li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🌫️ Fog of War &amp; Minimap</h3>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>What you see:</strong> Your land and about 48 cells around it are live. Beyond that, the map shows the rough shape of each empire, dimmed, and enemy buildings stay hidden.</li>
+                    <li><strong>Silos see far:</strong> A finished Missile Silo reveals everything it can hit, so you can always see where you're aiming.</li>
+                    <li><strong>Minimap:</strong> Bottom left: the whole map, every empire, and a frame for what your camera shows. Click or drag on it to jump there.</li>
+                    <li><strong>Spectating:</strong> Once you're eliminated, you can stay and watch the rest of the match with the whole map revealed.</li>
                 </ul>
 
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🏆 How to Win</h3>
                 <ul style="padding-left: 20px; margin-bottom: 20px;">
-                    <li><strong>Domination:</strong> Hold 65% of all land and you win immediately. Watch the leaderboard — it shows how close the biggest empire is.</li>
+                    <li><strong>Domination:</strong> Hold 65% of all land and you win immediately.</li>
                     <li><strong>Sudden death:</strong> After 3 minutes the domination target starts falling (5% every 30 seconds, down to 40%), so the biggest empire has to be stopped or it wins.</li>
                     <li><strong>Last standing:</strong> Or simply eliminate every rival.</li>
-                    <li><strong>Mega Battle:</strong> The same rules with 64 commanders on one map — spawn zones are smaller and matches still end in about 4 minutes.</li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🎲 Game Modes</h3>
+                <ul style="padding-left: 20px; margin-bottom: 20px;">
+                    <li><strong>Quick Battle:</strong> 20 commanders, a random map; bots take the empty slots. About 3–4 minutes.</li>
+                    <li><strong>Mega Battle:</strong> 64 commanders on a bigger map, with the same rules. About 4–5 minutes.</li>
+                    <li><strong>Ranked:</strong> For logged-in players. You're matched with players of a similar rating, and your rating moves with where you finish among them (leaving early ranks you last).</li>
+                    <li><strong>Guild Wars:</strong> Two guilds, 2, 3 or 5 players a side, no bots. Teammates can't attack each other and share their view of the map. A team wins by being the last one standing or by holding 75% of the land together (falling to 50% from 4 minutes). Only the guilds' ratings change.</li>
+                    <li><strong>Custom rooms:</strong> Create a room from the lobby, pick the map and size, and invite friends.</li>
                 </ul>
 
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🛡️ Buildings &amp; Weapons</h3>
+                <p style="margin-top: 0;">Every building needs an 8×8 patch of your own land and a few seconds to finish. Prices below are for your first building of each type; each further one of the same type costs 25% more.</p>
                 <ul style="padding-left: 20px; margin-bottom: 20px;">
-                    <li><strong>Defense Tower (Press '3'):</strong> Costs 2,000 gold. Grants a massive defense bonus to surrounding cells. Takes 5s to build.</li>
-                    <li><strong>Missile Silo (Press '4'):</strong> Costs 10,000 gold. Required to fire missiles. Takes 10s to build. Survives partial conquest.</li>
-                    <li><strong>Fire Missile (Press '2'):</strong> Costs 2,000 gold. Target any enemy cell within silo range. Obliterates troops and buildings in a large radius.</li>
-                    <li><strong>Gold Mine (Press '5'):</strong> Costs 3,000 gold. Boosts your global gold production by 10%.</li>
-                    <li><strong>Anti-Air Battery (Press '6'):</strong> Costs 5,000 gold. Intercepts incoming missiles. Holds 3 charges.</li>
-                    <li><strong>City (Press '7'):</strong> Costs 2,000 gold. Each city raises your maximum population by 5%.</li>
+                    <li><strong>Defense Tower (Press '3'):</strong> 2,000 gold, 5 s. Makes the land around it far more costly to attack.</li>
+                    <li><strong>Missile Silo (Press '4'):</strong> 10,000 gold, 10 s. Needed to fire missiles; reaches 240 cells. It survives partial conquest and only changes hands when an enemy takes its whole footprint.</li>
+                    <li><strong>Fire Missile (Press '2'):</strong> 2,000 gold. Aim at any enemy land within a silo's range. The blast wipes out troops and buildings in a wide radius and turns the land neutral.</li>
+                    <li><strong>Gold Mine (Press '5'):</strong> 3,000 gold, 10 s. +10% gold income.</li>
+                    <li><strong>Anti-Air Battery (Press '6'):</strong> 5,000 gold, 10 s. Shoots down missiles aimed at you that pass within 400 cells. Holds 3 interceptors.</li>
+                    <li><strong>City (Press '7'):</strong> 2,000 gold, 5 s. +5% maximum population.</li>
                 </ul>
 
                 <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">🔗 Synergies</h3>
@@ -142,11 +173,17 @@ export function modalsTemplate() {
                 <ul style="padding-left: 20px; margin-bottom: 20px;">
                     <li><strong>Walled City</strong> (City + Defense Tower): the city gives +10% population instead of +5%.</li>
                     <li><strong>Workforce</strong> (Gold Mine + City): the mine gives +15% gold instead of +10%.</li>
-                    <li><strong>Radar Guidance</strong> (Missile Silo + Anti-Air): the silo fires 25% farther.</li>
+                    <li><strong>Radar Guidance</strong> (Missile Silo + Anti-Air): the silo fires 25% farther (and sees 25% farther).</li>
                     <li><strong>Arms Industry</strong> (Missile Silo + Gold Mine): missiles from that silo cost 25% less.</li>
                     <li><strong>Flak Battery</strong> (Anti-Air + Defense Tower): the battery regains an interceptor every 20 seconds.</li>
-                    <li><em>Prices shown are for your first building of each type; each further one of the same type costs 25% more.</em></li>
-                    <li><em>Right-click or Esc cancels any active building or targeting mode.</em></li>
+                </ul>
+
+                <h3 style="color: #ffc107; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 1px;">⌨️ Controls</h3>
+                <ul style="padding-left: 20px; margin-bottom: 4px;">
+                    <li><strong>Click:</strong> attack / expand. <strong>Right-click:</strong> cancel an attack, or the current build mode.</li>
+                    <li><strong>1–7:</strong> Blitz, missile and buildings. <strong>Esc</strong> cancels a build or targeting mode (pressed again, it opens the menu).</li>
+                    <li><strong>Space:</strong> call off all attacks.</li>
+                    <li><strong>Drag</strong> or <strong>WASD</strong> / arrow keys: move the camera. <strong>Mouse wheel:</strong> zoom. <strong>Shift + wheel:</strong> attack size.</li>
                 </ul>
             </div>
         </div>

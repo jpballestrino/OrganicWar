@@ -81,9 +81,9 @@ export function lobbyTemplate() {
             <div id="waitingCountdownText"
                 style="font-size: 48px; font-weight: bold; color: #fff; margin-bottom: 20px; display: none;">15s</div>
 
-            <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px;">
-                <label style="font-size: 13px; font-weight: bold; color: #ccc;">Select Your Faction Slot:</label>
-                <div style="display: flex; flex-direction: column; gap: 6px;" id="slotsGrid">
+            <div class="slots-section">
+                <label id="slotsLabel" style="font-size: 13px; font-weight: bold; color: #ccc;">Select Your Faction Slot:</label>
+                <div id="slotsGrid">
                     <!-- Populated dynamically via socket updates -->
                 </div>
             </div>

@@ -477,3 +477,16 @@ Whole map (~260 buildings): buildings 6.7–9.1 → 1.0–1.5 ms CPU per frame, 
 0.7–0.9 → 0.4 ms.
 - [x] smoke-camera: checks start away from the map's edges (a spawn at the edge
       pinned the camera there and read as a stuck key — intermittent).
+
+## Session 15 — waiting room, How to Play, bot pile-ons
+
+- [x] Mega waiting room: 64 slot cards stacked ~2,000 px tall, title/buttons cut
+      off. Box capped to the window, slot grid for big rooms, list scrolls inside.
+- [x] How to Play rewritten for the current game (map & terrain, fog & minimap,
+      modes, controls, bots); it opened top-left (duplicate handler) — now centred.
+- [x] Minimap position measured: 10 px from the left, 96 px above the bottom
+      (36 px above the bottom bar) at every size; overlaps nothing from 1024 px up
+      (on a phone the first-30-s controls strip covers part of it).
+- [x] Bots no longer pile onto one faction when the truce ends: at most 1 bot on
+      a human until 1:30, at most 2 on anyone after (bounty target exempt).
+      Test proves the old logic sent 4 of 4. Matches: 213–243 s (20), 276 s (Mega).
